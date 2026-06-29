@@ -47,6 +47,8 @@ pub struct IngestProgress {
     pub total_files: usize,
     pub bytes_done: u64,
     pub total_bytes: u64,
+    pub verified_bytes: u64,
+    pub verified_files: usize,
     pub elapsed_ms: u128,
     pub bytes_per_second: u64,
     pub remaining_ms: Option<u128>,
@@ -129,6 +131,8 @@ pub fn run_ingest(
         total.files,
         0,
         total.bytes,
+        0,
+        0,
         started_at,
     );
 
@@ -149,6 +153,8 @@ pub fn run_ingest(
     let mut clip_number = 1_u32;
     let mut files_done = 0_usize;
     let mut bytes_done = 0_u64;
+    let mut verified_bytes = 0_u64;
+    let mut verified_files = 0_usize;
 
     for file in scan
         .files
@@ -168,6 +174,8 @@ pub fn run_ingest(
         let folder = route_folder(preset, &folders, file.kind, &file.extension, &root_path);
 
         let base_bytes_done = bytes_done;
+        let base_verified_bytes = verified_bytes;
+        let base_verified_files = verified_files;
         let file_size = file.size_bytes;
         let relative_path = file.relative_path.clone();
         let mut transfer_progress = |phase: &str, current_file_bytes: u64| {
@@ -179,9 +187,12 @@ pub fn run_ingest(
                 total.files,
                 base_bytes_done + current_file_bytes.min(file_size),
                 total.bytes,
+                base_verified_bytes,
+                base_verified_files,
                 started_at,
             );
         };
+        let prev_verified_files = result.verified_files;
         let copied = copy_file_to_folder(
             preset,
             file,
@@ -196,6 +207,10 @@ pub fn run_ingest(
         )?;
         files_done += 1;
         bytes_done += file.size_bytes;
+        if result.verified_files > prev_verified_files {
+            verified_bytes += file.size_bytes;
+        }
+        verified_files = result.verified_files;
         emit_progress(
             &mut progress,
             "Copying",
@@ -204,6 +219,8 @@ pub fn run_ingest(
             total.files,
             bytes_done,
             total.bytes,
+            verified_bytes,
+            verified_files,
             started_at,
         );
         media_routes.insert(file.relative_path.clone(), copied);
@@ -235,6 +252,8 @@ pub fn run_ingest(
         };
 
         let base_bytes_done = bytes_done;
+        let base_verified_bytes = verified_bytes;
+        let base_verified_files = verified_files;
         let file_size = file.size_bytes;
         let relative_path = file.relative_path.clone();
         let mut transfer_progress = |phase: &str, current_file_bytes: u64| {
@@ -246,9 +265,12 @@ pub fn run_ingest(
                 total.files,
                 base_bytes_done + current_file_bytes.min(file_size),
                 total.bytes,
+                base_verified_bytes,
+                base_verified_files,
                 started_at,
             );
         };
+        let prev_verified_files = result.verified_files;
         copy_file_to_folder(
             preset,
             file,
@@ -263,6 +285,10 @@ pub fn run_ingest(
         )?;
         files_done += 1;
         bytes_done += file.size_bytes;
+        if result.verified_files > prev_verified_files {
+            verified_bytes += file.size_bytes;
+        }
+        verified_files = result.verified_files;
         emit_progress(
             &mut progress,
             "Copying sidecars",
@@ -271,6 +297,8 @@ pub fn run_ingest(
             total.files,
             bytes_done,
             total.bytes,
+            verified_bytes,
+            verified_files,
             started_at,
         );
         result.sidecars_copied += 1;
@@ -285,6 +313,8 @@ pub fn run_ingest(
         total.files,
         bytes_done,
         total.bytes,
+        verified_bytes,
+        verified_files,
         started_at,
     );
     let mhl_path = write_mhl_file(&root_path, &mhl_entries(&root_path, &result.copied_files)?)?;
@@ -297,6 +327,8 @@ pub fn run_ingest(
         total.files,
         total.bytes,
         total.bytes,
+        verified_bytes,
+        verified_files,
         started_at,
     );
 
@@ -380,6 +412,7 @@ fn existing_root_scaffold(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_progress(
     progress: &mut Option<&mut dyn FnMut(IngestProgress)>,
     phase: &str,
@@ -388,6 +421,8 @@ fn emit_progress(
     total_files: usize,
     bytes_done: u64,
     total_bytes: u64,
+    verified_bytes: u64,
+    verified_files: usize,
     started_at: std::time::Instant,
 ) {
     if let Some(progress) = progress.as_deref_mut() {
@@ -410,6 +445,8 @@ fn emit_progress(
             total_files,
             bytes_done,
             total_bytes,
+            verified_bytes,
+            verified_files,
             elapsed_ms,
             bytes_per_second,
             remaining_ms,
@@ -773,6 +810,8 @@ pub fn attach_report_thumbnails(
         total,
         0,
         total as u64,
+        0,
+        0,
         started_at,
     );
 
@@ -797,6 +836,8 @@ pub fn attach_report_thumbnails(
                 total,
                 done as u64,
                 total as u64,
+                done as u64,
+                done,
                 started_at,
             );
         } else {
@@ -819,6 +860,8 @@ pub fn attach_report_thumbnails(
         total,
         total as u64,
         total as u64,
+        total as u64,
+        total,
         started_at,
     );
 

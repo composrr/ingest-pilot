@@ -55,10 +55,21 @@ export function IngestPage() {
   const [outputPreview, setOutputPreview] = useState<IngestOutputPreview | null>(null);
   const [selectedRelativePaths, setSelectedRelativePaths] = useState<Set<string>>(new Set());
   const [ingestProgress, setIngestProgress] = useState<IngestProgress | null>(null);
+  const [speedSeries, setSpeedSeries] = useState<SpeedPoint[]>([]);
+  const [instantaneousBps, setInstantaneousBps] = useState(0);
   const [reportBuild, setReportBuild] = useState<ReportBuildState>({ status: "idle", progress: null });
   const [isFileSelectorOpen, setIsFileSelectorOpen] = useState(false);
   const [spaceByPath, setSpaceByPath] = useState<Record<string, DiskSpace | null>>({});
   const currentIngestJobId = useRef<string | null>(null);
+  // Real speed-over-time tracking for the run-screen chart. The ingest-progress
+  // event floods (one per 256 KB), so the listener only writes refs; a fixed-cadence
+  // timer samples them into render state. X axis uses a frontend monotonic clock so
+  // multi-destination/source runs (which reset the backend elapsed/bytes per segment)
+  // render as one continuous, scrolling timeline.
+  const progressBufferRef = useRef<SpeedSample[]>([]);
+  const latestProgressRef = useRef<IngestProgress | null>(null);
+  const sampleTimerRef = useRef<number | null>(null);
+  const runStartRef = useRef<number>(0);
   const setLastAction = useAppStore((state) => state.setLastAction);
   const sourcePath = sourcePaths[0] ?? "";
   const scan = useMemo(() => aggregateSourceScans(sourceScans), [sourceScans]);
@@ -288,16 +299,57 @@ export function IngestPage() {
     setIsIngesting(true);
     setIsCancelling(false);
     setIngestProgress(null);
+    setSpeedSeries([]);
+    setInstantaneousBps(0);
+    progressBufferRef.current = [];
+    latestProgressRef.current = null;
+    runStartRef.current = performance.now();
     setReportBuild({ status: "idle", progress: null });
     setError(null);
     const jobId = createJobId();
     const startedAt = new Date().toISOString();
     currentIngestJobId.current = jobId;
+    // Listener is a pure ref-writer — never setState here (events flood every 256 KB).
     const unlisten = await listen<IngestProgress>("ingest-progress", (event) => {
-      if (event.payload.job_id === jobId) {
-        setIngestProgress(event.payload);
+      if (event.payload.job_id !== jobId) {
+        return;
+      }
+      latestProgressRef.current = event.payload;
+      const tMs = performance.now() - runStartRef.current;
+      const buffer = progressBufferRef.current;
+      const previous = buffer[buffer.length - 1];
+      // Multi-segment runs restart bytes_done at 0 per runIngest call; a drop means a
+      // new segment, so reset the buffer to avoid a negative speed spike at the seam.
+      if (previous && event.payload.bytes_done < previous.bytesDone) {
+        buffer.length = 0;
+      }
+      buffer.push({ tMs, bytesDone: event.payload.bytes_done });
+      const cutoff = tMs - SPEED_BUFFER_WINDOW_MS;
+      while (buffer.length > 2 && buffer[0].tMs < cutoff) {
+        buffer.shift();
       }
     });
+    // Sample the refs at a fixed cadence so the whole run screen renders at a steady
+    // rate regardless of how fast the card streams.
+    sampleTimerRef.current = window.setInterval(() => {
+      const latest = latestProgressRef.current;
+      if (!latest) {
+        return;
+      }
+      setIngestProgress(latest);
+      const bps = windowedSpeed(progressBufferRef.current, SPEED_WINDOW_MS);
+      setInstantaneousBps(bps);
+      const t = performance.now() - runStartRef.current;
+      setSpeedSeries((previous) => {
+        const next = [...previous, { t, bps }];
+        const cutoff = t - CHART_WINDOW_MS;
+        let start = 0;
+        while (start < next.length - 1 && next[start + 1].t < cutoff) {
+          start += 1;
+        }
+        return next.slice(start);
+      });
+    }, SAMPLE_INTERVAL_MS);
     try {
       const results: IngestResult[] = [];
       for (const destination of destinationTargets) {
@@ -369,6 +421,10 @@ export function IngestPage() {
       setLastAction(message.toLowerCase().includes("cancelled") ? "Ingest cancelled" : "Ingest failed");
     } finally {
       unlisten();
+      if (sampleTimerRef.current !== null) {
+        window.clearInterval(sampleTimerRef.current);
+        sampleTimerRef.current = null;
+      }
       setIsIngesting(false);
       setIsCancelling(false);
       currentIngestJobId.current = null;
@@ -486,6 +542,16 @@ export function IngestPage() {
   useEffect(() => {
     void loadSelectedPreset(selectedPresetId);
   }, [selectedPresetId]);
+
+  // Clear the speed-sampling timer if we unmount mid-run (e.g. navigating away).
+  useEffect(() => {
+    return () => {
+      if (sampleTimerRef.current !== null) {
+        window.clearInterval(sampleTimerRef.current);
+        sampleTimerRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     setVariableValues(defaultsForParameters(ingestParameters));
@@ -613,6 +679,8 @@ export function IngestPage() {
         isCancelling={isCancelling}
         onCancel={() => void cancelCurrentIngest()}
         progress={ingestProgress}
+        speedSeries={speedSeries}
+        instantaneousBps={instantaneousBps}
         selectedBytes={selectedBytes}
         selectedCount={selectedFileCount}
       />
@@ -1051,21 +1119,33 @@ function IngestRunScreen({
   isCancelling,
   onCancel,
   progress,
+  speedSeries,
+  instantaneousBps,
   selectedBytes,
   selectedCount,
 }: {
   isCancelling: boolean;
   onCancel: () => void;
   progress: IngestProgress | null;
+  speedSeries: SpeedPoint[];
+  instantaneousBps: number;
   selectedBytes: number;
   selectedCount: number;
 }) {
   const percent = progress ? progressPercent(progress) : 0;
-  const speed = progress ? formatBytes(progress.bytes_per_second) : "0 B";
+  // Real windowed throughput (matches the graph), not the backend cumulative average.
+  const speed = formatBytes(instantaneousBps);
   const remaining = progress?.remaining_ms ? formatDuration(progress.remaining_ms) : "--";
   const elapsed = progress ? formatDuration(progress.elapsed_ms) : "0s";
   const totalBytes = progress?.total_bytes || selectedBytes;
   const copiedBytes = progress?.bytes_done ?? 0;
+  // Real verification progress reported by the engine (verified bytes / total).
+  const verifyPercent =
+    progress?.phase === "Complete"
+      ? 100
+      : progress && progress.total_bytes > 0
+        ? Math.min(100, Math.round((progress.verified_bytes / progress.total_bytes) * 100))
+        : 0;
 
   return (
     <div className="tool-density flex min-h-full w-full min-w-0 flex-col rounded-[28px] border border-mist bg-paper p-2 shadow-panel xl:p-3">
@@ -1107,24 +1187,7 @@ function IngestRunScreen({
             </div>
 
             <div className="relative h-[300px] overflow-hidden rounded-2xl border border-mist bg-porcelain/35 p-3">
-              <div className="absolute inset-x-4 top-1/2 h-px bg-mist" />
-              <div className="absolute inset-y-4 left-1/2 w-px bg-mist" />
-              <svg className="h-full w-full" viewBox="0 0 800 320" role="img" aria-label="Transfer activity">
-                <defs>
-                  <linearGradient id="transferFill" x1="0" x2="0" y1="0" y2="1">
-                    <stop offset="0%" stopColor="#c9a7ff" stopOpacity="0.42" />
-                    <stop offset="100%" stopColor="#c9a7ff" stopOpacity="0.04" />
-                  </linearGradient>
-                </defs>
-                <path
-                  d={activityPath(percent)}
-                  fill="none"
-                  stroke="#8f67dd"
-                  strokeLinecap="round"
-                  strokeWidth="4"
-                />
-                <path d={`${activityPath(percent)} L760 292 L40 292 Z`} fill="url(#transferFill)" />
-              </svg>
+              <SpeedChart series={speedSeries} />
               <div className="absolute bottom-4 left-4 right-4">
                 <div className="mb-2 flex items-center justify-between text-xs font-semibold text-graphite">
                   <span>{formatBytes(copiedBytes)} copied</span>
@@ -1146,7 +1209,7 @@ function IngestRunScreen({
 
         <aside className="space-y-2">
           <Gauge label="Copy" value={percent} />
-          <Gauge label="Verify" value={progress?.phase === "Complete" ? 100 : Math.max(0, percent - 8)} />
+          <Gauge label="Verify" value={verifyPercent} />
           <div className="rounded-2xl border border-mist bg-white p-3 text-xs font-semibold text-graphite">
             Reports and thumbnails build after the transfer completes, so ingest speed stays the priority.
           </div>
@@ -1268,10 +1331,84 @@ function presetColor(value?: string | null) {
   return /^#[0-9a-f]{6}$/i.test(value ?? "") ? value ?? "#c9a7ff" : "#c9a7ff";
 }
 
-function activityPath(percent: number) {
-  const lift = Math.max(0, Math.min(1, percent / 100));
-  const high = 255 - lift * 170;
-  return `M40 248 C140 250 190 250 240 248 C280 246 300 ${240 - lift * 80} 330 ${220 - lift * 100} C360 ${200 - lift * 140} 390 ${high} 430 ${high} C500 ${high + 8} 540 ${high - 10} 600 ${high + 4} C660 ${high + 14} 710 ${high - 6} 760 ${high + 12}`;
+// --- Real transfer-speed chart -------------------------------------------------
+type SpeedSample = { tMs: number; bytesDone: number };
+type SpeedPoint = { t: number; bps: number };
+
+const SAMPLE_INTERVAL_MS = 220; // how often we sample refs into render state
+const SPEED_WINDOW_MS = 1000; // window for the instantaneous-speed calculation
+const SPEED_BUFFER_WINDOW_MS = 5000; // raw-sample retention (covers the speed window)
+const CHART_WINDOW_MS = 60000; // visible X span; the line scrolls within this
+
+// Instantaneous throughput = Δbytes / Δtime over the last `windowMs`. Returns a real
+// 0 during verify-phase stalls (bytes_done frozen) or before two samples exist.
+function windowedSpeed(buffer: SpeedSample[], windowMs: number): number {
+  if (buffer.length < 2) {
+    return 0;
+  }
+  const newest = buffer[buffer.length - 1];
+  let i = buffer.length - 1;
+  while (i > 0 && newest.tMs - buffer[i - 1].tMs <= windowMs) {
+    i -= 1;
+  }
+  const oldest = buffer[i];
+  const dt = newest.tMs - oldest.tMs;
+  const db = newest.bytesDone - oldest.bytesDone;
+  if (dt <= 0 || db <= 0) {
+    return 0;
+  }
+  return (db / dt) * 1000;
+}
+
+function SpeedChart({ series }: { series: SpeedPoint[] }) {
+  const PAD_L = 40;
+  const PAD_R = 760;
+  const PAD_T = 28;
+  const PAD_B = 292;
+  const visible = series.length > 0 ? series : [];
+  const tNewest = visible.length > 0 ? visible[visible.length - 1].t : 0;
+  const xWindow0 = tNewest - CHART_WINDOW_MS;
+  const maxBps = visible.reduce((max, point) => Math.max(max, point.bps), 0);
+  const yMax = Math.max(maxBps * 1.15, 1);
+
+  const x = (t: number) => {
+    const fraction = Math.max(0, Math.min(1, (t - xWindow0) / CHART_WINDOW_MS));
+    return PAD_L + fraction * (PAD_R - PAD_L);
+  };
+  const y = (bps: number) => PAD_B - (bps / yMax) * (PAD_B - PAD_T);
+
+  const points = visible.map((point) => `${x(point.t).toFixed(1)} ${y(point.bps).toFixed(1)}`);
+  const linePath = points.length >= 2 ? `M${points.join(" L")}` : "";
+  const areaPath =
+    points.length >= 2
+      ? `${linePath} L${x(tNewest).toFixed(1)} ${PAD_B} L${PAD_L} ${PAD_B} Z`
+      : "";
+  const midY = PAD_B - 0.5 * (PAD_B - PAD_T);
+
+  return (
+    <svg className="h-full w-full" viewBox="0 0 800 320" role="img" aria-label="Transfer speed over time">
+      <defs>
+        <linearGradient id="transferFill" x1="0" x2="0" y1="0" y2="1">
+          <stop offset="0%" stopColor="#c9a7ff" stopOpacity="0.42" />
+          <stop offset="100%" stopColor="#c9a7ff" stopOpacity="0.04" />
+        </linearGradient>
+      </defs>
+      {/* baseline + mid gridline */}
+      <line x1={PAD_L} x2={PAD_R} y1={PAD_B} y2={PAD_B} stroke="#e7e2d8" strokeWidth="1" />
+      <line x1={PAD_L} x2={PAD_R} y1={midY} y2={midY} stroke="#efeae0" strokeWidth="1" strokeDasharray="4 6" />
+      {areaPath ? <path d={areaPath} fill="url(#transferFill)" /> : null}
+      {linePath ? (
+        <path d={linePath} fill="none" stroke="#8f67dd" strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" />
+      ) : null}
+      {/* axis labels */}
+      <text x={PAD_L} y={PAD_T - 10} fontSize="13" fontWeight="600" fill="#8a8577">
+        {formatBytes(yMax)}/s
+      </text>
+      <text x={PAD_R} y={PAD_T - 10} fontSize="12" fontWeight="600" fill="#b4afa2" textAnchor="end">
+        last 60s
+      </text>
+    </svg>
+  );
 }
 
 function ParameterField({

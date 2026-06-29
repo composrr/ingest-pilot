@@ -3,6 +3,7 @@
 // Lets the full real UI run in a plain browser / Claude Design with no Rust backend.
 // The real desktop build never imports this file.
 import { createShippedPresets } from "../lib/presetFactory";
+import { designJobState } from "./designJobState";
 import type {
   CameraSource,
   CopiedFile,
@@ -288,8 +289,10 @@ export async function invoke<T = unknown>(command: string, args?: Record<string,
       ] as CameraSource[] as T;
 
     case "run_ingest": {
-      // Give the run screen ~2.5s so its progress animation is visible.
-      await new Promise((resolve) => setTimeout(resolve, 2500));
+      // Share the run's job_id so the simulated progress events (tauri-event.ts) match.
+      designJobState.id = (a.jobId as string) ?? "";
+      // Keep the run screen up long enough to watch the real speed chart scroll.
+      await new Promise((resolve) => setTimeout(resolve, 20000));
       const copied = sampleCopiedFiles();
       const result: IngestResult = {
         root_path: "E:/MediaServer/20260628_BaptismStory_Johnson",

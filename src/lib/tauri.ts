@@ -134,6 +134,8 @@ export type IngestProgress = {
   total_files: number;
   bytes_done: number;
   total_bytes: number;
+  verified_bytes: number;
+  verified_files: number;
   elapsed_ms: number;
   bytes_per_second: number;
   remaining_ms?: number | null;
