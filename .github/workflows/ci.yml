@@ -1,0 +1,50 @@
+name: CI
+
+# Verifies the app on both target platforms on every push/PR to main.
+# The Rust tests (cargo test) include the ingest-routing logic, so this is the
+# hard proof that behavior like "empty preset -> media goes to project root"
+# works identically on Windows and macOS.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify:
+    name: Test & build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install JS dependencies
+        run: npm ci
+
+      - name: Build frontend (typecheck + bundle)
+        run: npm run build
+
+      - name: Run Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+  # To also produce installers (.dmg / .msi) from CI, add a job using
+  # tauri-apps/tauri-action. Left out here to keep CI fast and free of signing
+  # secrets; ask and I'll wire it up.

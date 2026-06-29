@@ -165,10 +165,7 @@ pub fn run_ingest(
             continue;
         }
 
-        let Some(folder) = route_folder(preset, &folders, file.kind, &file.extension) else {
-            push_skip(&mut result, file, "No matching target folder.");
-            continue;
-        };
+        let folder = route_folder(preset, &folders, file.kind, &file.extension, &root_path);
 
         let base_bytes_done = bytes_done;
         let file_size = file.size_bytes;
@@ -642,10 +639,11 @@ fn route_folder(
     folders: &[ResolvedFolder],
     kind: ScanFileKind,
     extension: &str,
-) -> Option<ResolvedFolder> {
+    root_path: &Path,
+) -> ResolvedFolder {
     if let Some(folder_id) = preset.file_type_routing_overrides.get(extension) {
         if let Some(folder) = folders.iter().find(|folder| folder.id == *folder_id) {
-            return Some(folder.clone());
+            return folder.clone();
         }
     }
 
@@ -662,16 +660,39 @@ fn route_folder(
             folder.role == Some(role.clone())
                 || (role == FolderRole::Footage && folder.is_footage_destination)
         }) {
-            return Some(folder.clone());
+            return folder.clone();
         }
     }
 
+    // Nothing matched by override or role. Prefer an explicit footage
+    // destination, then the first folder in the tree. If the preset defines no
+    // folders at all, fall back to the project root so media still lands
+    // somewhere instead of being skipped.
     folders
         .iter()
         .rev()
         .find(|folder| folder.is_footage_destination)
         .cloned()
         .or_else(|| folders.first().cloned())
+        .unwrap_or_else(|| root_destination_folder(root_path))
+}
+
+const ROOT_DESTINATION_ID: &str = "__ingest_root__";
+
+/// A synthetic destination pointing at the project root, used when a preset
+/// defines no folders. Media is copied directly into the created root folder
+/// rather than skipped with "No matching target folder."
+fn root_destination_folder(root_path: &Path) -> ResolvedFolder {
+    ResolvedFolder {
+        id: ROOT_DESTINATION_ID.to_string(),
+        name: root_path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_default(),
+        path: root_path.to_path_buf(),
+        role: None,
+        is_footage_destination: true,
+    }
 }
 
 fn ensure_file_extension(file_name: &str, extension: &str) -> String {
@@ -1379,6 +1400,69 @@ mod tests {
         assert_eq!(result.skipped_files, 1);
         assert!(PathBuf::from(&result.mhl_path).exists());
         assert!(result.report_path.is_empty());
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn copies_into_root_when_preset_has_no_folders() {
+        let workspace = unique_temp_dir("ingest_pilot_empty_tree_test");
+        let source = workspace.join("source");
+        let destination = workspace.join("output");
+        fs::create_dir_all(&source).expect("source dir");
+        fs::write(source.join("A.MP4"), vec![0; 10]).expect("media");
+
+        let preset = Preset {
+            schema_version: 1,
+            id: "preset_empty".to_string(),
+            name: "Loose".to_string(),
+            description: None,
+            icon: None,
+            color: None,
+            variables: vec![PresetVariable {
+                id: "story_name".to_string(),
+                name: "Story Name".to_string(),
+                variable_type: VariableType::ShortText,
+                required: true,
+                default: None,
+                options: vec![],
+            }],
+            root_folder_pattern: "{story_name}".to_string(),
+            // No folders defined at all — media should land in the root.
+            folder_tree: vec![],
+            file_rename_pattern: "{original_name}_{clip#}{ext}".to_string(),
+            clip_number_padding: 3,
+            per_folder_rename_overrides: BTreeMap::new(),
+            destinations: PresetDestinations {
+                primary: destination.to_string_lossy().to_string(),
+                secondaries: vec![],
+            },
+            file_type_routing_overrides: BTreeMap::new(),
+            preserve_xml_sidecars: true,
+            created_at: "2026-04-24T00:00:00Z".to_string(),
+            updated_at: "2026-04-24T00:00:00Z".to_string(),
+        };
+
+        let result = run_ingest(
+            &preset,
+            source.to_string_lossy().to_string(),
+            BTreeMap::from([("story_name".to_string(), "Baptism".to_string())]),
+            None,
+            true,
+            true,
+            None,
+            false,
+            None,
+            None,
+        )
+        .expect("ingest succeeds");
+
+        let root = PathBuf::from(&result.root_path);
+        // Lands directly in the created root folder, not skipped.
+        assert!(root.join("A_001.mp4").exists());
+        assert_eq!(result.files_copied, 1);
+        assert_eq!(result.skipped_files, 0);
+        assert!(result.skipped.is_empty());
 
         let _ = fs::remove_dir_all(workspace);
     }

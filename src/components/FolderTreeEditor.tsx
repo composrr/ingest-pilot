@@ -1264,7 +1264,11 @@ function EmptyTree({ onAddRoot }: { onAddRoot: () => void }) {
       <div className="mb-2 flex h-10 w-10 items-center justify-center rounded-2xl bg-porcelain text-graphite">
         <FolderPlus size={20} />
       </div>
-      <p className="mb-3 text-sm font-medium text-graphite">No folders yet.</p>
+      <p className="mb-1 text-sm font-medium text-graphite">No folders yet.</p>
+      <p className="mb-3 max-w-[260px] text-xs text-graphite/70">
+        Media will be copied straight into the project root folder. Add folders
+        to route footage, audio, and photos into subfolders.
+      </p>
       <button
         className="inline-flex h-8 items-center gap-1 rounded-lg border border-mist bg-white px-2 text-xs font-semibold text-graphite transition hover:bg-porcelain"
         onClick={onAddRoot}
