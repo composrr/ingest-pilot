@@ -5,8 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1420",
+    "dev:design": "vite --mode design --host 127.0.0.1 --port 1421",
     "build": "tsc && vite build",
+    "build:design": "vite build --mode design --outDir dist-design",
     "preview": "vite preview",
+    "preview:design": "vite preview --outDir dist-design --port 1421",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"

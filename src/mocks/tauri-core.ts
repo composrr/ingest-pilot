@@ -1,0 +1,335 @@
+// Design-mode mock for "@tauri-apps/api/core".
+// Swapped in via a Vite alias only when DESIGN_MODE is set (see vite.config.ts).
+// Lets the full real UI run in a plain browser / Claude Design with no Rust backend.
+// The real desktop build never imports this file.
+import { createShippedPresets } from "../lib/presetFactory";
+import type {
+  CameraSource,
+  CopiedFile,
+  DiskSpace,
+  DroppedTemplateItems,
+  IngestHistoryJob,
+  IngestResult,
+  ScaffoldResult,
+  ScannedFile,
+  SourceScan,
+} from "../lib/tauri";
+import type { AppSettings, FolderNode, Preset, PresetSummary, TokenContext } from "../lib/types";
+
+const SAMPLE_DATE = "20260628";
+
+// In-memory preset store so save/delete/duplicate feel real while designing.
+let presets: Preset[] = createShippedPresets();
+
+function summary(preset: Preset): PresetSummary {
+  return {
+    id: preset.id,
+    name: preset.name,
+    description: preset.description,
+    color: preset.color,
+    updated_at: preset.updated_at,
+  };
+}
+
+function resolvePattern(pattern: string, ctx?: TokenContext): string {
+  const values = ctx?.variable_values ?? {};
+  return pattern.replace(/\{([^}]+)\}/g, (_match, raw: string) => {
+    const key = raw.trim();
+    switch (key) {
+      case "date":
+        return ctx?.date ?? SAMPLE_DATE;
+      case "year":
+        return "2026";
+      case "month":
+        return "06";
+      case "day":
+        return "28";
+      case "preset_name":
+        return ctx?.preset_name ?? "Preset";
+      case "camera":
+        return ctx?.camera ?? "FX3";
+      case "clip#": {
+        const n = ctx?.clip_number ?? 1;
+        const pad = ctx?.clip_number_padding ?? 3;
+        return String(n).padStart(pad, "0");
+      }
+      case "original_name":
+        return ctx?.original_name ?? "C0001";
+      case "capture_date":
+        return ctx?.capture_date ?? SAMPLE_DATE;
+      case "ext":
+        return ctx?.extension ?? ".mp4";
+      case "folder_name":
+        return ctx?.folder_name ?? "Footage";
+      default:
+        return values[key] ?? `{${key}}`;
+    }
+  });
+}
+
+function scannedFile(
+  rel: string,
+  kind: ScannedFile["kind"],
+  size: number,
+  extra: Partial<ScannedFile> = {},
+): ScannedFile {
+  const fileName = rel.split("/").pop() ?? rel;
+  const dot = fileName.lastIndexOf(".");
+  return {
+    path: `D:/A001_SONY/${rel}`,
+    relative_path: rel,
+    file_name: fileName,
+    stem: dot > 0 ? fileName.slice(0, dot) : fileName,
+    extension: dot > 0 ? fileName.slice(dot) : "",
+    size_bytes: size,
+    modified_at: "2026-06-28T09:14:00Z",
+    kind,
+    sidecar_for: null,
+    thumbnail_path: null,
+    ...extra,
+  };
+}
+
+function sampleScan(rootPath: string): SourceScan {
+  const files: ScannedFile[] = [
+    scannedFile("PRIVATE/M4ROOT/CLIP/FX3_6713.MP4", "footage", 4_823_749_012),
+    scannedFile("PRIVATE/M4ROOT/CLIP/FX3_6714.MP4", "footage", 3_104_882_330),
+    scannedFile("PRIVATE/M4ROOT/CLIP/FX3_6715.MP4", "footage", 5_902_114_771),
+    scannedFile("PRIVATE/M4ROOT/CLIP/FX3_6713M01.XML", "sidecar", 12_044, {
+      sidecar_for: "PRIVATE/M4ROOT/CLIP/FX3_6713.MP4",
+    }),
+    scannedFile("AUDIO/ZOOM0007.WAV", "audio", 188_220_004),
+    scannedFile("AUDIO/ZOOM0008.WAV", "audio", 142_553_120),
+    scannedFile("DCIM/100MSDCF/DSC00412.JPG", "photo", 9_220_114),
+    scannedFile("DCIM/100MSDCF/DSC00413.JPG", "photo", 8_904_551),
+    scannedFile("DOCS/shotlist.pdf", "document", 244_180),
+    scannedFile("PRIVATE/M4ROOT/THMBNL/FX3_6713.JPG", "ignored", 44_120),
+  ];
+  const ingest = files.filter((f) => f.kind !== "ignored" && f.kind !== "sidecar");
+  const totalBytes = files.reduce((sum, f) => sum + f.size_bytes, 0);
+  return {
+    root_path: rootPath,
+    total_files: files.length,
+    total_bytes: totalBytes,
+    ingest_files: ingest.length,
+    ignored_files: files.filter((f) => f.kind === "ignored").length,
+    sidecar_files: files.filter((f) => f.kind === "sidecar").length,
+    extensions: [
+      { extension: ".mp4", count: 3, total_bytes: 13_830_746_113, kind: "footage" },
+      { extension: ".wav", count: 2, total_bytes: 330_773_124, kind: "audio" },
+      { extension: ".jpg", count: 2, total_bytes: 18_124_665, kind: "photo" },
+      { extension: ".xml", count: 1, total_bytes: 12_044, kind: "sidecar" },
+      { extension: ".pdf", count: 1, total_bytes: 244_180, kind: "document" },
+    ],
+    kinds: [
+      { kind: "footage", count: 3, total_bytes: 13_830_746_113 },
+      { kind: "audio", count: 2, total_bytes: 330_773_124 },
+      { kind: "photo", count: 2, total_bytes: 18_124_665 },
+      { kind: "document", count: 1, total_bytes: 244_180 },
+    ],
+    files,
+  };
+}
+
+function sampleCopiedFiles(): CopiedFile[] {
+  const scan = sampleScan("D:/A001_SONY");
+  return scan.files
+    .filter((f) => f.kind !== "ignored" && f.kind !== "sidecar")
+    .map((f, i) => ({
+      source_path: f.path,
+      destination_path: `E:/MediaServer/20260628_BaptismStory_Johnson/Footage/${f.file_name}`,
+      kind: f.kind,
+      size_bytes: f.size_bytes,
+      thumbnail_path: null,
+      source_hash: `xxh3:${(i + 1).toString(16).padStart(16, "0")}`,
+      destination_hash: `xxh3:${(i + 1).toString(16).padStart(16, "0")}`,
+      verified: true,
+    }));
+}
+
+function sampleHistory(): IngestHistoryJob[] {
+  return [
+    {
+      id: "job_20260628_johnson",
+      preset_name: "Video Team Standard",
+      status: "complete",
+      started_at: "2026-06-28T09:20:00Z",
+      completed_at: "2026-06-28T09:41:00Z",
+      source_paths: ["D:/A001_SONY"],
+      destination_paths: ["E:/MediaServer/20260628_BaptismStory_Johnson"],
+      root_path: "E:/MediaServer/20260628_BaptismStory_Johnson",
+      report_path: "E:/MediaServer/20260628_BaptismStory_Johnson/IngestPilot_Report.html",
+      mhl_path: "E:/MediaServer/20260628_BaptismStory_Johnson/IngestPilot.mhl",
+      files_copied: 8,
+      verified_files: 8,
+      verification_failed: 0,
+      bytes_copied: 14_179_887_082,
+      sidecars_deleted: 0,
+    },
+    {
+      id: "job_20260621_easter",
+      preset_name: "Drone + B-Roll",
+      status: "complete",
+      started_at: "2026-06-21T14:02:00Z",
+      completed_at: "2026-06-21T14:19:00Z",
+      source_paths: ["F:/DJI_001"],
+      destination_paths: ["E:/MediaServer/20260621_Coastline_Drone"],
+      root_path: "E:/MediaServer/20260621_Coastline_Drone",
+      report_path: "E:/MediaServer/20260621_Coastline_Drone/IngestPilot_Report.html",
+      mhl_path: "E:/MediaServer/20260621_Coastline_Drone/IngestPilot.mhl",
+      files_copied: 24,
+      verified_files: 24,
+      verification_failed: 0,
+      bytes_copied: 31_882_551_904,
+      sidecars_deleted: 2,
+    },
+  ];
+}
+
+let history: IngestHistoryJob[] = sampleHistory();
+let settings: AppSettings | null = null;
+
+// 1x1 transparent-ish gray placeholder for thumbnails in design mode.
+const PLACEHOLDER_THUMB =
+  "data:image/svg+xml;utf8," +
+  encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="90"><rect width="160" height="90" fill="#e8e6ef"/><text x="80" y="50" font-family="sans-serif" font-size="11" fill="#9b97ab" text-anchor="middle">preview</text></svg>',
+  );
+
+export function convertFileSrc(path: string): string {
+  if (/\.(jpe?g|png|gif|webp)$/i.test(path)) {
+    return PLACEHOLDER_THUMB;
+  }
+  return path;
+}
+
+export async function invoke<T = unknown>(command: string, args?: Record<string, unknown>): Promise<T> {
+  // Small delay so loading states are visible while designing.
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  const a = (args ?? {}) as Record<string, any>;
+
+  switch (command) {
+    case "greet":
+      return `Hello, ${a.name ?? "designer"} (design mode)` as T;
+
+    case "list_presets":
+      return presets.map(summary) as T;
+    case "get_preset":
+      return (presets.find((p) => p.id === a.id) ?? null) as T;
+    case "save_preset": {
+      const preset = a.preset as Preset;
+      const idx = presets.findIndex((p) => p.id === preset.id);
+      const next = { ...preset, updated_at: new Date().toISOString() };
+      if (idx >= 0) presets[idx] = next;
+      else presets = [...presets, next];
+      return summary(next) as T;
+    }
+    case "delete_preset":
+      presets = presets.filter((p) => p.id !== a.id);
+      return undefined as T;
+    case "duplicate_preset": {
+      const original = presets.find((p) => p.id === a.id);
+      if (!original) throw new Error("Preset not found");
+      const copy: Preset = {
+        ...original,
+        id: `${original.id}_copy_${Math.floor(performance.now())}`,
+        name: `${original.name} Copy`,
+        updated_at: new Date().toISOString(),
+      };
+      presets = [...presets, copy];
+      return summary(copy) as T;
+    }
+    case "import_preset": {
+      const imported = createShippedPresets()[0];
+      const copy = { ...imported, id: `imported_${Math.floor(performance.now())}`, name: "Imported Preset" };
+      presets = [...presets, copy];
+      return summary(copy) as T;
+    }
+    case "export_preset":
+      return undefined as T;
+
+    case "import_folder_tree":
+      return [] as unknown as FolderNode[] as T;
+    case "inspect_template_drop":
+      return { folders: [], files: [] } as DroppedTemplateItems as T;
+
+    case "preview_pattern":
+      return resolvePattern(a.pattern ?? "", a.context as TokenContext) as T;
+
+    case "scaffold_project": {
+      const result: ScaffoldResult = {
+        root_path: "E:/MediaServer/20260628_NewProject",
+        folders_created: 9,
+        files_copied: 2,
+        created_paths: [
+          "E:/MediaServer/20260628_NewProject/Footage",
+          "E:/MediaServer/20260628_NewProject/Audio",
+          "E:/MediaServer/20260628_NewProject/Project Files",
+        ],
+      };
+      return result as T;
+    }
+
+    case "open_path":
+      return undefined as T;
+    case "disk_space":
+      return {
+        path: a.path ?? "E:/",
+        root: "E:/",
+        available_bytes: 4_210_000_000_000,
+        total_bytes: 8_000_000_000_000,
+      } as DiskSpace as T;
+
+    case "scan_source":
+      return sampleScan(a.sourcePath ?? "D:/A001_SONY") as T;
+    case "detect_camera_sources":
+      return [
+        { path: "D:/A001_SONY", label: "A001_SONY (Sony FX3)", reason: "PRIVATE/M4ROOT detected" },
+      ] as CameraSource[] as T;
+
+    case "run_ingest": {
+      // Give the run screen ~2.5s so its progress animation is visible.
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+      const copied = sampleCopiedFiles();
+      const result: IngestResult = {
+        root_path: "E:/MediaServer/20260628_BaptismStory_Johnson",
+        files_copied: copied.length,
+        sidecars_copied: 1,
+        skipped_files: 0,
+        verified_files: copied.length,
+        verification_failed: 0,
+        bytes_copied: copied.reduce((s, f) => s + f.size_bytes, 0),
+        mhl_path: "E:/MediaServer/20260628_BaptismStory_Johnson/IngestPilot.mhl",
+        report_path: "E:/MediaServer/20260628_BaptismStory_Johnson/IngestPilot_Report.html",
+        copied_files: copied,
+        skipped: [],
+      };
+      return result as T;
+    }
+    case "cancel_ingest":
+      return undefined as T;
+
+    case "list_history":
+      return history as T;
+    case "save_history_job":
+      history = [a.job as IngestHistoryJob, ...history];
+      return history as T;
+    case "clear_history":
+      history = [];
+      return undefined as T;
+
+    case "write_ingest_report":
+    case "generate_ingest_report":
+      return "E:/MediaServer/20260628_BaptismStory_Johnson/IngestPilot_Report.html" as T;
+
+    case "get_settings":
+      return (settings ?? {}) as T;
+    case "save_settings":
+      settings = a.settings as AppSettings;
+      return settings as T;
+
+    default:
+      console.warn(`[design-mock] unhandled command: ${command}`);
+      return undefined as T;
+  }
+}
