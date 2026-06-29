@@ -2,6 +2,7 @@
 /dist
 /dist-design
 /dist-ssr
+/releases
 /src-tauri/target
 /src-tauri/gen
 *.log
