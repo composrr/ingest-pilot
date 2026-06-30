@@ -3,7 +3,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Check, ChevronDown, FolderOpen, Image, List, RefreshCw, Search, X } from "lucide-react";
 import { type Dispatch, type SetStateAction, useEffect, useMemo, useRef, useState } from "react";
-import { defaultsForParameters, mergeGlobalAndPresetParameters } from "../lib/parameters";
+import { defaultsForParameters, mergeGlobalAndPresetParameters, recentValuesByVariable } from "../lib/parameters";
 import { FloatingHelp } from "../components/FloatingHelp";
 import { RecentIngestsCarousel } from "../components/RecentIngestsCarousel";
 import { SelectMenu } from "../components/SelectMenu";
@@ -64,6 +64,7 @@ export function IngestPage() {
   const [isFileSelectorOpen, setIsFileSelectorOpen] = useState(false);
   const [spaceByPath, setSpaceByPath] = useState<Record<string, DiskSpace | null>>({});
   const [recentJobs, setRecentJobs] = useState<IngestHistoryJob[]>([]);
+  const [variableSuggestions, setVariableSuggestions] = useState<Record<string, string[]>>({});
   const currentIngestJobId = useRef<string | null>(null);
   // Variable values from a replayed recent ingest, applied once the new preset's
   // parameters resolve (so the defaults effect below doesn't clobber them).
@@ -170,8 +171,10 @@ export function IngestPage() {
     try {
       const jobs = await listHistory();
       setRecentJobs(jobs.slice(0, 5));
+      setVariableSuggestions(recentValuesByVariable(jobs));
     } catch {
       setRecentJobs([]);
+      setVariableSuggestions({});
     }
   }
 
@@ -1023,6 +1026,7 @@ export function IngestPage() {
                           [variable.id]: value,
                         }))
                       }
+                      suggestions={variableSuggestions[variable.id]}
                       value={variableValues[variable.id] ?? ""}
                       variable={variable}
                     />
@@ -1491,13 +1495,19 @@ function SpeedChart({ series }: { series: SpeedPoint[] }) {
 
 function ParameterField({
   onChange,
+  suggestions,
   value,
   variable,
 }: {
   onChange: (value: string) => void;
+  suggestions?: string[];
   value: string;
   variable: PresetVariable;
 }) {
+  // Free-text fields get autocomplete from previously-used values (not dates/dropdowns).
+  const showSuggestions =
+    variable.type !== "date" && variable.type !== "dropdown" && (suggestions?.length ?? 0) > 0;
+  const datalistId = `recent-${variable.id}`;
   return (
     <label className="grid min-h-12 grid-cols-[180px_1fr] items-center gap-3 px-3 py-2">
       <span className="min-w-0">
@@ -1521,12 +1531,22 @@ function ParameterField({
           value={value || "false"}
         />
       ) : (
-        <input
-          className="h-9 min-w-0 rounded-xl border border-mist bg-white px-3 text-sm outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
-          onChange={(event) => onChange(event.target.value)}
-          type={variable.type === "date" ? "date" : "text"}
-          value={value}
-        />
+        <span className="min-w-0">
+          <input
+            className="h-9 w-full min-w-0 rounded-xl border border-mist bg-white px-3 text-sm outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+            list={showSuggestions ? datalistId : undefined}
+            onChange={(event) => onChange(event.target.value)}
+            type={variable.type === "date" ? "date" : "text"}
+            value={value}
+          />
+          {showSuggestions ? (
+            <datalist id={datalistId}>
+              {suggestions!.map((suggestion) => (
+                <option key={suggestion} value={suggestion} />
+              ))}
+            </datalist>
+          ) : null}
+        </span>
       )}
     </label>
   );

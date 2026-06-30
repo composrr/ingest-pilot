@@ -34,6 +34,30 @@ export function currentLocalDate(date = new Date()) {
   return localDate.toISOString().slice(0, 10);
 }
 
+// Build per-variable autocomplete suggestions from past ingest jobs (newest first),
+// keeping the most recent distinct values per variable id. Accepts a minimal shape
+// so it doesn't depend on the full IngestHistoryJob type.
+export function recentValuesByVariable(
+  jobs: { variable_values?: Record<string, string> }[],
+  limit = 8,
+): Record<string, string[]> {
+  const byId: Record<string, string[]> = {};
+  for (const job of jobs) {
+    const values = job.variable_values ?? {};
+    for (const [id, raw] of Object.entries(values)) {
+      const value = (raw ?? "").trim();
+      if (!value) {
+        continue;
+      }
+      const list = byId[id] ?? (byId[id] = []);
+      if (list.length < limit && !list.includes(value)) {
+        list.push(value);
+      }
+    }
+  }
+  return byId;
+}
+
 export function optionsFromText(value: string) {
   return value
     .split(",")
