@@ -547,6 +547,44 @@ fn copy_file_to_folder(
         }
     };
 
+    // Resilient re-ingest: if this exact destination file already exists and verifies
+    // bit-identical to the source, skip the copy (no duplicate) and record it as done.
+    // This makes a re-run after an interruption pick up only the remaining files.
+    let intended_path = folder.path.join(&target_name);
+    if intended_path.exists() {
+        if let Ok(existing) = verify_copy(Path::new(&file.path), &intended_path) {
+            if existing.verified {
+                result.files_copied += 1;
+                result.verified_files += 1;
+                result.bytes_copied += file.size_bytes;
+                let output_stem = intended_path
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or(&file.stem)
+                    .to_string();
+                result.copied_files.push(CopiedFile {
+                    source_path: file.path.clone(),
+                    destination_path: intended_path.to_string_lossy().to_string(),
+                    kind: file.kind,
+                    size_bytes: file.size_bytes,
+                    thumbnail_path: None,
+                    source_hash: existing.source_hash,
+                    destination_hash: existing.destination_hash,
+                    verified: true,
+                    duration_ms: if matches!(file.kind, ScanFileKind::Footage | ScanFileKind::Audio) {
+                        probe_duration_ms(&intended_path)
+                    } else {
+                        None
+                    },
+                });
+                return Ok(CopiedRoute {
+                    folder: folder.clone(),
+                    output_stem,
+                });
+            }
+        }
+    }
+
     let destination_path = unique_destination_path(&folder.path, &target_name);
     check_cancelled(cancel_flag)?;
     {
@@ -1617,6 +1655,83 @@ mod tests {
         assert_eq!(result.files_copied, 1);
         assert_eq!(result.skipped_files, 0);
         assert!(result.skipped.is_empty());
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn re_ingest_skips_already_copied_verified_files() {
+        let workspace = unique_temp_dir("ingest_pilot_resume_test");
+        let source = workspace.join("source");
+        let destination = workspace.join("output");
+        fs::create_dir_all(&source).expect("source dir");
+        fs::write(source.join("A.MP4"), vec![7; 64]).expect("media");
+
+        let preset = Preset {
+            schema_version: 1,
+            id: "preset_resume".to_string(),
+            name: "Loose".to_string(),
+            description: None,
+            icon: None,
+            color: None,
+            variables: vec![],
+            root_folder_pattern: "Proj".to_string(),
+            folder_tree: vec![],
+            file_rename_pattern: "{original_name}{ext}".to_string(),
+            clip_number_padding: 3,
+            per_folder_rename_overrides: BTreeMap::new(),
+            destinations: PresetDestinations {
+                primary: destination.to_string_lossy().to_string(),
+                secondaries: vec![],
+            },
+            file_type_routing_overrides: BTreeMap::new(),
+            preserve_xml_sidecars: true,
+            rename_files_default: true,
+            created_at: "2026-04-24T00:00:00Z".to_string(),
+            updated_at: "2026-04-24T00:00:00Z".to_string(),
+        };
+
+        let first = run_ingest(
+            &preset,
+            source.to_string_lossy().to_string(),
+            BTreeMap::new(),
+            None,
+            true,
+            true,
+            None,
+            None,
+            false,
+            None,
+            None,
+        )
+        .expect("first ingest");
+        let root = PathBuf::from(&first.root_path);
+
+        // Re-run into the same existing root: the file already verifies bit-identical,
+        // so it is skipped (no duplicate) rather than re-copied with a suffix.
+        let second = run_ingest(
+            &preset,
+            source.to_string_lossy().to_string(),
+            BTreeMap::new(),
+            Some(first.root_path.clone()),
+            true,
+            true,
+            None,
+            None,
+            true,
+            None,
+            None,
+        )
+        .expect("second ingest");
+
+        assert_eq!(second.files_copied, 1);
+        assert_eq!(second.verified_files, 1);
+        let a_files = fs::read_dir(&root)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with('A'))
+            .count();
+        assert_eq!(a_files, 1, "re-ingest should skip the already-copied file, not duplicate it");
 
         let _ = fs::remove_dir_all(workspace);
     }
