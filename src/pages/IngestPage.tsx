@@ -397,6 +397,18 @@ export function IngestPage() {
     setIngestResult(null);
   }
 
+  function addSecondaryDestination() {
+    setSecondaryDestinationPaths((current) => [...current, ""]);
+    setIngestResult(null);
+  }
+
+  function updateSecondaryDestination(index: number, value: string) {
+    setSecondaryDestinationPaths((current) =>
+      current.map((destination, destinationIndex) => (destinationIndex === index ? value : destination)),
+    );
+    setIngestResult(null);
+  }
+
   async function runScan() {
     await scanPaths(sourcePaths);
   }
@@ -1052,24 +1064,51 @@ export function IngestPage() {
                   Pick
                 </button>
                 <button
+                  aria-label="Add backup destination"
                   className="inline-flex h-9 items-center justify-center rounded-xl border border-mist bg-white px-3 text-sm font-semibold text-graphite transition hover:bg-porcelain"
-                  onClick={() => void chooseSecondaryDestination()}
+                  onClick={addSecondaryDestination}
                   type="button"
                 >
                   +
                 </button>
               </div>
               {secondaryDestinationPaths.length > 0 ? (
-                <div className="mt-1 space-y-1">
+                <div className="mt-2 space-y-2">
                   {secondaryDestinationPaths.map((path, index) => (
-                    <PathRow
-                      key={`${path}-${index}`}
-                      label={pathDisplayName(path)}
-                      meta={`Backup copy / ${destinationSpaceSummary(path, spaceByPath[path], selectedBytes, ingestEtaMs)}`}
-                      onClick={() => void chooseSecondaryDestination(index)}
-                      onRemove={() => removeSecondaryDestination(index)}
-                      path={path}
-                    />
+                    <div key={index}>
+                      <span className="mb-1 flex items-center justify-between text-xs font-semibold text-graphite">
+                        <span>Backup {index + 1}</span>
+                        {path ? (
+                          <span className="font-medium text-graphite/75">
+                            {destinationSpaceSummary(path, spaceByPath[path], selectedBytes, ingestEtaMs)}
+                          </span>
+                        ) : null}
+                      </span>
+                      <div className="grid grid-cols-[1fr_auto_auto] gap-2">
+                        <input
+                          className="h-9 min-w-0 rounded-xl border border-mist bg-white px-3 text-sm outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+                          onChange={(event) => updateSecondaryDestination(index, event.target.value)}
+                          placeholder="Backup copy location"
+                          value={path}
+                        />
+                        <button
+                          className="inline-flex h-9 items-center gap-1 rounded-xl border border-mist bg-white px-3 text-sm font-semibold text-graphite transition hover:bg-porcelain"
+                          onClick={() => void chooseSecondaryDestination(index)}
+                          type="button"
+                        >
+                          <FolderOpen size={15} />
+                          Pick
+                        </button>
+                        <button
+                          aria-label={`Remove backup ${index + 1}`}
+                          className="inline-flex h-9 items-center justify-center rounded-xl border border-mist bg-white px-3 text-graphite transition hover:bg-porcelain hover:text-ink"
+                          onClick={() => removeSecondaryDestination(index)}
+                          type="button"
+                        >
+                          <X size={15} />
+                        </button>
+                      </div>
+                    </div>
                   ))}
                 </div>
               ) : null}
