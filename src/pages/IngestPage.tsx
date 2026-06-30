@@ -2,7 +2,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { Check, ChevronDown, FolderOpen, Image, Layers, List, Plus, RefreshCw, Search, X } from "lucide-react";
+import { Check, ChevronDown, FolderOpen, Image, Layers, List, Plus, RefreshCw, Search, Star, X } from "lucide-react";
 import { type Dispatch, type SetStateAction, useEffect, useMemo, useRef, useState } from "react";
 import {
   defaultsForParameters,
@@ -30,6 +30,7 @@ import {
   runIngest,
   retryFailedCopies,
   saveHistoryJob,
+  saveSettings,
   scanSource,
   detectCameraSources,
   type CameraSource,
@@ -67,6 +68,15 @@ type RunSource = {
   includedRelativePaths: string[];
   cameraAlias?: string;
 };
+
+// Maps an OS drag-drop position to the marked drop zone under it, if any. Tauri
+// reports positions in CSS pixels in this setup (same as FolderTreeEditor), so they
+// can be passed straight to elementFromPoint.
+function dropZoneFromPoint(x: number, y: number): "queue" | "destinations" | null {
+  const zone = document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-drop-zone]");
+  const name = zone?.dataset.dropZone;
+  return name === "queue" || name === "destinations" ? name : null;
+}
 
 export function IngestPage() {
   const [presets, setPresets] = useState<PresetSummary[]>([]);
@@ -107,12 +117,16 @@ export function IngestPage() {
   const [queueMode, setQueueMode] = useState(false);
   const [queue, setQueue] = useState<QueueCard[]>([]);
   const [isQueueRunning, setIsQueueRunning] = useState(false);
-  const [isQueueDragOver, setIsQueueDragOver] = useState(false);
+  // Which drop zone the OS drag is currently over ("queue" | "destinations" | null).
+  const [dragZone, setDragZone] = useState<"queue" | "destinations" | null>(null);
   const currentIngestJobId = useRef<string | null>(null);
   // Live mirror of the queue so the async runner sees cards added mid-run.
   const queueRef = useRef<QueueCard[]>([]);
   // Dedupes scan-ahead: one in-flight scan promise per card id.
   const cardScanPromises = useRef<Map<string, Promise<SourceScan>>>(new Map());
+  // Live mirrors so the window-level drop handler reads current destinations.
+  const destinationPathRef = useRef("");
+  const secondaryDestinationsRef = useRef<string[]>([]);
   // Variable values from a replayed recent ingest, applied once the new preset's
   // parameters resolve (so the defaults effect below doesn't clobber them).
   const pendingReplayValuesRef = useRef<Record<string, string> | null>(null);
@@ -204,24 +218,33 @@ export function IngestPage() {
   useEffect(() => {
     queueRef.current = queue;
   }, [queue]);
-  // Native folder drag-and-drop onto the queue. Only active in queue mode; each
-  // dropped folder becomes a card (handled in handleQueueDrop).
   useEffect(() => {
-    if (!queueMode) {
-      return;
-    }
+    destinationPathRef.current = destinationPath;
+  }, [destinationPath]);
+  useEffect(() => {
+    secondaryDestinationsRef.current = secondaryDestinationPaths;
+  }, [secondaryDestinationPaths]);
+  // Native folder drag-and-drop. A single window-level listener routes the drop by
+  // which marked zone (data-drop-zone) it lands on: the card queue or the
+  // destinations panel. Each dropped folder becomes a card / a destination.
+  useEffect(() => {
     let active = true;
     let unlisten: (() => void) | null = null;
     getCurrentWebview()
       .onDragDropEvent((event) => {
         const payload = event.payload;
         if (payload.type === "enter" || payload.type === "over") {
-          setIsQueueDragOver(true);
+          setDragZone(dropZoneFromPoint(payload.position.x, payload.position.y));
         } else if (payload.type === "leave") {
-          setIsQueueDragOver(false);
+          setDragZone(null);
         } else if (payload.type === "drop") {
-          setIsQueueDragOver(false);
-          void handleQueueDrop(payload.paths);
+          const zone = dropZoneFromPoint(payload.position.x, payload.position.y);
+          setDragZone(null);
+          if (zone === "destinations") {
+            void handleDestinationDrop(payload.paths);
+          } else if (zone === "queue") {
+            void handleQueueDrop(payload.paths);
+          }
         }
       })
       .then((next) => {
@@ -235,10 +258,10 @@ export function IngestPage() {
     return () => {
       active = false;
       unlisten?.();
-      setIsQueueDragOver(false);
+      setDragZone(null);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [queueMode]);
+  }, []);
   const queueFileCount = useMemo(() => queue.reduce((sum, card) => sum + card.fileCount, 0), [queue]);
   const queueByteCount = useMemo(() => queue.reduce((sum, card) => sum + card.byteCount, 0), [queue]);
   const canStartQueue = Boolean(
@@ -816,6 +839,60 @@ export function IngestPage() {
     for (const path of directories) {
       enqueueCardForPath(path);
     }
+  }
+
+  // Native folder drop onto the destinations panel. The first dropped folder fills
+  // the primary "Copy To" if it's empty; the rest append as backup destinations.
+  async function handleDestinationDrop(paths: string[]) {
+    let directories: string[];
+    try {
+      directories = await filterDirectories(paths);
+    } catch {
+      directories = paths;
+    }
+    if (directories.length === 0) {
+      setError("Drop destination folders (files are ignored).");
+      return;
+    }
+    setError(null);
+    setIngestResult(null);
+    const queued = [...directories];
+    let primary = destinationPathRef.current;
+    if (!primary.trim()) {
+      primary = queued.shift() ?? "";
+      setDestinationPath(primary);
+    }
+    if (queued.length > 0) {
+      const existing = new Set([primary, ...secondaryDestinationsRef.current].filter(Boolean));
+      const additions = queued.filter((path) => !existing.has(path));
+      if (additions.length > 0) {
+        setSecondaryDestinationPaths((current) => [...current, ...additions]);
+      }
+    }
+  }
+
+  // ---- Favorite locations -----------------------------------------------------
+
+  async function persistFavorites(nextFavorites: string[]) {
+    const nextSettings = { ...appSettings, favorite_locations: nextFavorites };
+    setAppSettings(nextSettings);
+    try {
+      await saveSettings(nextSettings);
+    } catch (caught) {
+      setError(`Could not save favorite: ${String(caught)}`);
+    }
+  }
+
+  function addFavorite(path: string) {
+    const trimmed = path.trim();
+    if (!trimmed || appSettings.favorite_locations.includes(trimmed)) {
+      return;
+    }
+    void persistFavorites([...appSettings.favorite_locations, trimmed]);
+  }
+
+  function removeFavorite(path: string) {
+    void persistFavorites(appSettings.favorite_locations.filter((entry) => entry !== path));
   }
 
   function removeQueueCard(id: string) {
@@ -1434,20 +1511,22 @@ export function IngestPage() {
           </div>
           <div className="space-y-2 p-2">
             {queueMode ? (
-              <QueuePanel
-                cards={queue}
-                fileCount={queueFileCount}
-                byteCount={queueByteCount}
-                isRunning={isQueueRunning}
-                isDragOver={isQueueDragOver}
-                currentSegment={currentSegment}
-                instantaneousBps={instantaneousBps}
-                onAddCard={() => void addQueueCard()}
-                onRemoveCard={removeQueueCard}
-                onClearFinished={clearFinishedQueueCards}
-                onAliasChange={(id, value) => patchQueueCard(id, { cameraAlias: value })}
-                detectedCameraForSource={detectedCameraForSource}
-              />
+              <div data-drop-zone="queue">
+                <QueuePanel
+                  cards={queue}
+                  fileCount={queueFileCount}
+                  byteCount={queueByteCount}
+                  isRunning={isQueueRunning}
+                  isDragOver={dragZone === "queue"}
+                  currentSegment={currentSegment}
+                  instantaneousBps={instantaneousBps}
+                  onAddCard={() => void addQueueCard()}
+                  onRemoveCard={removeQueueCard}
+                  onClearFinished={clearFinishedQueueCards}
+                  onAliasChange={(id, value) => patchQueueCard(id, { cameraAlias: value })}
+                  detectedCameraForSource={detectedCameraForSource}
+                />
+              </div>
             ) : null}
             <label className={`block ${queueMode ? "hidden" : ""}`}>
               <div className="mb-1 flex items-center justify-between gap-2 text-xs font-semibold text-graphite">
@@ -1521,8 +1600,13 @@ export function IngestPage() {
               ) : null}
             </label>
 
-            <label className="block">
-              <FieldLabel help="Choose whether Ingest Pilot should create the project root from the preset, or copy into a folder you already made.">
+            <label
+              className={`block rounded-xl p-1 transition ${
+                dragZone === "destinations" ? "bg-lavender/10 outline outline-2 outline-dashed outline-signal" : ""
+              }`}
+              data-drop-zone="destinations"
+            >
+              <FieldLabel help="Choose whether Ingest Pilot should create the project root from the preset, or copy into a folder you already made. You can also drag destination folders here.">
                 Project Folder
               </FieldLabel>
               <div className="mb-2 grid grid-cols-2 gap-1 rounded-xl border border-mist bg-porcelain/50 p-1">
@@ -1558,7 +1642,7 @@ export function IngestPage() {
                   </span>
                 ) : null}
               </span>
-              <div className="grid grid-cols-[1fr_auto_auto] gap-2">
+              <div className="grid grid-cols-[1fr_auto_auto_auto] gap-2">
                 <input
                   className="h-9 min-w-0 rounded-xl border border-mist bg-white px-3 text-sm outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
                   onChange={(event) => {
@@ -1567,6 +1651,31 @@ export function IngestPage() {
                   }}
                   value={destinationPath}
                 />
+                <button
+                  aria-label={
+                    appSettings.favorite_locations.includes(destinationPath.trim())
+                      ? "Remove from favorites"
+                      : "Save as favorite location"
+                  }
+                  className="inline-flex h-9 items-center justify-center rounded-xl border border-mist bg-white px-2.5 text-graphite transition hover:bg-porcelain disabled:opacity-40"
+                  disabled={!destinationPath.trim()}
+                  onClick={() =>
+                    appSettings.favorite_locations.includes(destinationPath.trim())
+                      ? removeFavorite(destinationPath.trim())
+                      : addFavorite(destinationPath)
+                  }
+                  title="Save this location as a favorite"
+                  type="button"
+                >
+                  <Star
+                    size={15}
+                    className={
+                      appSettings.favorite_locations.includes(destinationPath.trim())
+                        ? "fill-signal text-signal"
+                        : ""
+                    }
+                  />
+                </button>
                 <button
                   className="inline-flex h-9 items-center gap-1 rounded-xl border border-mist bg-white px-3 text-sm font-semibold text-graphite transition hover:bg-porcelain"
                   onClick={() => void chooseDestination()}
@@ -1622,6 +1731,43 @@ export function IngestPage() {
                       </div>
                     </div>
                   ))}
+                </div>
+              ) : null}
+
+              {appSettings.favorite_locations.length > 0 ? (
+                <div className="mt-2 rounded-xl border border-mist bg-porcelain/40 p-2">
+                  <div className="mb-1 flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-graphite/60">
+                    <Star size={11} className="fill-signal text-signal" />
+                    Favorites
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {appSettings.favorite_locations.map((path) => (
+                      <span
+                        key={path}
+                        className="group inline-flex items-center gap-1 rounded-full border border-mist bg-white py-1 pl-2.5 pr-1 text-[11px] font-semibold text-graphite"
+                      >
+                        <button
+                          className="max-w-[160px] truncate hover:text-ink"
+                          onClick={() => {
+                            setDestinationPath(path);
+                            setIngestResult(null);
+                          }}
+                          title={`Use ${path} as the destination`}
+                          type="button"
+                        >
+                          {pathDisplayName(path)}
+                        </button>
+                        <button
+                          aria-label={`Remove favorite ${pathDisplayName(path)}`}
+                          className="rounded-full p-0.5 text-graphite/50 transition hover:bg-porcelain hover:text-ink"
+                          onClick={() => removeFavorite(path)}
+                          type="button"
+                        >
+                          <X size={11} />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
                 </div>
               ) : null}
             </label>
