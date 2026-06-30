@@ -1,7 +1,7 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Check, ChevronDown, FolderOpen, Image, List, RefreshCw, Search, X } from "lucide-react";
+import { Check, ChevronDown, FolderOpen, Image, Layers, List, Plus, RefreshCw, Search, X } from "lucide-react";
 import { type Dispatch, type SetStateAction, useEffect, useMemo, useRef, useState } from "react";
 import {
   defaultsForParameters,
@@ -43,6 +43,29 @@ import {
 import type { AppSettings, FolderNode, Preset, PresetSummary, PresetVariable } from "../lib/types";
 import { useAppStore } from "../stores/appStore";
 
+// Queue mode: a sequential pipeline of source cards. Each card is scanned in the
+// background (scan-ahead) while an earlier card copies, then copied in order into
+// the shared destination(s) under one job. Cards can be added while the queue runs.
+type QueueCardStatus = "pending" | "scanning" | "ready" | "copying" | "done" | "error";
+type QueueCard = {
+  id: string;
+  sourcePath: string;
+  cameraAlias: string;
+  status: QueueCardStatus;
+  scan: SourceScan | null;
+  fileCount: number;
+  byteCount: number;
+  result: IngestResult | null;
+  error: string | null;
+};
+
+type RunSource = {
+  sourcePath: string;
+  scan: SourceScan;
+  includedRelativePaths: string[];
+  cameraAlias?: string;
+};
+
 export function IngestPage() {
   const [presets, setPresets] = useState<PresetSummary[]>([]);
   const [selectedPresetId, setSelectedPresetId] = useState("");
@@ -79,7 +102,14 @@ export function IngestPage() {
   const [isSavingProof, setIsSavingProof] = useState(false);
   const [cameraAliases, setCameraAliases] = useState<Record<string, string>>({});
   const [currentSegment, setCurrentSegment] = useState<{ label: string; index: number; total: number } | null>(null);
+  const [queueMode, setQueueMode] = useState(false);
+  const [queue, setQueue] = useState<QueueCard[]>([]);
+  const [isQueueRunning, setIsQueueRunning] = useState(false);
   const currentIngestJobId = useRef<string | null>(null);
+  // Live mirror of the queue so the async runner sees cards added mid-run.
+  const queueRef = useRef<QueueCard[]>([]);
+  // Dedupes scan-ahead: one in-flight scan promise per card id.
+  const cardScanPromises = useRef<Map<string, Promise<SourceScan>>>(new Map());
   // Variable values from a replayed recent ingest, applied once the new preset's
   // parameters resolve (so the defaults effect below doesn't clobber them).
   const pendingReplayValuesRef = useRef<Record<string, string> | null>(null);
@@ -166,6 +196,15 @@ export function IngestPage() {
       selectedPresetId &&
       scan &&
       selectedFileCount > 0,
+  );
+  // Keep the async queue runner reading the latest cards (incl. ones added mid-run).
+  useEffect(() => {
+    queueRef.current = queue;
+  }, [queue]);
+  const queueFileCount = useMemo(() => queue.reduce((sum, card) => sum + card.fileCount, 0), [queue]);
+  const queueByteCount = useMemo(() => queue.reduce((sum, card) => sum + card.byteCount, 0), [queue]);
+  const canStartQueue = Boolean(
+    selectedPresetId && destinationTargets.length > 0 && queue.length > 0 && !isQueueRunning,
   );
 
   async function refreshPresets(preferredId = selectedPresetId) {
@@ -451,41 +490,16 @@ export function IngestPage() {
     }
   }
 
-  async function startIngest() {
-    if (!preset || !selectedPresetId) {
-      setError("Choose a preset first.");
-      return;
-    }
-    if (sourcePaths.length === 0) {
-      setError("Choose at least one source folder first.");
-      return;
-    }
-    if (destinationTargets.length === 0) {
-      setError("Choose at least one destination folder first.");
-      return;
-    }
-    if (sourceScans.length === 0) {
-      setError("Scan the source folders before starting ingest.");
-      return;
-    }
-    if (selectedFileCount === 0) {
-      setError("Select at least one file to copy.");
-      return;
-    }
-
-    setIsIngesting(true);
-    setIsCancelling(false);
+  // Wires up the flooding ingest-progress event into the speed chart for a job.
+  // Returns a cleanup function that detaches the listener and the sampling timer.
+  // Shared by the single-shot ingest and the queue runner.
+  async function startProgressTracking(jobId: string): Promise<() => void> {
     setIngestProgress(null);
     setSpeedSeries([]);
     setInstantaneousBps(0);
     progressBufferRef.current = [];
     latestProgressRef.current = null;
     runStartRef.current = performance.now();
-    setReportBuild({ status: "idle", progress: null });
-    setError(null);
-    const jobId = createJobId();
-    const startedAt = new Date().toISOString();
-    currentIngestJobId.current = jobId;
     // Listener is a pure ref-writer — never setState here (events flood every 256 KB).
     const unlisten = await listen<IngestProgress>("ingest-progress", (event) => {
       if (event.payload.job_id !== jobId) {
@@ -527,47 +541,103 @@ export function IngestPage() {
         return next.slice(start);
       });
     }, SAMPLE_INTERVAL_MS);
-    try {
-      const results: IngestResult[] = [];
-      const activeSources = sourceScans.filter((entry) =>
-        entry.scan.files.some((file) =>
-          selectedRelativePaths.has(sourceFileKey(entry.sourcePath, file.relative_path)),
-        ),
-      );
-      const totalSegments = destinationTargets.length * Math.max(1, activeSources.length);
-      let segmentIndex = 0;
-      for (const destination of destinationTargets) {
-        let projectRoot = destination;
-        for (let sourceIndex = 0; sourceIndex < sourceScans.length; sourceIndex += 1) {
-          const entry = sourceScans[sourceIndex];
-          const includedRelativePaths = entry.scan.files
-            .filter((file) => selectedRelativePaths.has(sourceFileKey(entry.sourcePath, file.relative_path)))
-            .map((file) => file.relative_path);
-          if (includedRelativePaths.length === 0) {
-            continue;
-          }
-          segmentIndex += 1;
-          setCurrentSegment({
-            label: `${pathDisplayName(entry.sourcePath)} → ${pathDisplayName(destination)}`,
-            index: segmentIndex,
-            total: totalSegments,
-          });
-          const result = await runIngest(
-            selectedPresetId,
-            entry.sourcePath,
-            variableValues,
-            sourceIndex === 0 ? destination : projectRoot,
-            !deleteSidecars,
-            renameFiles,
-            cameraAliases[entry.sourcePath]?.trim() || undefined,
-            includedRelativePaths,
-            destinationMode === "existing_root" || sourceIndex > 0,
-            jobId,
-          );
-          results.push(result);
-          projectRoot = result.root_path;
-        }
+    return () => {
+      unlisten();
+      if (sampleTimerRef.current !== null) {
+        window.clearInterval(sampleTimerRef.current);
+        sampleTimerRef.current = null;
       }
+    };
+  }
+
+  // Copies the given sources into every destination under one job id, returning the
+  // per-(destination × source) results plus the resolved project root for each
+  // destination. The root map lets the queue runner funnel later cards into the same
+  // project folder a first card created, instead of spawning a new root per card.
+  async function copySourcesToDestinations(
+    jobId: string,
+    activeSources: RunSource[],
+    options: { rootByDestination?: Map<string, string>; segmentBase?: number; segmentTotal?: number } = {},
+  ): Promise<{ results: IngestResult[]; rootByDestination: Map<string, string> }> {
+    const rootByDestination = options.rootByDestination ?? new Map<string, string>();
+    const total = options.segmentTotal ?? destinationTargets.length * Math.max(1, activeSources.length);
+    const results: IngestResult[] = [];
+    let segmentIndex = options.segmentBase ?? 0;
+    for (const destination of destinationTargets) {
+      for (let sourceIndex = 0; sourceIndex < activeSources.length; sourceIndex += 1) {
+        const entry = activeSources[sourceIndex];
+        if (entry.includedRelativePaths.length === 0) {
+          continue;
+        }
+        const knownRoot = rootByDestination.get(destination);
+        const isFirstForDestination = knownRoot === undefined;
+        segmentIndex += 1;
+        setCurrentSegment({
+          label: `${pathDisplayName(entry.sourcePath)} → ${pathDisplayName(destination)}`,
+          index: segmentIndex,
+          total,
+        });
+        const result = await runIngest(
+          selectedPresetId,
+          entry.sourcePath,
+          variableValues,
+          isFirstForDestination ? destination : (knownRoot as string),
+          !deleteSidecars,
+          renameFiles,
+          entry.cameraAlias?.trim() || undefined,
+          entry.includedRelativePaths,
+          destinationMode === "existing_root" || !isFirstForDestination,
+          jobId,
+        );
+        results.push(result);
+        rootByDestination.set(destination, result.root_path);
+      }
+    }
+    return { results, rootByDestination };
+  }
+
+  async function startIngest() {
+    if (!preset || !selectedPresetId) {
+      setError("Choose a preset first.");
+      return;
+    }
+    if (sourcePaths.length === 0) {
+      setError("Choose at least one source folder first.");
+      return;
+    }
+    if (destinationTargets.length === 0) {
+      setError("Choose at least one destination folder first.");
+      return;
+    }
+    if (sourceScans.length === 0) {
+      setError("Scan the source folders before starting ingest.");
+      return;
+    }
+    if (selectedFileCount === 0) {
+      setError("Select at least one file to copy.");
+      return;
+    }
+
+    setIsIngesting(true);
+    setIsCancelling(false);
+    setReportBuild({ status: "idle", progress: null });
+    setError(null);
+    const jobId = createJobId();
+    const startedAt = new Date().toISOString();
+    currentIngestJobId.current = jobId;
+    const stopTracking = await startProgressTracking(jobId);
+    try {
+      const activeSources: RunSource[] = sourceScans
+        .map((entry) => ({
+          sourcePath: entry.sourcePath,
+          scan: entry.scan,
+          includedRelativePaths: entry.scan.files
+            .filter((file) => selectedRelativePaths.has(sourceFileKey(entry.sourcePath, file.relative_path)))
+            .map((file) => file.relative_path),
+          cameraAlias: cameraAliases[entry.sourcePath],
+        }))
+        .filter((entry) => entry.includedRelativePaths.length > 0);
+      const { results } = await copySourcesToDestinations(jobId, activeSources);
       const result = mergeIngestResults(results);
       setIngestResult(result);
       setLastAction(
@@ -616,15 +686,233 @@ export function IngestPage() {
       setError(message);
       setLastAction(message.toLowerCase().includes("cancelled") ? "Ingest cancelled" : "Ingest failed");
     } finally {
-      unlisten();
-      if (sampleTimerRef.current !== null) {
-        window.clearInterval(sampleTimerRef.current);
-        sampleTimerRef.current = null;
-      }
+      stopTracking();
       setIsIngesting(false);
       setIsCancelling(false);
       setCurrentSegment(null);
       currentIngestJobId.current = null;
+    }
+  }
+
+  // ---- Queue mode -------------------------------------------------------------
+
+  function patchQueueCard(id: string, patch: Partial<QueueCard>) {
+    setQueue((current) => current.map((card) => (card.id === id ? { ...card, ...patch } : card)));
+  }
+
+  // Scans one card's source in the background (scan-ahead). Dedupes via a per-id
+  // promise so a card is never scanned twice, and records file/byte totals on it.
+  function scanCard(id: string, sourcePath: string): Promise<SourceScan> {
+    const existing = cardScanPromises.current.get(id);
+    if (existing) {
+      return existing;
+    }
+    patchQueueCard(id, { status: "scanning", error: null });
+    const promise = scanSource(sourcePath)
+      .then((scanned) => {
+        const routable = scanned.files.filter((file) => matchesRoutableKind(file.kind));
+        patchQueueCard(id, {
+          status: "ready",
+          scan: scanned,
+          fileCount: routable.length,
+          byteCount: routable.reduce((sum, file) => sum + file.size_bytes, 0),
+        });
+        return scanned;
+      })
+      .catch((caught) => {
+        patchQueueCard(id, { status: "error", error: String(caught) });
+        throw caught;
+      });
+    cardScanPromises.current.set(id, promise);
+    return promise;
+  }
+
+  async function addQueueCard() {
+    const path = await open({ directory: true, multiple: false });
+    if (typeof path !== "string") {
+      return;
+    }
+    const id = createJobId();
+    setQueue((current) => [
+      ...current,
+      {
+        id,
+        sourcePath: path,
+        cameraAlias: "",
+        status: "pending",
+        scan: null,
+        fileCount: 0,
+        byteCount: 0,
+        result: null,
+        error: null,
+      },
+    ]);
+    setIngestResult(null);
+    // Kick off scan-ahead immediately so the card is ready by the time it's reached.
+    void scanCard(id, path).catch(() => undefined);
+  }
+
+  function removeQueueCard(id: string) {
+    cardScanPromises.current.delete(id);
+    setQueue((current) => current.filter((card) => card.id !== id));
+  }
+
+  function clearFinishedQueueCards() {
+    setQueue((current) => current.filter((card) => card.status !== "done"));
+  }
+
+  // Sequential pipeline: copies queued cards in order into the shared destination(s),
+  // scanning the next card while the current one copies, and picking up cards added
+  // mid-run. All cards land under one job id / one merged delivery + report.
+  async function runQueue() {
+    if (!preset || !selectedPresetId) {
+      setError("Choose a preset first.");
+      return;
+    }
+    if (destinationTargets.length === 0) {
+      setError("Choose at least one destination folder first.");
+      return;
+    }
+    if (queueRef.current.length === 0) {
+      setError("Add at least one card to the queue.");
+      return;
+    }
+
+    setIsQueueRunning(true);
+    setIsIngesting(true);
+    setIsCancelling(false);
+    setReportBuild({ status: "idle", progress: null });
+    setError(null);
+    const jobId = createJobId();
+    const startedAt = new Date().toISOString();
+    currentIngestJobId.current = jobId;
+    const stopTracking = await startProgressTracking(jobId);
+    const rootByDestination = new Map<string, string>();
+    const allResults: IngestResult[] = [];
+    const processedSourcePaths: string[] = [];
+    let cancelled = false;
+    try {
+      let index = 0;
+      // Re-read queueRef each turn so cards added mid-run get processed too.
+      while (index < queueRef.current.length) {
+        const card = queueRef.current[index];
+        index += 1;
+        if (card.status === "done") {
+          continue;
+        }
+        let scanned: SourceScan;
+        try {
+          scanned = await scanCard(card.id, card.sourcePath);
+        } catch {
+          continue; // scan failed; card already marked "error"
+        }
+        // Scan-ahead: warm the next pending card while this one copies.
+        const next = queueRef.current[index];
+        if (next && next.status === "pending") {
+          void scanCard(next.id, next.sourcePath).catch(() => undefined);
+        }
+        const included = scanned.files
+          .filter((file) => matchesRoutableKind(file.kind))
+          .map((file) => file.relative_path);
+        if (included.length === 0) {
+          patchQueueCard(card.id, { status: "done", error: null });
+          continue;
+        }
+        patchQueueCard(card.id, { status: "copying", error: null });
+        const totalSegments = destinationTargets.length * queueRef.current.length;
+        try {
+          const { results } = await copySourcesToDestinations(
+            jobId,
+            [
+              {
+                sourcePath: card.sourcePath,
+                scan: scanned,
+                includedRelativePaths: included,
+                cameraAlias: card.cameraAlias,
+              },
+            ],
+            { rootByDestination, segmentBase: (index - 1) * destinationTargets.length, segmentTotal: totalSegments },
+          );
+          const merged = mergeIngestResults(results);
+          allResults.push(...results);
+          processedSourcePaths.push(card.sourcePath);
+          patchQueueCard(card.id, {
+            status: merged.verification_failed > 0 ? "error" : "done",
+            result: merged,
+            error: merged.verification_failed > 0 ? `${merged.verification_failed} file(s) not verified` : null,
+          });
+        } catch (caught) {
+          const message = String(caught);
+          patchQueueCard(card.id, { status: "error", error: message });
+          if (message.toLowerCase().includes("cancelled")) {
+            cancelled = true;
+            break;
+          }
+        }
+      }
+
+      if (allResults.length === 0) {
+        if (!cancelled) {
+          setError("Nothing was copied from the queue.");
+        }
+        setLastAction(cancelled ? "Queue cancelled" : "Queue produced no copies");
+        return;
+      }
+
+      const result = mergeIngestResults(allResults);
+      setIngestResult(result);
+      setLastAction(
+        `Queue copied ${result.files_copied} file${result.files_copied === 1 ? "" : "s"} from ${processedSourcePaths.length} card${processedSourcePaths.length === 1 ? "" : "s"} to ${destinationTargets.length} destination${destinationTargets.length === 1 ? "" : "s"}`,
+      );
+      const completedAt = new Date().toISOString();
+      const historyJob = {
+        id: jobId,
+        preset_id: selectedPresetId,
+        preset_name: preset.name,
+        variable_values: variableValues,
+        status: result.verification_failed > 0 ? "needs_review" : "verified",
+        started_at: startedAt,
+        completed_at: completedAt,
+        source_paths: processedSourcePaths,
+        destination_paths: destinationTargets,
+        root_path: result.root_path,
+        report_path: result.report_path,
+        mhl_path: result.mhl_path,
+        files_copied: result.files_copied,
+        verified_files: result.verified_files,
+        verification_failed: result.verification_failed,
+        bytes_copied: result.bytes_copied,
+        sidecars_deleted: result.skipped.filter((file) => file.reason === "Sidecar deletion is enabled.").length,
+      };
+      await saveHistoryJob(historyJob);
+      void refreshRecentJobs();
+      if (appSettings.report_defaults.write_html_report && result.root_path) {
+        void buildReportInBackground({
+          completedAt,
+          destinationPaths: destinationTargets,
+          destinationRoots: [...new Set(allResults.map((entry) => entry.root_path))],
+          jobId,
+          presetId: selectedPresetId,
+          presetName: preset.name,
+          result,
+          sourcePaths: processedSourcePaths,
+          startedAt,
+          variableValues,
+        });
+      } else if (appSettings.ingest_defaults.open_folder_when_done && result.root_path) {
+        await openPath(result.root_path);
+      }
+    } catch (caught) {
+      setError(String(caught));
+      setLastAction("Queue failed");
+    } finally {
+      stopTracking();
+      setIsIngesting(false);
+      setIsQueueRunning(false);
+      setIsCancelling(false);
+      setCurrentSegment(null);
+      currentIngestJobId.current = null;
+      cardScanPromises.current.clear();
     }
   }
 
@@ -889,7 +1177,7 @@ export function IngestPage() {
     };
   }, [appSettings.camera_watcher.auto_detect_cards, setLastAction, sourcePath]);
 
-  if (isIngesting) {
+  if (isIngesting && !isQueueRunning) {
     return (
       <IngestRunScreen
         isCancelling={isCancelling}
@@ -1055,10 +1343,41 @@ export function IngestPage() {
               help="This is the job setup: which preset rules to use, what media to copy, and where the project should land."
               title="1. Copy Job"
             />
-            <span className="text-xs font-semibold text-graphite">Scan + copy</span>
+            <button
+              className={`inline-flex h-6 items-center gap-1.5 rounded-full border px-2 text-[11px] font-semibold transition ${
+                queueMode
+                  ? "border-signal bg-signal text-paper"
+                  : "border-mist bg-white text-graphite hover:bg-porcelain"
+              }`}
+              onClick={() => {
+                setQueueMode((on) => !on);
+                setIngestResult(null);
+                setError(null);
+              }}
+              title="Queue mode: add cards one after another and copy them in sequence."
+              type="button"
+            >
+              <Layers size={12} />
+              Queue{queueMode ? " on" : ""}
+            </button>
           </div>
           <div className="space-y-2 p-2">
-            <label className="block">
+            {queueMode ? (
+              <QueuePanel
+                cards={queue}
+                fileCount={queueFileCount}
+                byteCount={queueByteCount}
+                isRunning={isQueueRunning}
+                currentSegment={currentSegment}
+                instantaneousBps={instantaneousBps}
+                onAddCard={() => void addQueueCard()}
+                onRemoveCard={removeQueueCard}
+                onClearFinished={clearFinishedQueueCards}
+                onAliasChange={(id, value) => patchQueueCard(id, { cameraAlias: value })}
+                detectedCameraForSource={detectedCameraForSource}
+              />
+            ) : null}
+            <label className={`block ${queueMode ? "hidden" : ""}`}>
               <div className="mb-1 flex items-center justify-between gap-2 text-xs font-semibold text-graphite">
                 <FieldLabel help="Choose one or more camera cards or source folders. Detected camera cards are auto-filled when possible.">
                   Copy From
@@ -1236,7 +1555,9 @@ export function IngestPage() {
             </label>
 
             <button
-              className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-signal px-3 text-sm font-semibold text-paper transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-40"
+              className={`inline-flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-signal px-3 text-sm font-semibold text-paper transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-40 ${
+                queueMode ? "hidden" : ""
+              }`}
               disabled={!sourcePath || isScanning}
               onClick={() => void runScan()}
               type="button"
@@ -1280,19 +1601,46 @@ export function IngestPage() {
 
             <div className="rounded-2xl border border-graphite/20 bg-white p-2 shadow-sm">
               <div className="mb-2 flex items-center justify-between gap-2 text-xs">
-                <span className="font-semibold text-ink">Ready to copy</span>
+                <span className="font-semibold text-ink">{queueMode ? "Queue ready" : "Ready to copy"}</span>
                 <span className="font-semibold text-graphite">
-                  {selectedFileCount > 0 ? `${selectedFileCount} files / ${formatBytes(selectedBytes)}` : ingestStartHint({ destinationTargets, scan, selectedFileCount, selectedPresetId, sourcePath })}
+                  {queueMode
+                    ? queue.length > 0
+                      ? `${queue.length} card${queue.length === 1 ? "" : "s"} · ${queueFileCount} files / ${formatBytes(queueByteCount)}`
+                      : "Add a card to begin"
+                    : selectedFileCount > 0
+                      ? `${selectedFileCount} files / ${formatBytes(selectedBytes)}`
+                      : ingestStartHint({ destinationTargets, scan, selectedFileCount, selectedPresetId, sourcePath })}
                 </span>
               </div>
-              <button
-                className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-black px-3 text-base font-semibold text-white shadow-sm transition hover:bg-ink disabled:cursor-not-allowed disabled:bg-graphite/35 disabled:text-white/80 disabled:shadow-none"
-                disabled={!canStartIngest}
-                onClick={() => void startIngest()}
-                type="button"
-              >
-                Start Ingest
-              </button>
+              {queueMode ? (
+                <button
+                  className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-black px-3 text-base font-semibold text-white shadow-sm transition hover:bg-ink disabled:cursor-not-allowed disabled:bg-graphite/35 disabled:text-white/80 disabled:shadow-none"
+                  disabled={!canStartQueue}
+                  onClick={() => void runQueue()}
+                  type="button"
+                >
+                  {isQueueRunning ? "Running queue…" : `Start queue (${queue.length})`}
+                </button>
+              ) : (
+                <button
+                  className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-black px-3 text-base font-semibold text-white shadow-sm transition hover:bg-ink disabled:cursor-not-allowed disabled:bg-graphite/35 disabled:text-white/80 disabled:shadow-none"
+                  disabled={!canStartIngest}
+                  onClick={() => void startIngest()}
+                  type="button"
+                >
+                  Start Ingest
+                </button>
+              )}
+              {isQueueRunning ? (
+                <button
+                  className="mt-2 inline-flex h-9 w-full items-center justify-center gap-2 rounded-xl border border-mist bg-white px-3 text-sm font-semibold text-graphite transition hover:bg-porcelain disabled:opacity-50"
+                  disabled={isCancelling}
+                  onClick={() => void cancelCurrentIngest()}
+                  type="button"
+                >
+                  {isCancelling ? "Cancelling…" : "Cancel queue"}
+                </button>
+              ) : null}
             </div>
           </div>
         </section>
@@ -1435,6 +1783,157 @@ export function IngestPage() {
           selectedRelativePaths={selectedRelativePaths}
           setSelectedRelativePaths={setSelectedRelativePaths}
         />
+      ) : null}
+    </div>
+  );
+}
+
+const QUEUE_STATUS_STYLES: Record<QueueCardStatus, { label: string; className: string }> = {
+  pending: { label: "Pending", className: "bg-porcelain text-graphite" },
+  scanning: { label: "Scanning…", className: "bg-lavender/25 text-graphite" },
+  ready: { label: "Ready", className: "bg-emerald-50 text-emerald-700" },
+  copying: { label: "Copying…", className: "bg-signal text-paper" },
+  done: { label: "Done", className: "bg-emerald-600 text-paper" },
+  error: { label: "Issue", className: "bg-red-100 text-red-700" },
+};
+
+function QueuePanel({
+  cards,
+  fileCount,
+  byteCount,
+  isRunning,
+  currentSegment,
+  instantaneousBps,
+  onAddCard,
+  onRemoveCard,
+  onClearFinished,
+  onAliasChange,
+  detectedCameraForSource,
+}: {
+  cards: QueueCard[];
+  fileCount: number;
+  byteCount: number;
+  isRunning: boolean;
+  currentSegment: { label: string; index: number; total: number } | null;
+  instantaneousBps: number;
+  onAddCard: () => void;
+  onRemoveCard: (id: string) => void;
+  onClearFinished: () => void;
+  onAliasChange: (id: string, value: string) => void;
+  detectedCameraForSource: (path: string) => string;
+}) {
+  const doneCount = cards.filter((card) => card.status === "done").length;
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <FieldLabel help="Add camera cards one after another. Each is scanned in the background and copied in order into the destination(s) below. You can keep adding cards while the queue runs.">
+          Card Queue
+        </FieldLabel>
+        <div className="flex items-center gap-2">
+          {doneCount > 0 ? (
+            <button
+              className="text-[11px] font-semibold text-graphite underline-offset-2 hover:underline"
+              onClick={onClearFinished}
+              type="button"
+            >
+              Clear done
+            </button>
+          ) : null}
+          <span className="text-[11px] font-semibold text-graphite/70">
+            {cards.length} card{cards.length === 1 ? "" : "s"}
+          </span>
+        </div>
+      </div>
+
+      {isRunning ? (
+        <div className="rounded-xl border border-signal/30 bg-signal/5 px-2.5 py-2">
+          <div className="flex items-center justify-between gap-2 text-[11px] font-semibold text-graphite">
+            <span className="min-w-0 truncate">{currentSegment?.label ?? "Preparing…"}</span>
+            <span className="shrink-0">{formatBytes(instantaneousBps)}/s</span>
+          </div>
+          {currentSegment && currentSegment.total > 1 ? (
+            <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-porcelain">
+              <div
+                className="h-full rounded-full bg-signal transition-all"
+                style={{ width: `${Math.round((currentSegment.index / currentSegment.total) * 100)}%` }}
+              />
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {cards.length === 0 ? (
+        <p className="rounded-xl border border-dashed border-mist bg-porcelain/40 px-3 py-4 text-center text-xs text-graphite">
+          No cards queued yet. Add your first card to begin.
+        </p>
+      ) : (
+        <div className="space-y-1.5">
+          {cards.map((card, index) => {
+            const status = QUEUE_STATUS_STYLES[card.status];
+            return (
+              <div
+                key={card.id}
+                className={`rounded-xl border bg-white p-2 ${
+                  card.status === "copying" ? "border-signal shadow-sm" : "border-mist"
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-porcelain text-[10px] font-bold text-graphite">
+                    {index + 1}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate text-xs font-semibold text-ink" title={card.sourcePath}>
+                    {pathDisplayName(card.sourcePath)}
+                  </span>
+                  <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${status.className}`}>
+                    {status.label}
+                  </span>
+                  {!isRunning ? (
+                    <button
+                      aria-label="Remove card"
+                      className="shrink-0 rounded-lg p-1 text-graphite transition hover:bg-porcelain hover:text-ink"
+                      onClick={() => onRemoveCard(card.id)}
+                      type="button"
+                    >
+                      <X size={13} />
+                    </button>
+                  ) : null}
+                </div>
+                <div className="mt-1.5 flex items-center gap-2">
+                  <span className="min-w-0 flex-1 truncate text-[11px] text-graphite">
+                    {card.status === "error" && card.error
+                      ? card.error
+                      : card.fileCount > 0
+                        ? `${card.fileCount} files · ${formatBytes(card.byteCount)}`
+                        : card.status === "scanning"
+                          ? "Scanning…"
+                          : "—"}
+                  </span>
+                  <input
+                    className="h-7 w-[110px] shrink-0 rounded-lg border border-mist bg-white px-2 text-[11px] outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+                    onChange={(event) => onAliasChange(card.id, event.target.value)}
+                    placeholder={detectedCameraForSource(card.sourcePath) || "camera"}
+                    value={card.cameraAlias}
+                  />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <button
+        className="inline-flex h-9 w-full items-center justify-center gap-1.5 rounded-xl border border-mist bg-white px-3 text-sm font-semibold text-graphite transition hover:bg-porcelain"
+        onClick={onAddCard}
+        type="button"
+      >
+        <Plus size={15} />
+        Add card
+      </button>
+
+      {cards.length > 0 ? (
+        <p className="text-center text-[10px] text-graphite/60">
+          {fileCount} files / {formatBytes(byteCount)} queued · set the {"{camera}"} tag per card
+        </p>
       ) : null}
     </div>
   );
