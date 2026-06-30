@@ -270,8 +270,11 @@ fn summarize_kinds(files: &[CopiedFile]) -> Vec<KindReportSummary> {
 fn render_grouped_file(html: &mut String, source_path: &str, copies: &[&CopiedFile]) {
     let first = copies[0];
     let all_ok = copies.iter().all(|copy| copy.verified);
+    // Thumbnails are only generated for the copy under the report's own root, so pick
+    // whichever copy in this clip group actually has one rather than assuming copies[0].
+    let thumbnail = copies.iter().find_map(|copy| copy.thumbnail_path.as_ref());
     html.push_str("<article class=\"file\"><div>");
-    if let Some(thumbnail_path) = first.thumbnail_path.as_ref() {
+    if let Some(thumbnail_path) = thumbnail {
         html.push_str("<img class=\"thumb\" alt=\"thumbnail\" src=\"");
         html.push_str(&escape_html(&thumbnail_path.replace('\\', "/")));
         html.push_str("\" />");

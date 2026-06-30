@@ -982,6 +982,13 @@ fn attach_report_thumbnail_for_file(
 ) -> Result<(), String> {
     check_cancelled(cancel_flag)?;
     let destination_path = PathBuf::from(&file.destination_path);
+    // In a merged multi-destination report this runs once per root, but copied_files
+    // span every destination. Only thumbnail the copies that live under this root —
+    // copies on other destinations are handled when their own root is processed, and
+    // the grouped renderer reuses whichever copy in the clip group got a thumbnail.
+    if !destination_path.starts_with(root_path) {
+        return Ok(());
+    }
     let extension = destination_path
         .extension()
         .and_then(|value| value.to_str())
