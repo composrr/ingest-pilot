@@ -27,6 +27,8 @@ pub struct Preset {
     pub file_type_routing_overrides: BTreeMap<String, String>,
     #[serde(default = "default_preserve_sidecars")]
     pub preserve_xml_sidecars: bool,
+    #[serde(default = "default_rename_files")]
+    pub rename_files_default: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -146,6 +148,10 @@ fn default_preserve_sidecars() -> bool {
     true
 }
 
+fn default_rename_files() -> bool {
+    true
+}
+
 fn default_name_from_folder() -> bool {
     true
 }
@@ -229,6 +235,7 @@ mod tests {
             },
             file_type_routing_overrides: BTreeMap::new(),
             preserve_xml_sidecars: true,
+            rename_files_default: true,
             created_at: "2026-04-24T00:00:00Z".to_string(),
             updated_at: "2026-04-24T00:00:00Z".to_string(),
         };

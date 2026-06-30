@@ -59,6 +59,7 @@ export type Preset = {
   destinations: PresetDestinations;
   file_type_routing_overrides: Record<string, string>;
   preserve_xml_sidecars: boolean;
+  rename_files_default: boolean;
   created_at: string;
   updated_at: string;
 };

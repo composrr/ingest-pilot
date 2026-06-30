@@ -56,6 +56,7 @@ export function createBlankPreset(): Preset {
     },
     file_type_routing_overrides: {},
     preserve_xml_sidecars: true,
+    rename_files_default: true,
     created_at: now,
     updated_at: now,
   };
@@ -143,6 +144,7 @@ export function createStarterPreset(): Preset {
       ".mp3": "folder_audio",
     },
     preserve_xml_sidecars: true,
+    rename_files_default: true,
     created_at: now,
     updated_at: now,
   };

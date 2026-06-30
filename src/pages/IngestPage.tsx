@@ -172,7 +172,9 @@ export function IngestPage() {
       setPreset(nextPreset);
       if (nextPreset) {
         setDeleteSidecars(!nextPreset.preserve_xml_sidecars);
+        setRenameFiles(nextPreset.rename_files_default ?? true);
         setDestinationPath(nextPreset.destinations.primary ?? "");
+        setSecondaryDestinationPaths(nextPreset.destinations.secondaries ?? []);
       }
     } catch (caught) {
       setError(String(caught));

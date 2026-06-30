@@ -112,6 +112,36 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
     }));
   }
 
+  function setSecondaries(updater: (current: string[]) => string[]) {
+    setDraft((current) => ({
+      ...current,
+      destinations: {
+        ...current.destinations,
+        secondaries: updater(current.destinations.secondaries ?? []),
+      },
+    }));
+  }
+
+  function addSecondaryDestination() {
+    setSecondaries((current) => [...current, ""]);
+  }
+
+  function updateSecondaryDestination(index: number, value: string) {
+    setSecondaries((current) => current.map((path, i) => (i === index ? value : path)));
+  }
+
+  function removeSecondaryDestination(index: number) {
+    setSecondaries((current) => current.filter((_, i) => i !== index));
+  }
+
+  async function chooseSecondaryDestination(index: number) {
+    const path = await open({ directory: true, multiple: false });
+    if (typeof path !== "string") {
+      return;
+    }
+    updateSecondaryDestination(index, path);
+  }
+
   function saveDraft() {
     onSave({
       ...draft,
@@ -196,6 +226,46 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
                     Pick
                   </button>
                 </div>
+                {(draft.destinations.secondaries ?? []).map((path, index) => (
+                  <div
+                    key={`secondary-${index}`}
+                    className="grid min-h-10 grid-cols-[110px_1fr_auto_auto] items-center gap-2 px-3 py-1.5"
+                  >
+                    <div className="text-xs font-semibold text-graphite">Backup {index + 1}</div>
+                    <input
+                      className="h-8 min-w-0 rounded-lg border border-mist bg-white px-2 text-xs outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+                      onChange={(event) => updateSecondaryDestination(index, event.target.value)}
+                      placeholder="Backup copy location"
+                      value={path}
+                    />
+                    <button
+                      className="inline-flex h-8 items-center gap-1 rounded-lg border border-mist px-2 text-xs font-semibold text-graphite transition hover:bg-porcelain"
+                      onClick={() => void chooseSecondaryDestination(index)}
+                      type="button"
+                    >
+                      <FolderOpen size={13} />
+                      Pick
+                    </button>
+                    <button
+                      aria-label={`Remove backup ${index + 1}`}
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-mist text-graphite transition hover:bg-porcelain hover:text-ink"
+                      onClick={() => removeSecondaryDestination(index)}
+                      type="button"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                ))}
+                <div className="px-3 py-1.5">
+                  <button
+                    className="inline-flex h-8 items-center gap-1 rounded-lg border border-dashed border-mist px-2 text-xs font-semibold text-graphite transition hover:bg-porcelain"
+                    onClick={addSecondaryDestination}
+                    type="button"
+                  >
+                    <Plus size={13} />
+                    Add backup destination
+                  </button>
+                </div>
                 <ClipPaddingField
                   onChange={(clip_number_padding) => updateDraft({ clip_number_padding })}
                   value={draft.clip_number_padding}
@@ -203,6 +273,10 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
                 <SidecarToggle
                   onChange={(preserve_xml_sidecars) => updateDraft({ preserve_xml_sidecars })}
                   value={draft.preserve_xml_sidecars}
+                />
+                <RenameToggle
+                  onChange={(rename_files_default) => updateDraft({ rename_files_default })}
+                  value={draft.rename_files_default}
                 />
               </div>
             </section>
@@ -399,6 +473,29 @@ function SidecarToggle({
           type="checkbox"
         />
         <span className="truncate text-xs font-medium text-graphite">Delete XML and paired sidecar files</span>
+      </span>
+    </label>
+  );
+}
+
+function RenameToggle({
+  onChange,
+  value,
+}: {
+  onChange: (value: boolean) => void;
+  value: boolean;
+}) {
+  return (
+    <label className="grid min-h-10 grid-cols-[110px_1fr] items-center gap-2 px-3 py-1.5">
+      <span className="text-xs font-semibold text-graphite">Rename</span>
+      <span className="flex min-w-0 items-center gap-2">
+        <input
+          checked={value}
+          className="h-4 w-4 shrink-0 accent-black"
+          onChange={(event) => onChange(event.target.checked)}
+          type="checkbox"
+        />
+        <span className="truncate text-xs font-medium text-graphite">Rename clips with the file pattern by default</span>
       </span>
     </label>
   );
