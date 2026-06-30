@@ -1,4 +1,5 @@
-import { ChevronDown, History } from "lucide-react";
+import { ChevronDown, ChevronUp, History } from "lucide-react";
+import { useState } from "react";
 import type { IngestHistoryJob } from "../lib/tauri";
 import type { PresetSummary } from "../lib/types";
 
@@ -27,27 +28,16 @@ const GENERIC_LEAF_NAMES = new Set([
 const MAX_VISIBLE_BADGES = 3;
 
 export function RecentIngestsCarousel({ recentJobs, presets, onSelect }: RecentIngestsCarouselProps) {
+  const [open, setOpen] = useState(true);
   if (recentJobs.length === 0) {
     return null;
   }
 
+  // Anchored at the bottom of the column: the list renders ABOVE the toggle, so
+  // expanding grows the panel upward. The toggle stays pinned at the bottom.
   return (
-    <details open className="group/recents overflow-hidden rounded-2xl border border-mist bg-white">
-      <summary className="flex h-9 cursor-pointer list-none items-center justify-between border-b border-mist px-3 [&::-webkit-details-marker]:hidden">
-        <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-graphite">
-          <History size={13} />
-          Recent Ingests
-        </span>
-        <span className="flex items-center gap-1.5">
-          <span className="rounded-full bg-porcelain px-2 py-0.5 text-[11px] font-semibold text-graphite">
-            {recentJobs.length}
-          </span>
-          <ChevronDown
-            size={14}
-            className="text-graphite/60 transition-transform duration-150 group-open/recents:rotate-180"
-          />
-        </span>
-      </summary>
+    <div className="overflow-hidden rounded-2xl border border-mist bg-white">
+      {open ? (
       <div className="max-h-[260px] space-y-1.5 overflow-auto p-1.5">
         {recentJobs.map((job) => {
           const preset = presets.find((candidate) => candidate.id === job.preset_id);
@@ -113,7 +103,30 @@ export function RecentIngestsCarousel({ recentJobs, presets, onSelect }: RecentI
           );
         })}
       </div>
-    </details>
+      ) : null}
+      <button
+        className={`flex h-9 w-full items-center justify-between px-3 text-left transition hover:bg-porcelain ${
+          open ? "border-t border-mist" : ""
+        }`}
+        onClick={() => setOpen((current) => !current)}
+        type="button"
+      >
+        <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-graphite">
+          <History size={13} />
+          Recent Ingests
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="rounded-full bg-porcelain px-2 py-0.5 text-[11px] font-semibold text-graphite">
+            {recentJobs.length}
+          </span>
+          {open ? (
+            <ChevronDown size={14} className="text-graphite/60" />
+          ) : (
+            <ChevronUp size={14} className="text-graphite/60" />
+          )}
+        </span>
+      </button>
+    </div>
   );
 }
 

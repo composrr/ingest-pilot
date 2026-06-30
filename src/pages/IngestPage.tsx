@@ -913,11 +913,6 @@ export function IngestPage() {
 
       <div className="grid min-h-0 flex-1 gap-2 xl:grid-cols-[220px_320px_minmax(0,1fr)]">
         <div className="flex min-h-0 min-w-0 flex-col gap-2">
-          <RecentIngestsCarousel
-            recentJobs={recentJobs}
-            presets={presets}
-            onSelect={applyRecentJobState}
-          />
           <PresetBrowser
             presets={presets}
             selectedPresetId={selectedPresetId}
@@ -926,6 +921,13 @@ export function IngestPage() {
               setIngestResult(null);
             }}
           />
+          <div className="mt-auto min-h-0">
+            <RecentIngestsCarousel
+              recentJobs={recentJobs}
+              presets={presets}
+              onSelect={applyRecentJobState}
+            />
+          </div>
         </div>
 
         <section className="relative z-20 overflow-visible rounded-2xl border border-mist bg-white">
