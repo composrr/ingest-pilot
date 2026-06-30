@@ -21,7 +21,7 @@ use std::os::windows::process::CommandExt;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-const COPY_BUFFER_SIZE: usize = 256 * 1024;
+const COPY_BUFFER_SIZE: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IngestResult {

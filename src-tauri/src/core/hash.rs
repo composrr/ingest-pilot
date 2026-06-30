@@ -4,7 +4,7 @@ use std::path::Path;
 
 use xxhash_rust::xxh3::Xxh3;
 
-const HASH_BUFFER_SIZE: usize = 1024 * 1024;
+const HASH_BUFFER_SIZE: usize = 4 * 1024 * 1024;
 
 /// Streaming XXH3-128 checksum of a file, returned as a 32-char hex string.
 /// XXH3-128 is a fast, modern, non-cryptographic hash well suited to DIT-style
