@@ -28,6 +28,7 @@ import {
   scanSource,
   detectCameraSources,
   type CameraSource,
+  type CopiedFile,
   type DiskSpace,
   type IngestHistoryJob,
   type IngestProgress,
@@ -1079,6 +1080,7 @@ export function IngestPage() {
                 <SummaryTile label="Failed" value={String(ingestResult.verification_failed)} />
                 <SummaryTile label="Copied size" value={formatBytes(ingestResult.bytes_copied)} />
               </div>
+              <CoverageCard files={ingestResult.copied_files} />
               {reportBuild.status !== "idle" ? (
                 <div className="border-b border-mist px-3 py-2">
                   <div className="mb-1 flex items-center justify-between gap-3 text-xs font-semibold text-graphite">
@@ -2125,6 +2127,86 @@ function SummaryTile({
       <div className="text-xs font-semibold text-graphite">{label}</div>
       <div className={`mt-1 truncate text-lg font-semibold ${valueClass}`}>{value}</div>
       {sub ? <div className="truncate text-[10px] font-medium text-graphite/70">{sub}</div> : null}
+    </div>
+  );
+}
+
+type CoverageRow = { key: string; count: number; bytes: number; durationMs: number };
+
+function cameraForCopiedFile(file: CopiedFile): string {
+  const name = file.source_path.split(/[\\/]/).pop() ?? "";
+  const stem = name.includes(".") ? name.slice(0, name.lastIndexOf(".")) : name;
+  const prefix = cameraPrefixFromStem(stem);
+  if (prefix) {
+    return prefix;
+  }
+  const parts = file.source_path.split(/[\\/]/).filter(Boolean);
+  return [...parts].reverse().slice(1).find((part) => !isGenericCameraFolder(part)) ?? "CAM";
+}
+
+function folderForCopiedFile(file: CopiedFile): string {
+  const parts = file.destination_path.split(/[\\/]/).filter(Boolean);
+  return parts.length >= 2 ? parts[parts.length - 2] : "(root)";
+}
+
+function buildCoverage(files: CopiedFile[]) {
+  const cameras = new Map<string, CoverageRow>();
+  const folders = new Map<string, CoverageRow>();
+  const bump = (map: Map<string, CoverageRow>, key: string, file: CopiedFile) => {
+    const row = map.get(key) ?? { key, count: 0, bytes: 0, durationMs: 0 };
+    row.count += 1;
+    row.bytes += file.size_bytes;
+    row.durationMs += file.duration_ms ?? 0;
+    map.set(key, row);
+  };
+  for (const file of files) {
+    if (file.kind === "sidecar") {
+      continue;
+    }
+    bump(cameras, cameraForCopiedFile(file), file);
+    bump(folders, folderForCopiedFile(file), file);
+  }
+  const sort = (map: Map<string, CoverageRow>) => [...map.values()].sort((a, b) => b.bytes - a.bytes);
+  return { cameras: sort(cameras), folders: sort(folders) };
+}
+
+function CoverageCard({ files }: { files: CopiedFile[] }) {
+  const { cameras, folders } = useMemo(() => buildCoverage(files), [files]);
+  if (!files.length) {
+    return null;
+  }
+  const totalDuration = files.reduce((sum, file) => sum + (file.duration_ms ?? 0), 0);
+  return (
+    <div className="border-b border-mist px-3 py-2.5">
+      <div className="mb-1.5 flex items-center justify-between">
+        <h3 className="text-xs font-semibold text-graphite">Coverage</h3>
+        {totalDuration > 0 ? (
+          <span className="text-[11px] font-semibold text-graphite/70">{formatDuration(totalDuration)} total</span>
+        ) : null}
+      </div>
+      <div className="grid gap-2 md:grid-cols-2">
+        <CoverageList rows={cameras} title="By camera" />
+        <CoverageList rows={folders} title="By folder" />
+      </div>
+    </div>
+  );
+}
+
+function CoverageList({ rows, title }: { rows: CoverageRow[]; title: string }) {
+  return (
+    <div className="rounded-xl border border-mist bg-white p-2">
+      <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-graphite/60">{title}</div>
+      <div className="space-y-0.5">
+        {rows.map((row) => (
+          <div key={row.key} className="flex items-center justify-between gap-2 text-xs">
+            <span className="min-w-0 truncate font-semibold text-ink">{row.key}</span>
+            <span className="shrink-0 text-graphite">
+              {row.count} · {formatBytes(row.bytes)}
+              {row.durationMs > 0 ? ` · ${formatDuration(row.durationMs)}` : ""}
+            </span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

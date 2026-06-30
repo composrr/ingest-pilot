@@ -425,6 +425,7 @@ mod tests {
             source_hash: "abc123".to_string(),
             destination_hash: "abc123".to_string(),
             verified: true,
+            duration_ms: None,
         }];
 
         let path = write_html_report(

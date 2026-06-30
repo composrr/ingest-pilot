@@ -105,6 +105,7 @@ export type CopiedFile = {
   source_hash: string;
   destination_hash: string;
   verified: boolean;
+  duration_ms?: number | null;
 };
 
 export type SkippedFile = {

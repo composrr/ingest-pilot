@@ -64,6 +64,9 @@ pub struct CopiedFile {
     pub source_hash: String,
     pub destination_hash: String,
     pub verified: bool,
+    /// Media duration in milliseconds (footage/audio only, when ffmpeg is available).
+    #[serde(default)]
+    pub duration_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -592,6 +595,11 @@ fn copy_file_to_folder(
         source_hash: verification.source_hash,
         destination_hash: verification.destination_hash,
         verified: verification.verified,
+        duration_ms: if matches!(file.kind, ScanFileKind::Footage | ScanFileKind::Audio) {
+            probe_duration_ms(&destination_path)
+        } else {
+            None
+        },
     });
 
     Ok(CopiedRoute {
@@ -991,6 +999,39 @@ fn generate_ffmpeg_thumbnail(
     None
 }
 
+/// Best-effort media duration via `ffmpeg -i` (parses the "Duration:" line from
+/// stderr). Returns None when ffmpeg is unavailable or the file has no duration.
+fn probe_duration_ms(path: &Path) -> Option<u64> {
+    let ffmpeg = ffmpeg_path()?;
+    let mut command = Command::new(&ffmpeg);
+    hide_subprocess_window(&mut command);
+    let output = command
+        .args(["-hide_banner", "-nostdin", "-i"])
+        .arg(path)
+        .output()
+        .ok()?;
+    // ffmpeg with no output file exits non-zero but still prints Duration to stderr.
+    parse_ffmpeg_duration_ms(&String::from_utf8_lossy(&output.stderr))
+}
+
+fn parse_ffmpeg_duration_ms(text: &str) -> Option<u64> {
+    let idx = text.find("Duration:")?;
+    let after = &text[idx + "Duration:".len()..];
+    let clip = after.split(',').next()?.trim();
+    if clip.starts_with("N/A") {
+        return None;
+    }
+    let mut parts = clip.split(':');
+    let hours: f64 = parts.next()?.trim().parse().ok()?;
+    let minutes: f64 = parts.next()?.trim().parse().ok()?;
+    let seconds: f64 = parts.next()?.trim().parse().ok()?;
+    let total = hours * 3600.0 + minutes * 60.0 + seconds;
+    if total <= 0.0 {
+        return None;
+    }
+    Some((total * 1000.0) as u64)
+}
+
 fn ffmpeg_path() -> Option<PathBuf> {
     if let Ok(path) = env::var("INGEST_PILOT_FFMPEG") {
         let path = PathBuf::from(path);
@@ -1369,6 +1410,14 @@ mod tests {
     use super::*;
     use crate::core::preset::{PresetDestinations, PresetVariable, VariableType};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn parses_ffmpeg_duration_line() {
+        let sample = "  Duration: 00:02:03.50, start: 0.000000, bitrate: 1234 kb/s";
+        assert_eq!(parse_ffmpeg_duration_ms(sample), Some(123_500));
+        assert_eq!(parse_ffmpeg_duration_ms("Duration: N/A, bitrate: N/A"), None);
+        assert_eq!(parse_ffmpeg_duration_ms("no duration here"), None);
+    }
 
     #[test]
     fn copies_routed_media_and_paired_sidecars() {
