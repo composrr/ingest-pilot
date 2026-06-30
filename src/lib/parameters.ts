@@ -58,6 +58,31 @@ export function recentValuesByVariable(
   return byId;
 }
 
+// Median transfer rate (bytes/sec) across past jobs, derived from bytes_copied and
+// the started/completed timestamps. Used to estimate ingest time for a destination.
+export function medianHistoricalBytesPerSecond(
+  jobs: { bytes_copied?: number; started_at?: string; completed_at?: string }[],
+): number {
+  const rates: number[] = [];
+  for (const job of jobs) {
+    const bytes = job.bytes_copied ?? 0;
+    if (bytes <= 0 || !job.started_at || !job.completed_at) {
+      continue;
+    }
+    const ms = new Date(job.completed_at).getTime() - new Date(job.started_at).getTime();
+    if (ms <= 0) {
+      continue;
+    }
+    rates.push((bytes / ms) * 1000);
+  }
+  if (!rates.length) {
+    return 0;
+  }
+  rates.sort((a, b) => a - b);
+  const mid = Math.floor(rates.length / 2);
+  return rates.length % 2 ? rates[mid] : (rates[mid - 1] + rates[mid]) / 2;
+}
+
 export function optionsFromText(value: string) {
   return value
     .split(",")

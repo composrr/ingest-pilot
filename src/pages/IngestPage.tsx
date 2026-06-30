@@ -3,7 +3,12 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Check, ChevronDown, FolderOpen, Image, List, RefreshCw, Search, X } from "lucide-react";
 import { type Dispatch, type SetStateAction, useEffect, useMemo, useRef, useState } from "react";
-import { defaultsForParameters, mergeGlobalAndPresetParameters, recentValuesByVariable } from "../lib/parameters";
+import {
+  defaultsForParameters,
+  medianHistoricalBytesPerSecond,
+  mergeGlobalAndPresetParameters,
+  recentValuesByVariable,
+} from "../lib/parameters";
 import { FloatingHelp } from "../components/FloatingHelp";
 import { RecentIngestsCarousel } from "../components/RecentIngestsCarousel";
 import { SelectMenu } from "../components/SelectMenu";
@@ -65,6 +70,7 @@ export function IngestPage() {
   const [spaceByPath, setSpaceByPath] = useState<Record<string, DiskSpace | null>>({});
   const [recentJobs, setRecentJobs] = useState<IngestHistoryJob[]>([]);
   const [variableSuggestions, setVariableSuggestions] = useState<Record<string, string[]>>({});
+  const [historicalBps, setHistoricalBps] = useState(0);
   const currentIngestJobId = useRef<string | null>(null);
   // Variable values from a replayed recent ingest, applied once the new preset's
   // parameters resolve (so the defaults effect below doesn't clobber them).
@@ -139,6 +145,9 @@ export function IngestPage() {
       ),
     [selectedRelativePaths, sourceScans],
   );
+  // Estimated transfer time for the selected bytes, using the median speed of past ingests.
+  const ingestEtaMs =
+    historicalBps > 0 && selectedBytes > 0 ? (selectedBytes / historicalBps) * 1000 : undefined;
   const selectedSidecarCount = useMemo(
     () => visibleManifestFiles.filter((file) => file.kind === "sidecar" && file.autoSelected).length,
     [visibleManifestFiles],
@@ -172,9 +181,11 @@ export function IngestPage() {
       const jobs = await listHistory();
       setRecentJobs(jobs.slice(0, 5));
       setVariableSuggestions(recentValuesByVariable(jobs));
+      setHistoricalBps(medianHistoricalBytesPerSecond(jobs));
     } catch {
       setRecentJobs([]);
       setVariableSuggestions({});
+      setHistoricalBps(0);
     }
   }
 
@@ -894,7 +905,7 @@ export function IngestPage() {
                 <span>{destinationMode === "existing_root" ? "Use Folder" : "Copy To"}</span>
                 {destinationPath ? (
                   <span className="font-medium text-graphite/75">
-                    {destinationSpaceSummary(destinationPath, spaceByPath[destinationPath], selectedBytes)}
+                    {destinationSpaceSummary(destinationPath, spaceByPath[destinationPath], selectedBytes, ingestEtaMs)}
                   </span>
                 ) : null}
               </span>
@@ -929,7 +940,7 @@ export function IngestPage() {
                     <PathRow
                       key={`${path}-${index}`}
                       label={pathDisplayName(path)}
-                      meta={`Backup copy / ${destinationSpaceSummary(path, spaceByPath[path], selectedBytes)}`}
+                      meta={`Backup copy / ${destinationSpaceSummary(path, spaceByPath[path], selectedBytes, ingestEtaMs)}`}
                       onClick={() => void chooseSecondaryDestination(index)}
                       onRemove={() => removeSecondaryDestination(index)}
                       path={path}
@@ -1112,7 +1123,7 @@ export function IngestPage() {
                 <SummaryTile label="Required" value={formatBytes(selectedBytes)} />
                 <SummaryTile
                   label="Destination"
-                  value={destinationSpaceSummary(destinationPath, spaceByPath[destinationPath], selectedBytes)}
+                  value={destinationSpaceSummary(destinationPath, spaceByPath[destinationPath], selectedBytes, ingestEtaMs)}
                 />
               </div>
             </section>
@@ -2115,7 +2126,12 @@ function spaceSummary(space: DiskSpace | null | undefined) {
   return `${formatBytes(space.available_bytes)} free`;
 }
 
-function destinationSpaceSummary(path: string, space: DiskSpace | null | undefined, requiredBytes: number) {
+function destinationSpaceSummary(
+  path: string,
+  space: DiskSpace | null | undefined,
+  requiredBytes: number,
+  etaMs?: number,
+) {
   if (!path.trim()) {
     return "Choose destination";
   }
@@ -2130,9 +2146,10 @@ function destinationSpaceSummary(path: string, space: DiskSpace | null | undefin
   }
   const remaining = space.available_bytes - requiredBytes;
   if (remaining < 0) {
-    return `${formatBytes(Math.abs(remaining))} short`;
+    return `⚠ ${formatBytes(Math.abs(remaining))} short — won't fit`;
   }
-  return `${formatBytes(remaining)} left after copy`;
+  const eta = etaMs && etaMs > 0 ? ` · ~${formatDuration(etaMs)}` : "";
+  return `${formatBytes(remaining)} left after copy${eta}`;
 }
 
 function sourceSizeSummary(
