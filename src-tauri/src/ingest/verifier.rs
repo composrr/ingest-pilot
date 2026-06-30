@@ -1,4 +1,4 @@
-use crate::core::hash::stable_128_file_hash;
+use crate::core::hash::xxh3_128_file_hash;
 use serde::Serialize;
 use std::path::Path;
 
@@ -13,8 +13,8 @@ pub fn verify_copy(
     source_path: &Path,
     destination_path: &Path,
 ) -> Result<VerificationResult, String> {
-    let source_hash = stable_128_file_hash(source_path)?;
-    let destination_hash = stable_128_file_hash(destination_path)?;
+    let source_hash = xxh3_128_file_hash(source_path)?;
+    let destination_hash = xxh3_128_file_hash(destination_path)?;
     let verified = source_hash == destination_hash;
 
     Ok(VerificationResult {

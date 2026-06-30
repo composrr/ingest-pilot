@@ -116,7 +116,7 @@ pub fn write_html_report(root_path: &Path, input: ReportInput<'_>) -> Result<Pat
     kv(&mut html, "Source", input.source_path);
     kv(&mut html, "Destination", input.root_path);
     kv(&mut html, "MHL", input.mhl_path);
-    kv(&mut html, "Hash", "Stable 128 verification hash");
+    kv(&mut html, "Hash", "XXH3-128 verification hash");
     html.push_str("</div></section>");
 
     html.push_str("<section><h2>Parameters</h2>");
