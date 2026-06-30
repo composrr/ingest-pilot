@@ -21,7 +21,7 @@ pub fn write_mhl_file(root_path: &Path, entries: &[MhlEntry]) -> Result<PathBuf,
         "  <created_at>{}</created_at>\n",
         escape_xml(&created_at)
     ));
-    xml.push_str("  <hash_algorithm>stable-128</hash_algorithm>\n");
+    xml.push_str("  <hash_algorithm>xxh3-128</hash_algorithm>\n");
     xml.push_str("  <files>\n");
 
     for entry in entries {

@@ -152,7 +152,9 @@ function sampleHistory(): IngestHistoryJob[] {
   return [
     {
       id: "job_20260628_johnson",
+      preset_id: presets[0]?.id ?? "",
       preset_name: "Video Team Standard",
+      variable_values: { event: "Baptism", talent: "Johnson" },
       status: "complete",
       started_at: "2026-06-28T09:20:00Z",
       completed_at: "2026-06-28T09:41:00Z",
@@ -169,7 +171,9 @@ function sampleHistory(): IngestHistoryJob[] {
     },
     {
       id: "job_20260621_easter",
+      preset_id: presets[1]?.id ?? presets[0]?.id ?? "",
       preset_name: "Drone + B-Roll",
+      variable_values: { event: "Coastline", talent: "Aerial Unit" },
       status: "complete",
       started_at: "2026-06-21T14:02:00Z",
       completed_at: "2026-06-21T14:19:00Z",
@@ -273,6 +277,8 @@ export async function invoke<T = unknown>(command: string, args?: Record<string,
 
     case "open_path":
       return undefined as T;
+    case "filter_directories":
+      return ((a.paths as string[]) ?? []) as T;
     case "disk_space":
       return {
         path: a.path ?? "E:/",
@@ -311,6 +317,26 @@ export async function invoke<T = unknown>(command: string, args?: Record<string,
     }
     case "cancel_ingest":
       return undefined as T;
+
+    case "retry_failed_copies":
+      // Pretend every retried copy now verifies.
+      return ((a.items as any[]) ?? []).map((item) => ({
+        source_path: item.source_path,
+        destination_path: item.destination_path,
+        kind: item.kind,
+        size_bytes: item.size_bytes,
+        thumbnail_path: null,
+        source_hash: "xxh3:retry",
+        destination_hash: "xxh3:retry",
+        verified: true,
+        duration_ms: null,
+      })) as T;
+
+    case "generate_offload_proof":
+      return `${a.rootPath ?? "E:/MediaServer/Project"}/Project_OffloadProof.pdf` as T;
+
+    case "export_reel_index":
+      return `${a.rootPath ?? "E:/MediaServer/Project"}/Project_ReelIndex.${a.format === "json" ? "json" : "csv"}` as T;
 
     case "list_history":
       return history as T;

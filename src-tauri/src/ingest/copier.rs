@@ -21,7 +21,7 @@ use std::os::windows::process::CommandExt;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-const COPY_BUFFER_SIZE: usize = 256 * 1024;
+const COPY_BUFFER_SIZE: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IngestResult {
@@ -64,6 +64,9 @@ pub struct CopiedFile {
     pub source_hash: String,
     pub destination_hash: String,
     pub verified: bool,
+    /// Media duration in milliseconds (footage/audio only, when ffmpeg is available).
+    #[serde(default)]
+    pub duration_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -87,6 +90,7 @@ struct CopiedRoute {
     output_stem: String,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_ingest(
     preset: &Preset,
     source_path: String,
@@ -94,6 +98,7 @@ pub fn run_ingest(
     destination_override: Option<String>,
     preserve_sidecars: bool,
     rename_files: bool,
+    camera_override: Option<String>,
     included_relative_paths: Option<Vec<String>>,
     use_existing_root: bool,
     cancel_flag: Option<&AtomicBool>,
@@ -201,6 +206,7 @@ pub fn run_ingest(
             clip_number,
             None,
             rename_files,
+            camera_override.as_deref(),
             cancel_flag,
             &mut result,
             Some(&mut transfer_progress),
@@ -279,6 +285,7 @@ pub fn run_ingest(
             clip_number,
             Some(&parent_route.output_stem),
             rename_files,
+            camera_override.as_deref(),
             cancel_flag,
             &mut result,
             Some(&mut transfer_progress),
@@ -491,6 +498,7 @@ fn copy_file_to_folder(
     clip_number: u32,
     forced_stem: Option<&String>,
     rename_files: bool,
+    camera_override: Option<&str>,
     cancel_flag: Option<&AtomicBool>,
     result: &mut IngestResult,
     mut transfer_progress: Option<&mut dyn FnMut(&str, u64)>,
@@ -520,7 +528,12 @@ fn copy_file_to_folder(
                 &TokenContext {
                     preset_name: Some(preset.name.clone()),
                     variable_values: variable_values.clone(),
-                    camera: Some(camera_hint(file)),
+                    camera: Some(
+                        camera_override
+                            .map(|alias| alias.to_string())
+                            .filter(|alias| !alias.trim().is_empty())
+                            .unwrap_or_else(|| camera_hint(file)),
+                    ),
                     clip_number: Some(clip_number),
                     clip_number_padding: Some(preset.clip_number_padding),
                     original_name: Some(file.stem.clone()),
@@ -533,6 +546,44 @@ fn copy_file_to_folder(
             ensure_file_extension(&resolved, &file.extension)
         }
     };
+
+    // Resilient re-ingest: if this exact destination file already exists and verifies
+    // bit-identical to the source, skip the copy (no duplicate) and record it as done.
+    // This makes a re-run after an interruption pick up only the remaining files.
+    let intended_path = folder.path.join(&target_name);
+    if intended_path.exists() {
+        if let Ok(existing) = verify_copy(Path::new(&file.path), &intended_path) {
+            if existing.verified {
+                result.files_copied += 1;
+                result.verified_files += 1;
+                result.bytes_copied += file.size_bytes;
+                let output_stem = intended_path
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or(&file.stem)
+                    .to_string();
+                result.copied_files.push(CopiedFile {
+                    source_path: file.path.clone(),
+                    destination_path: intended_path.to_string_lossy().to_string(),
+                    kind: file.kind,
+                    size_bytes: file.size_bytes,
+                    thumbnail_path: None,
+                    source_hash: existing.source_hash,
+                    destination_hash: existing.destination_hash,
+                    verified: true,
+                    duration_ms: if matches!(file.kind, ScanFileKind::Footage | ScanFileKind::Audio) {
+                        probe_duration_ms(&intended_path)
+                    } else {
+                        None
+                    },
+                });
+                return Ok(CopiedRoute {
+                    folder: folder.clone(),
+                    output_stem,
+                });
+            }
+        }
+    }
 
     let destination_path = unique_destination_path(&folder.path, &target_name);
     check_cancelled(cancel_flag)?;
@@ -592,6 +643,11 @@ fn copy_file_to_folder(
         source_hash: verification.source_hash,
         destination_hash: verification.destination_hash,
         verified: verification.verified,
+        duration_ms: if matches!(file.kind, ScanFileKind::Footage | ScanFileKind::Audio) {
+            probe_duration_ms(&destination_path)
+        } else {
+            None
+        },
     });
 
     Ok(CopiedRoute {
@@ -601,6 +657,39 @@ fn copy_file_to_folder(
             .and_then(|value| value.to_str())
             .unwrap_or(&file.stem)
             .to_string(),
+    })
+}
+
+/// Re-copy a single source file to an exact destination path and re-verify it.
+/// Used by the "retry failed" action to repair a destination copy whose hash
+/// did not match, without re-running the whole ingest.
+pub fn recopy_and_verify(
+    source_path: &str,
+    destination_path: &str,
+    kind: ScanFileKind,
+    size_bytes: u64,
+) -> Result<CopiedFile, String> {
+    let source = Path::new(source_path);
+    let destination = Path::new(destination_path);
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
+    }
+    copy_path_with_progress(source, destination, None, None)?;
+    let verification = verify_copy(source, destination)?;
+    Ok(CopiedFile {
+        source_path: source_path.to_string(),
+        destination_path: destination_path.to_string(),
+        kind,
+        size_bytes,
+        thumbnail_path: None,
+        source_hash: verification.source_hash,
+        destination_hash: verification.destination_hash,
+        verified: verification.verified,
+        duration_ms: if matches!(kind, ScanFileKind::Footage | ScanFileKind::Audio) {
+            probe_duration_ms(destination)
+        } else {
+            None
+        },
     })
 }
 
@@ -893,6 +982,13 @@ fn attach_report_thumbnail_for_file(
 ) -> Result<(), String> {
     check_cancelled(cancel_flag)?;
     let destination_path = PathBuf::from(&file.destination_path);
+    // In a merged multi-destination report this runs once per root, but copied_files
+    // span every destination. Only thumbnail the copies that live under this root —
+    // copies on other destinations are handled when their own root is processed, and
+    // the grouped renderer reuses whichever copy in the clip group got a thumbnail.
+    if !destination_path.starts_with(root_path) {
+        return Ok(());
+    }
     let extension = destination_path
         .extension()
         .and_then(|value| value.to_str())
@@ -989,6 +1085,39 @@ fn generate_ffmpeg_thumbnail(
     }
 
     None
+}
+
+/// Best-effort media duration via `ffmpeg -i` (parses the "Duration:" line from
+/// stderr). Returns None when ffmpeg is unavailable or the file has no duration.
+fn probe_duration_ms(path: &Path) -> Option<u64> {
+    let ffmpeg = ffmpeg_path()?;
+    let mut command = Command::new(&ffmpeg);
+    hide_subprocess_window(&mut command);
+    let output = command
+        .args(["-hide_banner", "-nostdin", "-i"])
+        .arg(path)
+        .output()
+        .ok()?;
+    // ffmpeg with no output file exits non-zero but still prints Duration to stderr.
+    parse_ffmpeg_duration_ms(&String::from_utf8_lossy(&output.stderr))
+}
+
+fn parse_ffmpeg_duration_ms(text: &str) -> Option<u64> {
+    let idx = text.find("Duration:")?;
+    let after = &text[idx + "Duration:".len()..];
+    let clip = after.split(',').next()?.trim();
+    if clip.starts_with("N/A") {
+        return None;
+    }
+    let mut parts = clip.split(':');
+    let hours: f64 = parts.next()?.trim().parse().ok()?;
+    let minutes: f64 = parts.next()?.trim().parse().ok()?;
+    let seconds: f64 = parts.next()?.trim().parse().ok()?;
+    let total = hours * 3600.0 + minutes * 60.0 + seconds;
+    if total <= 0.0 {
+        return None;
+    }
+    Some((total * 1000.0) as u64)
 }
 
 fn ffmpeg_path() -> Option<PathBuf> {
@@ -1326,6 +1455,23 @@ fn camera_hint(file: &ScannedFile) -> String {
         .to_string()
 }
 
+/// Camera label derived from a source file path (used by the reel index, which
+/// only has the path, not the scanned-file record).
+pub fn camera_label_for_path(source_path: &str) -> String {
+    let path = Path::new(source_path);
+    if let Some(stem) = path.file_stem().and_then(|value| value.to_str()) {
+        if let Some(prefix) = camera_prefix_from_stem(stem) {
+            return prefix;
+        }
+    }
+    path.ancestors()
+        .skip(1)
+        .filter_map(|ancestor| ancestor.file_name().and_then(|value| value.to_str()))
+        .find(|value| !is_generic_camera_folder(value) && !value.trim().is_empty())
+        .unwrap_or("CAM")
+        .to_string()
+}
+
 fn camera_prefix_from_stem(stem: &str) -> Option<String> {
     let prefix = stem
         .split(['_', '-', ' '])
@@ -1371,6 +1517,14 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn parses_ffmpeg_duration_line() {
+        let sample = "  Duration: 00:02:03.50, start: 0.000000, bitrate: 1234 kb/s";
+        assert_eq!(parse_ffmpeg_duration_ms(sample), Some(123_500));
+        assert_eq!(parse_ffmpeg_duration_ms("Duration: N/A, bitrate: N/A"), None);
+        assert_eq!(parse_ffmpeg_duration_ms("no duration here"), None);
+    }
+
+    #[test]
     fn copies_routed_media_and_paired_sidecars() {
         let workspace = unique_temp_dir("ingest_pilot_copy_test");
         let source = workspace.join("source");
@@ -1414,8 +1568,7 @@ mod tests {
             },
             file_type_routing_overrides: BTreeMap::new(),
             preserve_xml_sidecars: true,
-            rename_files_default: true,
-            created_at: "2026-04-24T00:00:00Z".to_string(),
+            rename_files_default: true,            created_at: "2026-04-24T00:00:00Z".to_string(),
             updated_at: "2026-04-24T00:00:00Z".to_string(),
         };
 
@@ -1426,6 +1579,7 @@ mod tests {
             None,
             true,
             true,
+            None,
             None,
             false,
             None,
@@ -1483,8 +1637,7 @@ mod tests {
             },
             file_type_routing_overrides: BTreeMap::new(),
             preserve_xml_sidecars: true,
-            rename_files_default: true,
-            created_at: "2026-04-24T00:00:00Z".to_string(),
+            rename_files_default: true,            created_at: "2026-04-24T00:00:00Z".to_string(),
             updated_at: "2026-04-24T00:00:00Z".to_string(),
         };
 
@@ -1495,6 +1648,7 @@ mod tests {
             None,
             true,
             true,
+            None,
             None,
             false,
             None,
@@ -1508,6 +1662,83 @@ mod tests {
         assert_eq!(result.files_copied, 1);
         assert_eq!(result.skipped_files, 0);
         assert!(result.skipped.is_empty());
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn re_ingest_skips_already_copied_verified_files() {
+        let workspace = unique_temp_dir("ingest_pilot_resume_test");
+        let source = workspace.join("source");
+        let destination = workspace.join("output");
+        fs::create_dir_all(&source).expect("source dir");
+        fs::write(source.join("A.MP4"), vec![7; 64]).expect("media");
+
+        let preset = Preset {
+            schema_version: 1,
+            id: "preset_resume".to_string(),
+            name: "Loose".to_string(),
+            description: None,
+            icon: None,
+            color: None,
+            variables: vec![],
+            root_folder_pattern: "Proj".to_string(),
+            folder_tree: vec![],
+            file_rename_pattern: "{original_name}{ext}".to_string(),
+            clip_number_padding: 3,
+            per_folder_rename_overrides: BTreeMap::new(),
+            destinations: PresetDestinations {
+                primary: destination.to_string_lossy().to_string(),
+                secondaries: vec![],
+            },
+            file_type_routing_overrides: BTreeMap::new(),
+            preserve_xml_sidecars: true,
+            rename_files_default: true,
+            created_at: "2026-04-24T00:00:00Z".to_string(),
+            updated_at: "2026-04-24T00:00:00Z".to_string(),
+        };
+
+        let first = run_ingest(
+            &preset,
+            source.to_string_lossy().to_string(),
+            BTreeMap::new(),
+            None,
+            true,
+            true,
+            None,
+            None,
+            false,
+            None,
+            None,
+        )
+        .expect("first ingest");
+        let root = PathBuf::from(&first.root_path);
+
+        // Re-run into the same existing root: the file already verifies bit-identical,
+        // so it is skipped (no duplicate) rather than re-copied with a suffix.
+        let second = run_ingest(
+            &preset,
+            source.to_string_lossy().to_string(),
+            BTreeMap::new(),
+            Some(first.root_path.clone()),
+            true,
+            true,
+            None,
+            None,
+            true,
+            None,
+            None,
+        )
+        .expect("second ingest");
+
+        assert_eq!(second.files_copied, 1);
+        assert_eq!(second.verified_files, 1);
+        let a_files = fs::read_dir(&root)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with('A'))
+            .count();
+        assert_eq!(a_files, 1, "re-ingest should skip the already-copied file, not duplicate it");
 
         let _ = fs::remove_dir_all(workspace);
     }
@@ -1592,8 +1823,7 @@ mod tests {
             },
             file_type_routing_overrides: BTreeMap::new(),
             preserve_xml_sidecars: true,
-            rename_files_default: true,
-            created_at: "2026-04-24T00:00:00Z".to_string(),
+            rename_files_default: true,            created_at: "2026-04-24T00:00:00Z".to_string(),
             updated_at: "2026-04-24T00:00:00Z".to_string(),
         };
 
@@ -1604,6 +1834,7 @@ mod tests {
             None,
             true,
             true,
+            None,
             None,
             false,
             None,
@@ -1660,8 +1891,7 @@ mod tests {
             },
             file_type_routing_overrides: BTreeMap::new(),
             preserve_xml_sidecars: true,
-            rename_files_default: true,
-            created_at: "2026-04-24T00:00:00Z".to_string(),
+            rename_files_default: true,            created_at: "2026-04-24T00:00:00Z".to_string(),
             updated_at: "2026-04-24T00:00:00Z".to_string(),
         };
 
@@ -1672,6 +1902,7 @@ mod tests {
             None,
             true,
             true,
+            None,
             Some(vec!["A.MP4".to_string()]),
             false,
             None,
@@ -1728,8 +1959,7 @@ mod tests {
             },
             file_type_routing_overrides: BTreeMap::new(),
             preserve_xml_sidecars: true,
-            rename_files_default: true,
-            created_at: "2026-04-24T00:00:00Z".to_string(),
+            rename_files_default: true,            created_at: "2026-04-24T00:00:00Z".to_string(),
             updated_at: "2026-04-24T00:00:00Z".to_string(),
         };
 
@@ -1740,6 +1970,7 @@ mod tests {
             Some(existing_root.to_string_lossy().to_string()),
             true,
             true,
+            None,
             None,
             true,
             None,
@@ -1805,8 +2036,7 @@ mod tests {
             },
             file_type_routing_overrides: BTreeMap::new(),
             preserve_xml_sidecars: true,
-            rename_files_default: true,
-            created_at: "2026-04-24T00:00:00Z".to_string(),
+            rename_files_default: true,            created_at: "2026-04-24T00:00:00Z".to_string(),
             updated_at: "2026-04-24T00:00:00Z".to_string(),
         };
 
@@ -1817,6 +2047,7 @@ mod tests {
             None,
             true,
             true,
+            None,
             None,
             false,
             None,
@@ -1897,8 +2128,7 @@ mod tests {
             },
             file_type_routing_overrides: BTreeMap::new(),
             preserve_xml_sidecars: true,
-            rename_files_default: true,
-            created_at: "2026-04-24T00:00:00Z".to_string(),
+            rename_files_default: true,            created_at: "2026-04-24T00:00:00Z".to_string(),
             updated_at: "2026-04-24T00:00:00Z".to_string(),
         };
 
@@ -1909,6 +2139,7 @@ mod tests {
             None,
             true,
             true,
+            None,
             None,
             false,
             None,

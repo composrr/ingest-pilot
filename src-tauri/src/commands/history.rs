@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
@@ -6,7 +7,11 @@ use tauri::{AppHandle, Manager};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IngestHistoryJob {
     pub id: String,
+    #[serde(default)]
+    pub preset_id: String,
     pub preset_name: String,
+    #[serde(default)]
+    pub variable_values: BTreeMap<String, String>,
     pub status: String,
     pub started_at: String,
     pub completed_at: String,

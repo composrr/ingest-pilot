@@ -241,6 +241,12 @@ export function SettingsPage() {
               }
               value={settings.report_defaults.notes_template}
             />
+            <TextRow
+              description="Printed on offload integrity proofs (who performed the ingest)."
+              label="Operator name"
+              onChange={(operator_name) => updateSettings({ operator_name })}
+              value={settings.operator_name}
+            />
           </SettingsSection>
 
           <SettingsSection

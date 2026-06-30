@@ -29,6 +29,7 @@ export const defaultAppSettings: AppSettings = {
     thumbnail_size: 142,
     group_by_date: true,
   },
+  operator_name: "",
 };
 
 export type DroppedTemplateItems = {
@@ -105,6 +106,7 @@ export type CopiedFile = {
   source_hash: string;
   destination_hash: string;
   verified: boolean;
+  duration_ms?: number | null;
 };
 
 export type SkippedFile = {
@@ -143,7 +145,9 @@ export type IngestProgress = {
 
 export type IngestHistoryJob = {
   id: string;
+  preset_id?: string;
   preset_name: string;
+  variable_values?: Record<string, string>;
   status: string;
   started_at: string;
   completed_at: string;
@@ -203,6 +207,10 @@ export async function inspectTemplateDrop(paths: string[]) {
   return invoke<DroppedTemplateItems>("inspect_template_drop", { paths });
 }
 
+export async function filterDirectories(paths: string[]) {
+  return invoke<string[]>("filter_directories", { paths });
+}
+
 export async function previewPattern(pattern: string, context: TokenContext) {
   return invoke<string>("preview_pattern", { pattern, context });
 }
@@ -242,6 +250,7 @@ export async function runIngest(
   destinationOverride: string | undefined,
   preserveSidecars: boolean,
   renameFiles: boolean,
+  cameraOverride: string | undefined,
   includedRelativePaths: string[],
   useExistingRoot: boolean,
   jobId: string,
@@ -253,6 +262,7 @@ export async function runIngest(
     destinationOverride: destinationOverride || null,
     preserveSidecars,
     renameFiles,
+    cameraOverride: cameraOverride || null,
     includedRelativePaths,
     useExistingRoot,
     jobId,
@@ -261,6 +271,37 @@ export async function runIngest(
 
 export async function cancelIngest(jobId: string) {
   return invoke<void>("cancel_ingest", { jobId });
+}
+
+export type RetryFailedItem = {
+  source_path: string;
+  destination_path: string;
+  kind: ScanFileKind;
+  size_bytes: number;
+};
+
+export async function retryFailedCopies(items: RetryFailedItem[]) {
+  return invoke<CopiedFile[]>("retry_failed_copies", { items });
+}
+
+export async function generateOffloadProof(args: {
+  rootPath: string;
+  presetName: string;
+  sourcePaths: string[];
+  destinationPaths: string[];
+  copiedFiles: CopiedFile[];
+  filesCopied: number;
+  verifiedFiles: number;
+  verificationFailed: number;
+  bytesCopied: number;
+  operator: string;
+  generatedAt: string;
+}) {
+  return invoke<string>("generate_offload_proof", args);
+}
+
+export async function exportReelIndex(rootPath: string, copiedFiles: CopiedFile[], format: "csv" | "json") {
+  return invoke<string>("export_reel_index", { rootPath, copiedFiles, format });
 }
 
 export async function listHistory() {
@@ -307,6 +348,7 @@ export async function generateIngestReport(
   presetName: string,
   sourcePath: string,
   rootPath: string,
+  destinationRoots: string[],
   variableValues: Record<string, string>,
   copiedFiles: CopiedFile[],
   skippedFiles: SkippedFile[],
@@ -321,6 +363,7 @@ export async function generateIngestReport(
     presetName,
     sourcePath,
     rootPath,
+    destinationRoots,
     variableValues,
     copiedFiles,
     skippedFiles,

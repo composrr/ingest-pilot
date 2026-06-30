@@ -45,6 +45,19 @@ pub fn open_path(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Returns only the dropped paths that are existing directories, preserving order
+/// and dropping duplicates. Used by queue-mode drag-and-drop so each dropped folder
+/// becomes one card and stray files are ignored.
+#[tauri::command]
+pub fn filter_directories(paths: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    paths
+        .into_iter()
+        .filter(|path| std::path::Path::new(path).is_dir())
+        .filter(|path| seen.insert(path.clone()))
+        .collect()
+}
+
 #[tauri::command]
 pub async fn disk_space(path: String) -> Result<DiskSpace, String> {
     tauri::async_runtime::spawn_blocking(move || disk_space_inner(path))

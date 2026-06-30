@@ -34,6 +34,55 @@ export function currentLocalDate(date = new Date()) {
   return localDate.toISOString().slice(0, 10);
 }
 
+// Build per-variable autocomplete suggestions from past ingest jobs (newest first),
+// keeping the most recent distinct values per variable id. Accepts a minimal shape
+// so it doesn't depend on the full IngestHistoryJob type.
+export function recentValuesByVariable(
+  jobs: { variable_values?: Record<string, string> }[],
+  limit = 8,
+): Record<string, string[]> {
+  const byId: Record<string, string[]> = {};
+  for (const job of jobs) {
+    const values = job.variable_values ?? {};
+    for (const [id, raw] of Object.entries(values)) {
+      const value = (raw ?? "").trim();
+      if (!value) {
+        continue;
+      }
+      const list = byId[id] ?? (byId[id] = []);
+      if (list.length < limit && !list.includes(value)) {
+        list.push(value);
+      }
+    }
+  }
+  return byId;
+}
+
+// Median transfer rate (bytes/sec) across past jobs, derived from bytes_copied and
+// the started/completed timestamps. Used to estimate ingest time for a destination.
+export function medianHistoricalBytesPerSecond(
+  jobs: { bytes_copied?: number; started_at?: string; completed_at?: string }[],
+): number {
+  const rates: number[] = [];
+  for (const job of jobs) {
+    const bytes = job.bytes_copied ?? 0;
+    if (bytes <= 0 || !job.started_at || !job.completed_at) {
+      continue;
+    }
+    const ms = new Date(job.completed_at).getTime() - new Date(job.started_at).getTime();
+    if (ms <= 0) {
+      continue;
+    }
+    rates.push((bytes / ms) * 1000);
+  }
+  if (!rates.length) {
+    return 0;
+  }
+  rates.sort((a, b) => a - b);
+  const mid = Math.floor(rates.length / 2);
+  return rates.length % 2 ? rates[mid] : (rates[mid - 1] + rates[mid]) / 2;
+}
+
 export function optionsFromText(value: string) {
   return value
     .split(",")
