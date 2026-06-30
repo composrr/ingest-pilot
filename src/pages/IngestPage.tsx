@@ -866,7 +866,6 @@ export function IngestPage() {
         progress={ingestProgress}
         speedSeries={speedSeries}
         instantaneousBps={instantaneousBps}
-        targetBps={preset?.target_bps ?? 0}
         selectedBytes={selectedBytes}
         selectedCount={selectedFileCount}
       />
@@ -1362,7 +1361,6 @@ function IngestRunScreen({
   progress,
   speedSeries,
   instantaneousBps,
-  targetBps,
   selectedBytes,
   selectedCount,
 }: {
@@ -1371,23 +1369,12 @@ function IngestRunScreen({
   progress: IngestProgress | null;
   speedSeries: SpeedPoint[];
   instantaneousBps: number;
-  targetBps: number;
   selectedBytes: number;
   selectedCount: number;
 }) {
   const percent = progress ? progressPercent(progress) : 0;
   // Real windowed throughput (matches the graph), not the backend cumulative average.
   const speed = formatBytes(instantaneousBps);
-  // Color the Speed tile vs an optional preset target (only once data is flowing).
-  const speedTone =
-    targetBps > 0 && instantaneousBps > 0
-      ? instantaneousBps >= targetBps
-        ? "ok"
-        : instantaneousBps >= targetBps * 0.5
-          ? "warn"
-          : "bad"
-      : undefined;
-  const speedSub = targetBps > 0 ? `target ${formatBytes(targetBps)}/s` : undefined;
   const remaining = progress?.remaining_ms ? formatDuration(progress.remaining_ms) : "--";
   const elapsed = progress ? formatDuration(progress.elapsed_ms) : "0s";
   const totalBytes = progress?.total_bytes || selectedBytes;
@@ -1433,14 +1420,14 @@ function IngestRunScreen({
                   <span className="pb-1 text-sm font-semibold text-graphite">%</span>
                 </div>
               </div>
-              <SummaryTile label="Speed" value={`${speed}/s`} tone={speedTone} sub={speedSub} />
+              <SummaryTile label="Speed" value={`${speed}/s`} />
               <SummaryTile label="Remaining" value={remaining} />
               <SummaryTile label="Copied" value={`${progress?.files_done ?? 0}/${progress?.total_files ?? selectedCount}`} />
               <SummaryTile label="Elapsed" value={elapsed} />
             </div>
 
             <div className="relative h-[300px] overflow-hidden rounded-2xl border border-mist bg-porcelain/35 p-3">
-              <SpeedChart series={speedSeries} targetBps={targetBps} />
+              <SpeedChart series={speedSeries} />
               <div className="absolute bottom-4 left-4 right-4">
                 <div className="mb-2 flex items-center justify-between text-xs font-semibold text-graphite">
                   <span>{formatBytes(copiedBytes)} copied</span>
@@ -1613,7 +1600,7 @@ function windowedSpeed(buffer: SpeedSample[], windowMs: number): number {
   return (db / dt) * 1000;
 }
 
-function SpeedChart({ series, targetBps = 0 }: { series: SpeedPoint[]; targetBps?: number }) {
+function SpeedChart({ series }: { series: SpeedPoint[] }) {
   const PAD_L = 40;
   const PAD_R = 760;
   const PAD_T = 28;
@@ -1622,8 +1609,7 @@ function SpeedChart({ series, targetBps = 0 }: { series: SpeedPoint[]; targetBps
   const tNewest = visible.length > 0 ? visible[visible.length - 1].t : 0;
   const xWindow0 = tNewest - CHART_WINDOW_MS;
   const maxBps = visible.reduce((max, point) => Math.max(max, point.bps), 0);
-  // Keep the target line within view by including it in the vertical scale.
-  const yMax = Math.max(maxBps * 1.15, targetBps > 0 ? targetBps * 1.1 : 0, 1);
+  const yMax = Math.max(maxBps * 1.15, 1);
 
   const x = (t: number) => {
     const fraction = Math.max(0, Math.min(1, (t - xWindow0) / CHART_WINDOW_MS));
@@ -1653,23 +1639,6 @@ function SpeedChart({ series, targetBps = 0 }: { series: SpeedPoint[]; targetBps
       {areaPath ? <path d={areaPath} fill="url(#transferFill)" /> : null}
       {linePath ? (
         <path d={linePath} fill="none" stroke="#8f67dd" strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" />
-      ) : null}
-      {/* target line */}
-      {targetBps > 0 ? (
-        <>
-          <line
-            x1={PAD_L}
-            x2={PAD_R}
-            y1={y(targetBps)}
-            y2={y(targetBps)}
-            stroke="#78d88f"
-            strokeWidth="1.5"
-            strokeDasharray="6 5"
-          />
-          <text x={PAD_R} y={y(targetBps) - 5} fontSize="11" fontWeight="600" fill="#4f9d6b" textAnchor="end">
-            target {formatBytes(targetBps)}/s
-          </text>
-        </>
       ) : null}
       {/* axis labels */}
       <text x={PAD_L} y={PAD_T - 10} fontSize="13" fontWeight="600" fill="#8a8577">

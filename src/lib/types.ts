@@ -60,7 +60,6 @@ export type Preset = {
   file_type_routing_overrides: Record<string, string>;
   preserve_xml_sidecars: boolean;
   rename_files_default: boolean;
-  target_bps: number;
   created_at: string;
   updated_at: string;
 };

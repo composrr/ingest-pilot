@@ -336,9 +336,7 @@ mod tests {
             },
             file_type_routing_overrides: BTreeMap::new(),
             preserve_xml_sidecars: true,
-            rename_files_default: true,
-            target_bps: 0,
-            created_at: "2026-04-24T00:00:00Z".to_string(),
+            rename_files_default: true,            created_at: "2026-04-24T00:00:00Z".to_string(),
             updated_at: "2026-04-24T00:00:00Z".to_string(),
         };
 
