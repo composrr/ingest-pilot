@@ -888,6 +888,105 @@ export function IngestPage() {
     );
   }
 
+  // Dedicated post-ingest delivery screen: a distinct "done" view with all the
+  // stats/records, instead of an inline panel on the setup page.
+  if (ingestResult) {
+    const result = ingestResult;
+    const allVerified = result.verification_failed === 0;
+    return (
+      <div className="tool-density flex min-h-full w-full min-w-0 flex-col rounded-[28px] border border-mist bg-paper p-2 shadow-panel xl:p-3">
+        <header className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <p className="mb-0.5 text-[11px] font-semibold text-graphite/70">Delivery</p>
+            <h1 className="text-xl font-semibold tracking-normal">
+              {allVerified ? "Ingest complete" : "Ingest complete — review needed"}
+            </h1>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {result.report_path ? (
+              <button
+                className="text-xs font-semibold text-graphite underline-offset-2 hover:underline"
+                onClick={() => void openPath(result.report_path)}
+                type="button"
+              >
+                Open report
+              </button>
+            ) : null}
+            <button
+              className="text-xs font-semibold text-graphite underline-offset-2 hover:underline"
+              onClick={() => void openPath(result.root_path)}
+              type="button"
+            >
+              Open folder
+            </button>
+            <button
+              className="text-xs font-semibold text-graphite underline-offset-2 hover:underline disabled:opacity-60"
+              disabled={isSavingProof}
+              onClick={() => void saveOffloadProof()}
+              type="button"
+            >
+              {isSavingProof ? "Saving proof…" : "Offload proof (PDF)"}
+            </button>
+            <button
+              className="text-xs font-semibold text-graphite underline-offset-2 hover:underline"
+              onClick={() => void saveReelIndex()}
+              type="button"
+            >
+              Reel index (CSV)
+            </button>
+            <button
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-signal px-3 text-xs font-semibold text-paper transition hover:bg-black"
+              onClick={() => setIngestResult(null)}
+              type="button"
+            >
+              New ingest
+            </button>
+          </div>
+        </header>
+        <div className="min-h-0 flex-1 overflow-auto">
+          <section className="overflow-hidden rounded-2xl border border-mist bg-white">
+            <div className="grid grid-cols-2 gap-2 border-b border-mist bg-porcelain/50 p-2.5 md:grid-cols-4">
+              <SummaryTile label="Copied" value={String(result.files_copied)} />
+              <SummaryTile label="Verified" value={`${result.verified_files}/${result.files_copied}`} />
+              <SummaryTile label="Failed" value={String(result.verification_failed)} />
+              <SummaryTile label="Copied size" value={formatBytes(result.bytes_copied)} />
+            </div>
+            <VerificationPanel
+              destinations={destinationTargets}
+              isRetrying={isRetrying}
+              onRetry={() => void retryFailedCopiesForResult()}
+              result={result}
+            />
+            <CoverageCard files={result.copied_files} />
+            {reportBuild.status !== "idle" ? (
+              <div className="border-b border-mist px-3 py-2">
+                <div className="mb-1 flex items-center justify-between gap-3 text-xs font-semibold text-graphite">
+                  <span>{reportStatusLabel(reportBuild)}</span>
+                  {reportBuild.progress ? (
+                    <span>
+                      {reportBuild.progress.files_done}/{reportBuild.progress.total_files} thumbnails
+                    </span>
+                  ) : null}
+                </div>
+                {reportBuild.status === "building" ? (
+                  <div className="h-2 overflow-hidden rounded-full bg-porcelain">
+                    <div
+                      className="h-full rounded-full bg-lavender transition-all"
+                      style={{ width: `${reportBuild.progress ? progressPercent(reportBuild.progress) : 6}%` }}
+                    />
+                  </div>
+                ) : null}
+                {reportBuild.error ? (
+                  <p className="mt-1 text-[11px] font-semibold text-red-700">{reportBuild.error}</p>
+                ) : null}
+              </div>
+            ) : null}
+          </section>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="tool-density flex min-h-full w-full min-w-0 flex-col rounded-[28px] border border-mist bg-paper p-2 shadow-panel xl:p-3">
       <header className="mb-2 flex flex-wrap items-center justify-between gap-2">
@@ -1218,81 +1317,6 @@ export function IngestPage() {
 
             <OutputPreviewCard preview={outputPreview} />
           </div>
-
-          {ingestResult ? (
-            <section className="overflow-hidden rounded-2xl border border-mist bg-white">
-              <div className="flex h-9 items-center justify-between border-b border-mist px-3">
-                <h2 className="text-sm font-semibold">Ingest Result</h2>
-                <div className="flex items-center gap-2">
-                  {ingestResult.report_path ? (
-                    <button
-                      className="text-xs font-semibold text-graphite underline-offset-2 hover:underline"
-                      onClick={() => void openPath(ingestResult.report_path)}
-                      type="button"
-                    >
-                      Open report
-                    </button>
-                  ) : null}
-                  <button
-                    className="text-xs font-semibold text-graphite underline-offset-2 hover:underline"
-                    onClick={() => void openPath(ingestResult.root_path)}
-                    type="button"
-                  >
-                    Open folder
-                  </button>
-                  <button
-                    className="text-xs font-semibold text-graphite underline-offset-2 hover:underline disabled:opacity-60"
-                    disabled={isSavingProof}
-                    onClick={() => void saveOffloadProof()}
-                    type="button"
-                  >
-                    {isSavingProof ? "Saving proof…" : "Offload proof (PDF)"}
-                  </button>
-                  <button
-                    className="text-xs font-semibold text-graphite underline-offset-2 hover:underline"
-                    onClick={() => void saveReelIndex()}
-                    type="button"
-                  >
-                    Reel index (CSV)
-                  </button>
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-2 border-b border-mist bg-porcelain/50 p-2.5 md:grid-cols-4">
-                <SummaryTile label="Copied" value={String(ingestResult.files_copied)} />
-                <SummaryTile label="Verified" value={`${ingestResult.verified_files}/${ingestResult.files_copied}`} />
-                <SummaryTile label="Failed" value={String(ingestResult.verification_failed)} />
-                <SummaryTile label="Copied size" value={formatBytes(ingestResult.bytes_copied)} />
-              </div>
-              <VerificationPanel
-                destinations={destinationTargets}
-                isRetrying={isRetrying}
-                onRetry={() => void retryFailedCopiesForResult()}
-                result={ingestResult}
-              />
-              <CoverageCard files={ingestResult.copied_files} />
-              {reportBuild.status !== "idle" ? (
-                <div className="border-b border-mist px-3 py-2">
-                  <div className="mb-1 flex items-center justify-between gap-3 text-xs font-semibold text-graphite">
-                    <span>{reportStatusLabel(reportBuild)}</span>
-                    {reportBuild.progress ? (
-                      <span>
-                        {reportBuild.progress.files_done}/{reportBuild.progress.total_files} thumbnails
-                      </span>
-                    ) : null}
-                  </div>
-                  {reportBuild.status === "building" ? (
-                    <div className="h-2 overflow-hidden rounded-full bg-porcelain">
-                      <div
-                        className="h-full rounded-full bg-lavender transition-all"
-                        style={{ width: `${reportBuild.progress ? progressPercent(reportBuild.progress) : 6}%` }}
-                      />
-                    </div>
-                  ) : null}
-                  {reportBuild.error ? <p className="mt-1 text-[11px] font-semibold text-red-700">{reportBuild.error}</p> : null}
-                </div>
-              ) : null}
-            </section>
-          ) : null}
 
           {scan ? (
             <section className="overflow-hidden rounded-2xl border border-mist bg-white">
