@@ -30,6 +30,7 @@ pub fn run() {
             commands::ingest::scaffold_project,
             commands::ingest::run_ingest,
             commands::ingest::retry_failed_copies,
+            commands::ingest::generate_offload_proof,
             commands::ingest::cancel_ingest,
             commands::ingest::write_ingest_report,
             commands::ingest::generate_ingest_report,

@@ -29,6 +29,7 @@ export const defaultAppSettings: AppSettings = {
     thumbnail_size: 142,
     group_by_date: true,
   },
+  operator_name: "",
 };
 
 export type DroppedTemplateItems = {
@@ -275,6 +276,22 @@ export type RetryFailedItem = {
 
 export async function retryFailedCopies(items: RetryFailedItem[]) {
   return invoke<CopiedFile[]>("retry_failed_copies", { items });
+}
+
+export async function generateOffloadProof(args: {
+  rootPath: string;
+  presetName: string;
+  sourcePaths: string[];
+  destinationPaths: string[];
+  copiedFiles: CopiedFile[];
+  filesCopied: number;
+  verifiedFiles: number;
+  verificationFailed: number;
+  bytesCopied: number;
+  operator: string;
+  generatedAt: string;
+}) {
+  return invoke<string>("generate_offload_proof", args);
 }
 
 export async function listHistory() {

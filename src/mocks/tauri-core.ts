@@ -330,6 +330,9 @@ export async function invoke<T = unknown>(command: string, args?: Record<string,
         duration_ms: null,
       })) as T;
 
+    case "generate_offload_proof":
+      return `${a.rootPath ?? "E:/MediaServer/Project"}/Project_OffloadProof.pdf` as T;
+
     case "list_history":
       return history as T;
     case "save_history_job":

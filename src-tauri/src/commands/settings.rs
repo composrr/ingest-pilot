@@ -17,6 +17,9 @@ pub struct AppSettings {
     pub camera_watcher: CameraWatcherSettings,
     #[serde(default)]
     pub file_selector: FileSelectorSettings,
+    /// Operator name printed on offload integrity proofs.
+    #[serde(default)]
+    pub operator_name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

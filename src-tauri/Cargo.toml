@@ -19,4 +19,5 @@ tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 chrono = { version = "0.4", features = ["serde"] }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
+printpdf = "0.7"
 windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }

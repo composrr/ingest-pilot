@@ -98,6 +98,7 @@ export type AppSettings = {
     thumbnail_size: number;
     group_by_date: boolean;
   };
+  operator_name: string;
 };
 
 export type TokenContext = {

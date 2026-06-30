@@ -4,6 +4,7 @@ use crate::ingest::copier::{
     attach_report_thumbnails, recopy_and_verify, run_ingest as run_ingest_copy, CopiedFile,
     IngestProgress, IngestResult, SkippedFile,
 };
+use crate::ingest::offload_proof::{write_offload_proof, OffloadProofInput};
 use crate::ingest::report::{write_html_report, ReportInput};
 use crate::ingest::scanner::ScanFileKind;
 use serde::Deserialize;
@@ -119,6 +120,41 @@ pub async fn retry_failed_copies(items: Vec<RetryFailedItem>) -> Result<Vec<Copi
     })
     .await
     .map_err(|error| format!("Retry worker failed: {error}"))?
+}
+
+/// Build a printable PDF offload integrity proof at the project root.
+#[tauri::command]
+pub async fn generate_offload_proof(
+    root_path: String,
+    preset_name: String,
+    source_paths: Vec<String>,
+    destination_paths: Vec<String>,
+    copied_files: Vec<CopiedFile>,
+    files_copied: usize,
+    verified_files: usize,
+    verification_failed: usize,
+    bytes_copied: u64,
+    operator: String,
+    generated_at: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = write_offload_proof(OffloadProofInput {
+            root_path: &root_path,
+            preset_name: &preset_name,
+            source_paths: &source_paths,
+            destination_paths: &destination_paths,
+            copied_files: &copied_files,
+            files_copied,
+            verified_files,
+            verification_failed,
+            bytes_copied,
+            operator: &operator,
+            generated_at: &generated_at,
+        })?;
+        Ok(path.to_string_lossy().to_string())
+    })
+    .await
+    .map_err(|error| format!("Offload proof worker failed: {error}"))?
 }
 
 #[tauri::command]

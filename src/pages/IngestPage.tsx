@@ -23,6 +23,7 @@ import {
   cancelIngest,
   diskSpace,
   generateIngestReport,
+  generateOffloadProof,
   runIngest,
   retryFailedCopies,
   saveHistoryJob,
@@ -74,6 +75,7 @@ export function IngestPage() {
   const [variableSuggestions, setVariableSuggestions] = useState<Record<string, string[]>>({});
   const [historicalBps, setHistoricalBps] = useState(0);
   const [isRetrying, setIsRetrying] = useState(false);
+  const [isSavingProof, setIsSavingProof] = useState(false);
   const currentIngestJobId = useRef<string | null>(null);
   // Variable values from a replayed recent ingest, applied once the new preset's
   // parameters resolve (so the defaults effect below doesn't clobber them).
@@ -229,6 +231,36 @@ export function IngestPage() {
       setError(String(caught));
     } finally {
       setIsRetrying(false);
+    }
+  }
+
+  // Generate a printable PDF offload integrity proof at the project root and open it.
+  async function saveOffloadProof() {
+    if (!ingestResult || !preset) {
+      return;
+    }
+    setIsSavingProof(true);
+    setError(null);
+    try {
+      const path = await generateOffloadProof({
+        rootPath: ingestResult.root_path,
+        presetName: preset.name,
+        sourcePaths,
+        destinationPaths: destinationTargets,
+        copiedFiles: ingestResult.copied_files,
+        filesCopied: ingestResult.files_copied,
+        verifiedFiles: ingestResult.verified_files,
+        verificationFailed: ingestResult.verification_failed,
+        bytesCopied: ingestResult.bytes_copied,
+        operator: appSettings.operator_name ?? "",
+        generatedAt: new Date().toLocaleString(),
+      });
+      await openPath(path);
+      setLastAction("Offload proof saved");
+    } catch (caught) {
+      setError(String(caught));
+    } finally {
+      setIsSavingProof(false);
     }
   }
 
@@ -1113,6 +1145,14 @@ export function IngestPage() {
                     type="button"
                   >
                     Open folder
+                  </button>
+                  <button
+                    className="text-xs font-semibold text-graphite underline-offset-2 hover:underline disabled:opacity-60"
+                    disabled={isSavingProof}
+                    onClick={() => void saveOffloadProof()}
+                    type="button"
+                  >
+                    {isSavingProof ? "Saving proof…" : "Offload proof (PDF)"}
                   </button>
                 </div>
               </div>
