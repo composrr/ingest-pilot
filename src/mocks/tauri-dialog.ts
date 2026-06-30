@@ -7,10 +7,15 @@ type OpenOptions = {
   filters?: unknown;
 };
 
+let directoryPickCount = 0;
+
 export async function open(options: OpenOptions = {}): Promise<string | string[] | null> {
   await new Promise((resolve) => setTimeout(resolve, 80));
   if (options.directory) {
-    const path = "E:/MediaServer";
+    // Rotate folder names so repeated picks (e.g. queue cards) look distinct.
+    const cards = ["CARD_A", "CARD_B", "CARD_C", "CARD_D"];
+    const path = `E:/${cards[directoryPickCount % cards.length]}`;
+    directoryPickCount += 1;
     return options.multiple ? [path] : path;
   }
   const file = "D:/A001_SONY/example.preset";

@@ -1306,7 +1306,11 @@ export function IngestPage() {
             </button>
             <button
               className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-signal px-3 text-xs font-semibold text-paper transition hover:bg-black"
-              onClick={() => setIngestResult(null)}
+              onClick={() => {
+                setIngestResult(null);
+                setQueue([]);
+                cardScanPromises.current.clear();
+              }}
               type="button"
             >
               New ingest
@@ -1321,6 +1325,7 @@ export function IngestPage() {
               <SummaryTile label="Failed" value={String(result.verification_failed)} />
               <SummaryTile label="Copied size" value={formatBytes(result.bytes_copied)} />
             </div>
+            {queue.some((card) => card.result) ? <QueueCardsSummary cards={queue} /> : null}
             <VerificationPanel
               destinations={destinationTargets}
               isRetrying={isRetrying}
@@ -2014,6 +2019,63 @@ function QueuePanel({
           {fileCount} files / {formatBytes(byteCount)} queued · set the {"{camera}"} tag per card
         </p>
       ) : null}
+    </div>
+  );
+}
+
+// Per-card breakdown on the delivery screen for a queue run — one row per imported
+// card with its camera tag, file/verify counts, size, and status.
+function QueueCardsSummary({ cards }: { cards: QueueCard[] }) {
+  const shown = cards.filter((card) => card.result || card.status === "done" || card.status === "error");
+  return (
+    <div className="border-b border-mist px-3 py-2.5">
+      <div className="mb-1.5 flex items-center justify-between text-[11px] font-semibold uppercase tracking-wide text-graphite/60">
+        <span>Cards imported</span>
+        <span>{shown.length}</span>
+      </div>
+      <div className="space-y-1">
+        {shown.map((card, index) => {
+          const result = card.result;
+          const status = QUEUE_STATUS_STYLES[card.status];
+          const allVerified = result ? result.verification_failed === 0 : card.status === "done";
+          return (
+            <div
+              key={card.id}
+              className="grid grid-cols-[auto_1fr_auto] items-center gap-2 rounded-lg border border-mist bg-white px-2 py-1.5"
+            >
+              <span className="flex h-5 w-5 items-center justify-center rounded-full bg-porcelain text-[10px] font-bold text-graphite">
+                {index + 1}
+              </span>
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className="min-w-0 truncate text-xs font-semibold text-ink" title={card.sourcePath}>
+                    {pathDisplayName(card.sourcePath)}
+                  </span>
+                  {card.cameraAlias.trim() ? (
+                    <span className="shrink-0 rounded bg-porcelain px-1.5 py-0.5 text-[10px] font-semibold text-graphite">
+                      {card.cameraAlias.trim()}
+                    </span>
+                  ) : null}
+                </div>
+                <span className="text-[11px] text-graphite">
+                  {result
+                    ? `${result.verified_files}/${result.files_copied} verified · ${formatBytes(result.bytes_copied)}`
+                    : card.status === "done"
+                      ? "No media copied"
+                      : (card.error ?? "Not imported")}
+                </span>
+              </div>
+              <span
+                className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                  result && !allVerified ? "bg-red-100 text-red-700" : status.className
+                }`}
+              >
+                {result ? (allVerified ? "Verified" : `${result.verification_failed} failed`) : status.label}
+              </span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
