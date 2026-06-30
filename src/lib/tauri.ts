@@ -296,6 +296,10 @@ export async function generateOffloadProof(args: {
   return invoke<string>("generate_offload_proof", args);
 }
 
+export async function exportReelIndex(rootPath: string, copiedFiles: CopiedFile[], format: "csv" | "json") {
+  return invoke<string>("export_reel_index", { rootPath, copiedFiles, format });
+}
+
 export async function listHistory() {
   return invoke<IngestHistoryJob[]>("list_history");
 }

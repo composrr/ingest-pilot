@@ -5,6 +5,7 @@ use crate::ingest::copier::{
     IngestProgress, IngestResult, SkippedFile,
 };
 use crate::ingest::offload_proof::{write_offload_proof, OffloadProofInput};
+use crate::ingest::reel_index::write_reel_index;
 use crate::ingest::report::{write_html_report, ReportInput};
 use crate::ingest::scanner::ScanFileKind;
 use serde::Deserialize;
@@ -157,6 +158,21 @@ pub async fn generate_offload_proof(
     })
     .await
     .map_err(|error| format!("Offload proof worker failed: {error}"))?
+}
+
+/// Write a per-clip reel index (CSV or JSON) to the project root.
+#[tauri::command]
+pub async fn export_reel_index(
+    root_path: String,
+    copied_files: Vec<CopiedFile>,
+    format: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = write_reel_index(&root_path, &copied_files, format != "json")?;
+        Ok(path.to_string_lossy().to_string())
+    })
+    .await
+    .map_err(|error| format!("Reel index worker failed: {error}"))?
 }
 
 #[tauri::command]

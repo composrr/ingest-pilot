@@ -31,6 +31,7 @@ pub fn run() {
             commands::ingest::run_ingest,
             commands::ingest::retry_failed_copies,
             commands::ingest::generate_offload_proof,
+            commands::ingest::export_reel_index,
             commands::ingest::cancel_ingest,
             commands::ingest::write_ingest_report,
             commands::ingest::generate_ingest_report,

@@ -22,6 +22,7 @@ import {
   previewPattern,
   cancelIngest,
   diskSpace,
+  exportReelIndex,
   generateIngestReport,
   generateOffloadProof,
   runIngest,
@@ -262,6 +263,21 @@ export function IngestPage() {
       setError(String(caught));
     } finally {
       setIsSavingProof(false);
+    }
+  }
+
+  // Export a per-clip reel index (CSV) to the project root and open it.
+  async function saveReelIndex() {
+    if (!ingestResult) {
+      return;
+    }
+    setError(null);
+    try {
+      const path = await exportReelIndex(ingestResult.root_path, ingestResult.copied_files, "csv");
+      await openPath(path);
+      setLastAction("Reel index saved");
+    } catch (caught) {
+      setError(String(caught));
     }
   }
 
@@ -1187,6 +1203,13 @@ export function IngestPage() {
                     type="button"
                   >
                     {isSavingProof ? "Saving proof…" : "Offload proof (PDF)"}
+                  </button>
+                  <button
+                    className="text-xs font-semibold text-graphite underline-offset-2 hover:underline"
+                    onClick={() => void saveReelIndex()}
+                    type="button"
+                  >
+                    Reel index (CSV)
                   </button>
                 </div>
               </div>

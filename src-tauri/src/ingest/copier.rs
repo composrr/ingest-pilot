@@ -1410,6 +1410,23 @@ fn camera_hint(file: &ScannedFile) -> String {
         .to_string()
 }
 
+/// Camera label derived from a source file path (used by the reel index, which
+/// only has the path, not the scanned-file record).
+pub fn camera_label_for_path(source_path: &str) -> String {
+    let path = Path::new(source_path);
+    if let Some(stem) = path.file_stem().and_then(|value| value.to_str()) {
+        if let Some(prefix) = camera_prefix_from_stem(stem) {
+            return prefix;
+        }
+    }
+    path.ancestors()
+        .skip(1)
+        .filter_map(|ancestor| ancestor.file_name().and_then(|value| value.to_str()))
+        .find(|value| !is_generic_camera_folder(value) && !value.trim().is_empty())
+        .unwrap_or("CAM")
+        .to_string()
+}
+
 fn camera_prefix_from_stem(stem: &str) -> Option<String> {
     let prefix = stem
         .split(['_', '-', ' '])
