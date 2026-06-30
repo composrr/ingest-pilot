@@ -278,6 +278,10 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
                   onChange={(rename_files_default) => updateDraft({ rename_files_default })}
                   value={draft.rename_files_default}
                 />
+                <SpeedTargetField
+                  onChange={(target_bps) => updateDraft({ target_bps })}
+                  value={draft.target_bps}
+                />
               </div>
             </section>
 
@@ -496,6 +500,37 @@ function RenameToggle({
           type="checkbox"
         />
         <span className="truncate text-xs font-medium text-graphite">Rename clips with the file pattern by default</span>
+      </span>
+    </label>
+  );
+}
+
+function SpeedTargetField({
+  onChange,
+  value,
+}: {
+  onChange: (value: number) => void;
+  value: number;
+}) {
+  // Stored as bytes/sec; edited as MB/s. 0 = no target.
+  const mbps = value > 0 ? Math.round(value / 1_000_000) : "";
+  return (
+    <label className="grid min-h-10 grid-cols-[110px_1fr] items-center gap-2 px-3 py-1.5">
+      <span className="text-xs font-semibold text-graphite">Speed target</span>
+      <span className="flex min-w-0 items-center gap-2">
+        <input
+          className="h-8 w-20 rounded-lg border border-mist bg-white px-2 text-xs outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+          inputMode="numeric"
+          min={0}
+          onChange={(event) => {
+            const next = Number(event.target.value);
+            onChange(Number.isFinite(next) && next > 0 ? Math.round(next * 1_000_000) : 0);
+          }}
+          placeholder="—"
+          type="number"
+          value={mbps}
+        />
+        <span className="truncate text-xs font-medium text-graphite">MB/s target on the run screen (optional)</span>
       </span>
     </label>
   );

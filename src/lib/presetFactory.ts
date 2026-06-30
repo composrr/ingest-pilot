@@ -57,6 +57,7 @@ export function createBlankPreset(): Preset {
     file_type_routing_overrides: {},
     preserve_xml_sidecars: true,
     rename_files_default: true,
+    target_bps: 0,
     created_at: now,
     updated_at: now,
   };
@@ -145,6 +146,7 @@ export function createStarterPreset(): Preset {
     },
     preserve_xml_sidecars: true,
     rename_files_default: true,
+    target_bps: 0,
     created_at: now,
     updated_at: now,
   };
