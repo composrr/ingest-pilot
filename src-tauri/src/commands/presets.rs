@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 #[tauri::command]
 pub fn list_presets(app: AppHandle) -> Result<Vec<PresetSummary>, String> {
@@ -138,11 +138,7 @@ pub fn inspect_template_drop(paths: Vec<String>) -> Result<DroppedTemplateItems,
 }
 
 fn preset_directory(app: &AppHandle) -> Result<PathBuf, String> {
-    let documents = app
-        .path()
-        .document_dir()
-        .map_err(|error| error.to_string())?;
-    Ok(documents.join("IngestPilot").join("Presets"))
+    Ok(crate::core::storage::app_data_root(app)?.join("Presets"))
 }
 
 fn folder_node_from_path(path: &Path, ids: &mut HashSet<String>) -> Result<FolderNode, String> {

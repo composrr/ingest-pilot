@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct AppSettings {
@@ -189,9 +189,5 @@ fn default_thumbnail_size() -> u16 {
 }
 
 fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let documents = app
-        .path()
-        .document_dir()
-        .map_err(|error| error.to_string())?;
-    Ok(documents.join("IngestPilot").join("settings.json"))
+    Ok(crate::core::storage::app_data_root(app)?.join("settings.json"))
 }

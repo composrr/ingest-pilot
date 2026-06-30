@@ -5,4 +5,5 @@ pub mod hash;
 pub mod job;
 pub mod mhl;
 pub mod preset;
+pub mod storage;
 pub mod token;

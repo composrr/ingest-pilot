@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IngestHistoryJob {
@@ -72,9 +72,5 @@ fn write_history(app: &AppHandle, jobs: &[IngestHistoryJob]) -> Result<(), Strin
 }
 
 fn history_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let documents = app
-        .path()
-        .document_dir()
-        .map_err(|error| error.to_string())?;
-    Ok(documents.join("IngestPilot").join("history.json"))
+    Ok(crate::core::storage::app_data_root(app)?.join("history.json"))
 }
