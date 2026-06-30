@@ -585,6 +585,7 @@ export function IngestPage() {
         void buildReportInBackground({
           completedAt,
           destinationPaths: destinationTargets,
+          destinationRoots: [...new Set(results.map((entry) => entry.root_path))],
           jobId,
           presetId: selectedPresetId,
           presetName: preset.name,
@@ -615,6 +616,7 @@ export function IngestPage() {
   async function buildReportInBackground({
     completedAt,
     destinationPaths,
+    destinationRoots,
     jobId,
     presetId,
     presetName,
@@ -625,6 +627,7 @@ export function IngestPage() {
   }: {
     completedAt: string;
     destinationPaths: string[];
+    destinationRoots: string[];
     jobId: string;
     presetId: string;
     presetName: string;
@@ -649,6 +652,7 @@ export function IngestPage() {
         presetName,
         sourcePaths.join("; "),
         result.root_path,
+        destinationRoots,
         variableValues,
         result.copied_files,
         result.skipped,

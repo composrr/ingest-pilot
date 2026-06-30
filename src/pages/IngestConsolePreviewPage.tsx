@@ -296,6 +296,7 @@ export function IngestConsolePreviewPage() {
         presetName,
         sourcePath,
         ingestResult.root_path,
+        [ingestResult.root_path],
         variableValues,
         ingestResult.copied_files,
         ingestResult.skipped,

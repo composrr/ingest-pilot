@@ -10,6 +10,8 @@ pub struct ReportInput<'a> {
     pub preset_name: &'a str,
     pub source_path: &'a str,
     pub root_path: &'a str,
+    /// All destination project roots this ingest wrote to (for multi-destination jobs).
+    pub destination_paths: &'a [String],
     pub variable_values: &'a BTreeMap<String, String>,
     pub copied_files: &'a [CopiedFile],
     pub skipped_files: &'a [SkippedFile],
@@ -114,7 +116,13 @@ pub fn write_html_report(root_path: &Path, input: ReportInput<'_>) -> Result<Pat
     html.push_str("<div class=\"content\"><aside class=\"side\">");
     html.push_str("<section><h2>Job Details</h2><div class=\"kv\">");
     kv(&mut html, "Source", input.source_path);
-    kv(&mut html, "Destination", input.root_path);
+    if input.destination_paths.len() > 1 {
+        for (index, destination) in input.destination_paths.iter().enumerate() {
+            kv(&mut html, &format!("Destination {}", index + 1), destination);
+        }
+    } else {
+        kv(&mut html, "Destination", input.root_path);
+    }
     kv(&mut html, "MHL", input.mhl_path);
     kv(&mut html, "Hash", "XXH3-128 verification hash");
     html.push_str("</div></section>");
@@ -181,9 +189,18 @@ pub fn write_html_report(root_path: &Path, input: ReportInput<'_>) -> Result<Pat
     );
     html.push_str("</div>");
 
-    html.push_str("<section><h2>Copied Files</h2></section><div class=\"files\">");
+    // Group copies by source file so each shot shows all of its destination copies.
+    let mut groups: Vec<(String, Vec<&CopiedFile>)> = Vec::new();
     for file in input.copied_files {
-        render_file(&mut html, file);
+        if let Some(entry) = groups.iter_mut().find(|(source, _)| source == &file.source_path) {
+            entry.1.push(file);
+        } else {
+            groups.push((file.source_path.clone(), vec![file]));
+        }
+    }
+    html.push_str("<section><h2>Copied Files</h2></section><div class=\"files\">");
+    for (source, copies) in &groups {
+        render_grouped_file(&mut html, source, copies);
     }
     if input.copied_files.is_empty() {
         html.push_str("<div class=\"muted\">No files were copied.</div>");
@@ -250,9 +267,11 @@ fn summarize_kinds(files: &[CopiedFile]) -> Vec<KindReportSummary> {
     summaries.into_values().collect()
 }
 
-fn render_file(html: &mut String, file: &CopiedFile) {
+fn render_grouped_file(html: &mut String, source_path: &str, copies: &[&CopiedFile]) {
+    let first = copies[0];
+    let all_ok = copies.iter().all(|copy| copy.verified);
     html.push_str("<article class=\"file\"><div>");
-    if let Some(thumbnail_path) = file.thumbnail_path.as_ref() {
+    if let Some(thumbnail_path) = first.thumbnail_path.as_ref() {
         html.push_str("<img class=\"thumb\" alt=\"thumbnail\" src=\"");
         html.push_str(&escape_html(&thumbnail_path.replace('\\', "/")));
         html.push_str("\" />");
@@ -260,23 +279,36 @@ fn render_file(html: &mut String, file: &CopiedFile) {
         html.push_str("<div class=\"empty-thumb\">No thumbnail</div>");
     }
     html.push_str("</div><div><div class=\"file-name\">");
-    html.push_str(&escape_html(&file_name(&file.destination_path)));
-    html.push_str("</div><div class=\"file-path\">");
-    html.push_str(&escape_html(&file.destination_path));
+    html.push_str(&escape_html(&file_name(&first.destination_path)));
     html.push_str("</div><div class=\"file-path muted\">Source: ");
-    html.push_str(&escape_html(&file.source_path));
-    html.push_str("</div></div><div class=\"file-meta\"><div>");
-    html.push_str(if file.verified {
+    html.push_str(&escape_html(source_path));
+    html.push_str("</div>");
+    // One line per destination copy of this file.
+    for copy in copies {
+        html.push_str("<div class=\"file-path\">");
+        html.push_str(if copy.verified {
+            "<span class=\"ok-text\">&#10003;</span> "
+        } else {
+            "<span class=\"bad-text\">&#10007;</span> "
+        });
+        html.push_str(&escape_html(&copy.destination_path));
+        html.push_str("</div>");
+    }
+    html.push_str("</div><div class=\"file-meta\"><div>");
+    html.push_str(if all_ok {
         "<span class=\"ok-text\">Verified</span>"
     } else {
         "<span class=\"bad-text\">Failed</span>"
     });
     html.push_str("</div><div class=\"muted\">");
-    html.push_str(kind_label(file.kind));
+    html.push_str(kind_label(first.kind));
     html.push_str(" / ");
-    html.push_str(&format_bytes(file.size_bytes));
+    html.push_str(&format_bytes(first.size_bytes));
+    if copies.len() > 1 {
+        html.push_str(&format!(" / {} copies", copies.len()));
+    }
     html.push_str("</div><code>");
-    html.push_str(&escape_html(&file.destination_hash));
+    html.push_str(&escape_html(&first.destination_hash));
     html.push_str("</code></div></article>");
 }
 
@@ -434,6 +466,7 @@ mod tests {
                 preset_name: "Baptism Story",
                 source_path: "P:/",
                 root_path: &workspace.to_string_lossy(),
+                destination_paths: &[],
                 variable_values: &BTreeMap::from([("campus".to_string(), "KLR".to_string())]),
                 copied_files: &copied,
                 skipped_files: &[],
@@ -467,6 +500,7 @@ mod tests {
                 preset_name: "Interview",
                 source_path: "P:/",
                 root_path: &workspace.to_string_lossy(),
+                destination_paths: &[],
                 variable_values: &BTreeMap::new(),
                 copied_files: &[],
                 skipped_files: &[],
@@ -518,6 +552,7 @@ mod tests {
                 preset_name: "Baptism Story",
                 source_path: "P:/",
                 root_path: &workspace.to_string_lossy(),
+                destination_paths: &[],
                 variable_values: &BTreeMap::new(),
                 copied_files: &[],
                 skipped_files: &skipped,

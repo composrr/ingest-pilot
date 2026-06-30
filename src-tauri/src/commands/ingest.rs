@@ -208,6 +208,7 @@ pub fn write_ingest_report(
             preset_name: &preset_name,
             source_path: &source_path,
             root_path: &root_path,
+            destination_paths: &[],
             variable_values: &variable_values,
             copied_files: &copied_files,
             skipped_files: &skipped_files,
@@ -228,6 +229,7 @@ pub async fn generate_ingest_report(
     preset_name: String,
     source_path: String,
     root_path: String,
+    destination_roots: Vec<String>,
     variable_values: BTreeMap<String, String>,
     copied_files: Vec<CopiedFile>,
     skipped_files: Vec<SkippedFile>,
@@ -256,12 +258,14 @@ pub async fn generate_ingest_report(
             Some(&mut emit_progress),
         )?;
 
+        // One combined report (lists every destination + each file's copy per destination).
         let report_path = write_html_report(
             &PathBuf::from(&root_path),
             ReportInput {
                 preset_name: &preset_name,
                 source_path: &source_path,
                 root_path: &root_path,
+                destination_paths: &destination_roots,
                 variable_values: &variable_values,
                 copied_files: &copied_files,
                 skipped_files: &skipped_files,
@@ -273,8 +277,40 @@ pub async fn generate_ingest_report(
             },
         )?;
 
+        // Mirror the combined report + its thumbnail assets into every other destination root,
+        // so each drive carries the full record of where the media was written.
+        let report_file = PathBuf::from(&report_path);
+        let assets_dir = PathBuf::from(&root_path).join("IngestPilot_Report_Assets");
+        for other in &destination_roots {
+            if other == &root_path {
+                continue;
+            }
+            let other_root = PathBuf::from(other);
+            if let Some(name) = report_file.file_name() {
+                let _ = std::fs::copy(&report_file, other_root.join(name));
+            }
+            if assets_dir.exists() {
+                let _ = copy_dir_recursive(&assets_dir, &other_root.join("IngestPilot_Report_Assets"));
+            }
+        }
+
         Ok(report_path.to_string_lossy().to_string())
     })
     .await
     .map_err(|error| format!("Report worker failed: {error}"))?
+}
+
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let path = entry.path();
+        let target = dst.join(entry.file_name());
+        if path.is_dir() {
+            copy_dir_recursive(&path, &target)?;
+        } else {
+            std::fs::copy(&path, &target)?;
+        }
+    }
+    Ok(())
 }
