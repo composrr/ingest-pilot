@@ -76,6 +76,7 @@ export function IngestPage() {
   const [historicalBps, setHistoricalBps] = useState(0);
   const [isRetrying, setIsRetrying] = useState(false);
   const [isSavingProof, setIsSavingProof] = useState(false);
+  const [cameraAliases, setCameraAliases] = useState<Record<string, string>>({});
   const currentIngestJobId = useRef<string | null>(null);
   // Variable values from a replayed recent ingest, applied once the new preset's
   // parameters resolve (so the defaults effect below doesn't clobber them).
@@ -262,6 +263,13 @@ export function IngestPage() {
     } finally {
       setIsSavingProof(false);
     }
+  }
+
+  // The auto-detected camera for a source (used as the placeholder for its camera tag).
+  function detectedCameraForSource(path: string) {
+    const entry = sourceScans.find((scan) => scan.sourcePath === path);
+    const file = entry?.scan.files.find((item) => item.kind === "footage") ?? entry?.scan.files[0] ?? null;
+    return cameraHintForPreview(file);
   }
 
   // Replay a recent ingest: restore preset + variables (and destinations) so the
@@ -509,6 +517,7 @@ export function IngestPage() {
             sourceIndex === 0 ? destination : projectRoot,
             !deleteSidecars,
             renameFiles,
+            cameraAliases[entry.sourcePath]?.trim() || undefined,
             includedRelativePaths,
             destinationMode === "existing_root" || sourceIndex > 0,
             jobId,
@@ -944,6 +953,31 @@ export function IngestPage() {
                       path={path}
                     />
                   ))}
+                </div>
+              ) : null}
+              {sourcePaths.length > 0 ? (
+                <div className="mt-2 rounded-xl border border-mist bg-porcelain/40 p-2">
+                  <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-graphite/60">
+                    Camera tags
+                  </div>
+                  <div className="space-y-1">
+                    {sourcePaths.map((path) => (
+                      <div key={path} className="grid grid-cols-[1fr_120px] items-center gap-2">
+                        <span className="min-w-0 truncate text-xs font-semibold text-ink">{pathDisplayName(path)}</span>
+                        <input
+                          className="h-7 min-w-0 rounded-lg border border-mist bg-white px-2 text-xs outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+                          onChange={(event) =>
+                            setCameraAliases((current) => ({ ...current, [path]: event.target.value }))
+                          }
+                          placeholder={detectedCameraForSource(path)}
+                          value={cameraAliases[path] ?? ""}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                  <p className="mt-1 text-[10px] text-graphite/60">
+                    Sets the {"{camera}"} token per card (e.g. A, Wide, Drone). Blank = auto-detect.
+                  </p>
                 </div>
               ) : null}
             </label>

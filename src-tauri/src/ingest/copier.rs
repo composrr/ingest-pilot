@@ -90,6 +90,7 @@ struct CopiedRoute {
     output_stem: String,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_ingest(
     preset: &Preset,
     source_path: String,
@@ -97,6 +98,7 @@ pub fn run_ingest(
     destination_override: Option<String>,
     preserve_sidecars: bool,
     rename_files: bool,
+    camera_override: Option<String>,
     included_relative_paths: Option<Vec<String>>,
     use_existing_root: bool,
     cancel_flag: Option<&AtomicBool>,
@@ -204,6 +206,7 @@ pub fn run_ingest(
             clip_number,
             None,
             rename_files,
+            camera_override.as_deref(),
             cancel_flag,
             &mut result,
             Some(&mut transfer_progress),
@@ -282,6 +285,7 @@ pub fn run_ingest(
             clip_number,
             Some(&parent_route.output_stem),
             rename_files,
+            camera_override.as_deref(),
             cancel_flag,
             &mut result,
             Some(&mut transfer_progress),
@@ -494,6 +498,7 @@ fn copy_file_to_folder(
     clip_number: u32,
     forced_stem: Option<&String>,
     rename_files: bool,
+    camera_override: Option<&str>,
     cancel_flag: Option<&AtomicBool>,
     result: &mut IngestResult,
     mut transfer_progress: Option<&mut dyn FnMut(&str, u64)>,
@@ -523,7 +528,12 @@ fn copy_file_to_folder(
                 &TokenContext {
                     preset_name: Some(preset.name.clone()),
                     variable_values: variable_values.clone(),
-                    camera: Some(camera_hint(file)),
+                    camera: Some(
+                        camera_override
+                            .map(|alias| alias.to_string())
+                            .filter(|alias| !alias.trim().is_empty())
+                            .unwrap_or_else(|| camera_hint(file)),
+                    ),
                     clip_number: Some(clip_number),
                     clip_number_padding: Some(preset.clip_number_padding),
                     original_name: Some(file.stem.clone()),
@@ -1510,6 +1520,7 @@ mod tests {
             true,
             true,
             None,
+            None,
             false,
             None,
             None,
@@ -1579,6 +1590,7 @@ mod tests {
             None,
             true,
             true,
+            None,
             None,
             false,
             None,
@@ -1690,6 +1702,7 @@ mod tests {
             true,
             true,
             None,
+            None,
             false,
             None,
             None,
@@ -1758,6 +1771,7 @@ mod tests {
             None,
             true,
             true,
+            None,
             Some(vec!["A.MP4".to_string()]),
             false,
             None,
@@ -1827,6 +1841,7 @@ mod tests {
             Some(existing_root.to_string_lossy().to_string()),
             true,
             true,
+            None,
             None,
             true,
             None,
@@ -1905,6 +1920,7 @@ mod tests {
             None,
             true,
             true,
+            None,
             None,
             false,
             None,
@@ -1998,6 +2014,7 @@ mod tests {
             None,
             true,
             true,
+            None,
             None,
             false,
             None,

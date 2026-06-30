@@ -251,6 +251,7 @@ export function IngestConsolePreviewPage() {
         destinationPath,
         !deleteSidecars,
         renameFiles,
+        undefined,
         Array.from(selectedFiles),
         destinationMode === "existing_root",
         jobId,
