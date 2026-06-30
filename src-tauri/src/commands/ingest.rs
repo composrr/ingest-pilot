@@ -1,10 +1,12 @@
 use crate::commands::presets::get_preset;
 use crate::core::folder_tree::{scaffold_project as scaffold, ScaffoldResult};
 use crate::ingest::copier::{
-    attach_report_thumbnails, run_ingest as run_ingest_copy, CopiedFile, IngestProgress,
-    IngestResult, SkippedFile,
+    attach_report_thumbnails, recopy_and_verify, run_ingest as run_ingest_copy, CopiedFile,
+    IngestProgress, IngestResult, SkippedFile,
 };
 use crate::ingest::report::{write_html_report, ReportInput};
+use crate::ingest::scanner::ScanFileKind;
+use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -89,6 +91,34 @@ pub async fn run_ingest(
     }
 
     result
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RetryFailedItem {
+    pub source_path: String,
+    pub destination_path: String,
+    pub kind: ScanFileKind,
+    pub size_bytes: u64,
+}
+
+/// Re-copy and re-verify only the given failed files (one per destination copy).
+/// Returns the updated CopiedFile entries so the UI can refresh its verification view.
+#[tauri::command]
+pub async fn retry_failed_copies(items: Vec<RetryFailedItem>) -> Result<Vec<CopiedFile>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut results = Vec::with_capacity(items.len());
+        for item in items {
+            results.push(recopy_and_verify(
+                &item.source_path,
+                &item.destination_path,
+                item.kind,
+                item.size_bytes,
+            )?);
+        }
+        Ok(results)
+    })
+    .await
+    .map_err(|error| format!("Retry worker failed: {error}"))?
 }
 
 #[tauri::command]

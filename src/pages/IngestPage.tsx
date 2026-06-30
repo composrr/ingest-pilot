@@ -24,6 +24,7 @@ import {
   diskSpace,
   generateIngestReport,
   runIngest,
+  retryFailedCopies,
   saveHistoryJob,
   scanSource,
   detectCameraSources,
@@ -72,6 +73,7 @@ export function IngestPage() {
   const [recentJobs, setRecentJobs] = useState<IngestHistoryJob[]>([]);
   const [variableSuggestions, setVariableSuggestions] = useState<Record<string, string[]>>({});
   const [historicalBps, setHistoricalBps] = useState(0);
+  const [isRetrying, setIsRetrying] = useState(false);
   const currentIngestJobId = useRef<string | null>(null);
   // Variable values from a replayed recent ingest, applied once the new preset's
   // parameters resolve (so the defaults effect below doesn't clobber them).
@@ -187,6 +189,46 @@ export function IngestPage() {
       setRecentJobs([]);
       setVariableSuggestions({});
       setHistoricalBps(0);
+    }
+  }
+
+  // Re-copy + re-verify only the files that failed verification, then merge the
+  // repaired entries back into the result so the verification view updates.
+  async function retryFailedCopiesForResult() {
+    if (!ingestResult) {
+      return;
+    }
+    const failed = ingestResult.copied_files.filter((file) => !file.verified);
+    if (!failed.length) {
+      return;
+    }
+    setIsRetrying(true);
+    setError(null);
+    try {
+      const updated = await retryFailedCopies(
+        failed.map((file) => ({
+          source_path: file.source_path,
+          destination_path: file.destination_path,
+          kind: file.kind,
+          size_bytes: file.size_bytes,
+        })),
+      );
+      const repaired = new Map(updated.map((file) => [`${file.source_path} ${file.destination_path}`, file]));
+      const mergedFiles = ingestResult.copied_files.map(
+        (file) => repaired.get(`${file.source_path} ${file.destination_path}`) ?? file,
+      );
+      const verified = mergedFiles.filter((file) => file.verified).length;
+      setIngestResult({
+        ...ingestResult,
+        copied_files: mergedFiles,
+        verified_files: verified,
+        verification_failed: mergedFiles.length - verified,
+      });
+      setLastAction(`Retried ${failed.length} failed file${failed.length === 1 ? "" : "s"}`);
+    } catch (caught) {
+      setError(String(caught));
+    } finally {
+      setIsRetrying(false);
     }
   }
 
@@ -1080,6 +1122,12 @@ export function IngestPage() {
                 <SummaryTile label="Failed" value={String(ingestResult.verification_failed)} />
                 <SummaryTile label="Copied size" value={formatBytes(ingestResult.bytes_copied)} />
               </div>
+              <VerificationPanel
+                destinations={destinationTargets}
+                isRetrying={isRetrying}
+                onRetry={() => void retryFailedCopiesForResult()}
+                result={ingestResult}
+              />
               <CoverageCard files={ingestResult.copied_files} />
               {reportBuild.status !== "idle" ? (
                 <div className="border-b border-mist px-3 py-2">
@@ -2207,6 +2255,69 @@ function CoverageList({ rows, title }: { rows: CoverageRow[]; title: string }) {
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+function VerificationPanel({
+  destinations,
+  isRetrying,
+  onRetry,
+  result,
+}: {
+  destinations: string[];
+  isRetrying: boolean;
+  onRetry: () => void;
+  result: IngestResult;
+}) {
+  const files = result.copied_files;
+  if (!files.length) {
+    return null;
+  }
+  const failedCount = files.filter((file) => !file.verified).length;
+  const allOk = failedCount === 0;
+  const norm = (path: string) => path.replace(/\\/g, "/");
+  const perDestination = destinations.map((dest) => {
+    const inDest = files.filter((file) => norm(file.destination_path).startsWith(norm(dest)));
+    return { dest, total: inDest.length, verified: inDest.filter((file) => file.verified).length };
+  });
+  return (
+    <div className="border-b border-mist px-3 py-2.5">
+      <div
+        className={`mb-2 flex items-center justify-between gap-2 rounded-xl px-3 py-2 text-xs font-semibold ${
+          allOk ? "bg-emerald-50 text-emerald-800" : "bg-red-50 text-red-800"
+        }`}
+      >
+        <span className="min-w-0 truncate">
+          {allOk
+            ? `All copies verified — bit-identical across ${destinations.length} destination${destinations.length === 1 ? "" : "s"}`
+            : `${failedCount} file${failedCount === 1 ? "" : "s"} failed verification`}
+        </span>
+        {!allOk ? (
+          <button
+            className="inline-flex h-7 shrink-0 items-center gap-1 rounded-lg border border-red-300 bg-white px-2 text-xs font-semibold text-red-800 transition hover:bg-red-100 disabled:opacity-60"
+            disabled={isRetrying}
+            onClick={onRetry}
+            type="button"
+          >
+            {isRetrying ? "Retrying..." : `Retry failed (${failedCount})`}
+          </button>
+        ) : null}
+      </div>
+      {destinations.length > 1 ? (
+        <div className="space-y-0.5">
+          {perDestination.map((row) => (
+            <div key={row.dest} className="flex items-center justify-between gap-2 text-xs">
+              <span className="min-w-0 truncate font-semibold text-ink">{pathDisplayName(row.dest)}</span>
+              <span
+                className={`shrink-0 font-semibold ${row.verified === row.total ? "text-emerald-600" : "text-red-600"}`}
+              >
+                {row.verified}/{row.total} verified
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }

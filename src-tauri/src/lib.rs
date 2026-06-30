@@ -29,6 +29,7 @@ pub fn run() {
             commands::presets::inspect_template_drop,
             commands::ingest::scaffold_project,
             commands::ingest::run_ingest,
+            commands::ingest::retry_failed_copies,
             commands::ingest::cancel_ingest,
             commands::ingest::write_ingest_report,
             commands::ingest::generate_ingest_report,

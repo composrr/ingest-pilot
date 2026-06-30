@@ -316,6 +316,20 @@ export async function invoke<T = unknown>(command: string, args?: Record<string,
     case "cancel_ingest":
       return undefined as T;
 
+    case "retry_failed_copies":
+      // Pretend every retried copy now verifies.
+      return ((a.items as any[]) ?? []).map((item) => ({
+        source_path: item.source_path,
+        destination_path: item.destination_path,
+        kind: item.kind,
+        size_bytes: item.size_bytes,
+        thumbnail_path: null,
+        source_hash: "xxh3:retry",
+        destination_hash: "xxh3:retry",
+        verified: true,
+        duration_ms: null,
+      })) as T;
+
     case "list_history":
       return history as T;
     case "save_history_job":

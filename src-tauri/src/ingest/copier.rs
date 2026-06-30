@@ -612,6 +612,39 @@ fn copy_file_to_folder(
     })
 }
 
+/// Re-copy a single source file to an exact destination path and re-verify it.
+/// Used by the "retry failed" action to repair a destination copy whose hash
+/// did not match, without re-running the whole ingest.
+pub fn recopy_and_verify(
+    source_path: &str,
+    destination_path: &str,
+    kind: ScanFileKind,
+    size_bytes: u64,
+) -> Result<CopiedFile, String> {
+    let source = Path::new(source_path);
+    let destination = Path::new(destination_path);
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
+    }
+    copy_path_with_progress(source, destination, None, None)?;
+    let verification = verify_copy(source, destination)?;
+    Ok(CopiedFile {
+        source_path: source_path.to_string(),
+        destination_path: destination_path.to_string(),
+        kind,
+        size_bytes,
+        thumbnail_path: None,
+        source_hash: verification.source_hash,
+        destination_hash: verification.destination_hash,
+        verified: verification.verified,
+        duration_ms: if matches!(kind, ScanFileKind::Footage | ScanFileKind::Audio) {
+            probe_duration_ms(destination)
+        } else {
+            None
+        },
+    })
+}
+
 fn copy_path_with_progress(
     source_path: &Path,
     destination_path: &Path,

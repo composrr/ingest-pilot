@@ -266,6 +266,17 @@ export async function cancelIngest(jobId: string) {
   return invoke<void>("cancel_ingest", { jobId });
 }
 
+export type RetryFailedItem = {
+  source_path: string;
+  destination_path: string;
+  kind: ScanFileKind;
+  size_bytes: number;
+};
+
+export async function retryFailedCopies(items: RetryFailedItem[]) {
+  return invoke<CopiedFile[]>("retry_failed_copies", { items });
+}
+
 export async function listHistory() {
   return invoke<IngestHistoryJob[]>("list_history");
 }
