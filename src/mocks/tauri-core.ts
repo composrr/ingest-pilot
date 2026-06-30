@@ -277,6 +277,8 @@ export async function invoke<T = unknown>(command: string, args?: Record<string,
 
     case "open_path":
       return undefined as T;
+    case "filter_directories":
+      return ((a.paths as string[]) ?? []) as T;
     case "disk_space":
       return {
         path: a.path ?? "E:/",

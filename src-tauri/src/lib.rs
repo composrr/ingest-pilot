@@ -13,6 +13,7 @@ pub fn run() {
             commands::system::greet,
             commands::system::open_path,
             commands::system::disk_space,
+            commands::system::filter_directories,
             commands::history::list_history,
             commands::history::save_history_job,
             commands::history::clear_history,

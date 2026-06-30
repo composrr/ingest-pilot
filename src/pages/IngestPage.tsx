@@ -1,6 +1,7 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { Check, ChevronDown, FolderOpen, Image, Layers, List, Plus, RefreshCw, Search, X } from "lucide-react";
 import { type Dispatch, type SetStateAction, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -23,6 +24,7 @@ import {
   cancelIngest,
   diskSpace,
   exportReelIndex,
+  filterDirectories,
   generateIngestReport,
   generateOffloadProof,
   runIngest,
@@ -105,6 +107,7 @@ export function IngestPage() {
   const [queueMode, setQueueMode] = useState(false);
   const [queue, setQueue] = useState<QueueCard[]>([]);
   const [isQueueRunning, setIsQueueRunning] = useState(false);
+  const [isQueueDragOver, setIsQueueDragOver] = useState(false);
   const currentIngestJobId = useRef<string | null>(null);
   // Live mirror of the queue so the async runner sees cards added mid-run.
   const queueRef = useRef<QueueCard[]>([]);
@@ -201,6 +204,41 @@ export function IngestPage() {
   useEffect(() => {
     queueRef.current = queue;
   }, [queue]);
+  // Native folder drag-and-drop onto the queue. Only active in queue mode; each
+  // dropped folder becomes a card (handled in handleQueueDrop).
+  useEffect(() => {
+    if (!queueMode) {
+      return;
+    }
+    let active = true;
+    let unlisten: (() => void) | null = null;
+    getCurrentWebview()
+      .onDragDropEvent((event) => {
+        const payload = event.payload;
+        if (payload.type === "enter" || payload.type === "over") {
+          setIsQueueDragOver(true);
+        } else if (payload.type === "leave") {
+          setIsQueueDragOver(false);
+        } else if (payload.type === "drop") {
+          setIsQueueDragOver(false);
+          void handleQueueDrop(payload.paths);
+        }
+      })
+      .then((next) => {
+        if (active) {
+          unlisten = next;
+        } else {
+          next();
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+      unlisten?.();
+      setIsQueueDragOver(false);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queueMode]);
   const queueFileCount = useMemo(() => queue.reduce((sum, card) => sum + card.fileCount, 0), [queue]);
   const queueByteCount = useMemo(() => queue.reduce((sum, card) => sum + card.byteCount, 0), [queue]);
   const canStartQueue = Boolean(
@@ -727,9 +765,10 @@ export function IngestPage() {
     return promise;
   }
 
-  async function addQueueCard() {
-    const path = await open({ directory: true, multiple: false });
-    if (typeof path !== "string") {
+  // Appends one source folder as a queue card and starts its scan-ahead. Skips a
+  // folder already in the queue so a double-add / re-drop doesn't duplicate it.
+  function enqueueCardForPath(path: string) {
+    if (queueRef.current.some((card) => card.sourcePath === path)) {
       return;
     }
     const id = createJobId();
@@ -750,6 +789,33 @@ export function IngestPage() {
     setIngestResult(null);
     // Kick off scan-ahead immediately so the card is ready by the time it's reached.
     void scanCard(id, path).catch(() => undefined);
+  }
+
+  async function addQueueCard() {
+    const path = await open({ directory: true, multiple: false });
+    if (typeof path !== "string") {
+      return;
+    }
+    enqueueCardForPath(path);
+  }
+
+  // Native OS drag-and-drop of folders onto the queue. Keeps only the directories
+  // (each dropped folder = one card) and ignores stray files.
+  async function handleQueueDrop(paths: string[]) {
+    let directories: string[];
+    try {
+      directories = await filterDirectories(paths);
+    } catch {
+      directories = paths;
+    }
+    if (directories.length === 0) {
+      setError("Drop camera-card folders onto the queue (files are ignored).");
+      return;
+    }
+    setError(null);
+    for (const path of directories) {
+      enqueueCardForPath(path);
+    }
   }
 
   function removeQueueCard(id: string) {
@@ -1368,6 +1434,7 @@ export function IngestPage() {
                 fileCount={queueFileCount}
                 byteCount={queueByteCount}
                 isRunning={isQueueRunning}
+                isDragOver={isQueueDragOver}
                 currentSegment={currentSegment}
                 instantaneousBps={instantaneousBps}
                 onAddCard={() => void addQueueCard()}
@@ -1802,6 +1869,7 @@ function QueuePanel({
   fileCount,
   byteCount,
   isRunning,
+  isDragOver,
   currentSegment,
   instantaneousBps,
   onAddCard,
@@ -1814,6 +1882,7 @@ function QueuePanel({
   fileCount: number;
   byteCount: number;
   isRunning: boolean;
+  isDragOver: boolean;
   currentSegment: { label: string; index: number; total: number } | null;
   instantaneousBps: number;
   onAddCard: () => void;
@@ -1824,7 +1893,11 @@ function QueuePanel({
 }) {
   const doneCount = cards.filter((card) => card.status === "done").length;
   return (
-    <div className="space-y-2">
+    <div
+      className={`space-y-2 rounded-xl transition ${
+        isDragOver ? "bg-lavender/10 outline outline-2 outline-dashed outline-signal" : ""
+      }`}
+    >
       <div className="flex items-center justify-between gap-2">
         <FieldLabel help="Add camera cards one after another. Each is scanned in the background and copied in order into the destination(s) below. You can keep adding cards while the queue runs.">
           Card Queue
@@ -1863,8 +1936,14 @@ function QueuePanel({
       ) : null}
 
       {cards.length === 0 ? (
-        <p className="rounded-xl border border-dashed border-mist bg-porcelain/40 px-3 py-4 text-center text-xs text-graphite">
-          No cards queued yet. Add your first card to begin.
+        <p className="rounded-xl border border-dashed border-mist bg-porcelain/40 px-3 py-5 text-center text-xs text-graphite">
+          {isDragOver ? (
+            <span className="font-semibold text-graphite">Drop folders to queue them</span>
+          ) : (
+            <>
+              Drag camera-card folders here, or use <span className="font-semibold">Add card</span>.
+            </>
+          )}
         </p>
       ) : (
         <div className="space-y-1.5">

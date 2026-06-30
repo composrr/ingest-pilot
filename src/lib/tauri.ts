@@ -207,6 +207,10 @@ export async function inspectTemplateDrop(paths: string[]) {
   return invoke<DroppedTemplateItems>("inspect_template_drop", { paths });
 }
 
+export async function filterDirectories(paths: string[]) {
+  return invoke<string[]>("filter_directories", { paths });
+}
+
 export async function previewPattern(pattern: string, context: TokenContext) {
   return invoke<string>("preview_pattern", { pattern, context });
 }
