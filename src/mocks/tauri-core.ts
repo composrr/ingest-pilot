@@ -152,7 +152,9 @@ function sampleHistory(): IngestHistoryJob[] {
   return [
     {
       id: "job_20260628_johnson",
+      preset_id: presets[0]?.id ?? "",
       preset_name: "Video Team Standard",
+      variable_values: { event: "Baptism", talent: "Johnson" },
       status: "complete",
       started_at: "2026-06-28T09:20:00Z",
       completed_at: "2026-06-28T09:41:00Z",
@@ -169,7 +171,9 @@ function sampleHistory(): IngestHistoryJob[] {
     },
     {
       id: "job_20260621_easter",
+      preset_id: presets[1]?.id ?? presets[0]?.id ?? "",
       preset_name: "Drone + B-Roll",
+      variable_values: { event: "Coastline", talent: "Aerial Unit" },
       status: "complete",
       started_at: "2026-06-21T14:02:00Z",
       completed_at: "2026-06-21T14:19:00Z",

@@ -5,11 +5,13 @@ import { Check, ChevronDown, FolderOpen, Image, List, RefreshCw, Search, X } fro
 import { type Dispatch, type SetStateAction, useEffect, useMemo, useRef, useState } from "react";
 import { defaultsForParameters, mergeGlobalAndPresetParameters } from "../lib/parameters";
 import { FloatingHelp } from "../components/FloatingHelp";
+import { RecentIngestsCarousel } from "../components/RecentIngestsCarousel";
 import { SelectMenu } from "../components/SelectMenu";
 import {
   defaultAppSettings,
   getPreset,
   getSettings,
+  listHistory,
   listPresets,
   openPath,
   previewPattern,
@@ -22,6 +24,7 @@ import {
   detectCameraSources,
   type CameraSource,
   type DiskSpace,
+  type IngestHistoryJob,
   type IngestProgress,
   type IngestResult,
   type ScanFileKind,
@@ -60,7 +63,11 @@ export function IngestPage() {
   const [reportBuild, setReportBuild] = useState<ReportBuildState>({ status: "idle", progress: null });
   const [isFileSelectorOpen, setIsFileSelectorOpen] = useState(false);
   const [spaceByPath, setSpaceByPath] = useState<Record<string, DiskSpace | null>>({});
+  const [recentJobs, setRecentJobs] = useState<IngestHistoryJob[]>([]);
   const currentIngestJobId = useRef<string | null>(null);
+  // Variable values from a replayed recent ingest, applied once the new preset's
+  // parameters resolve (so the defaults effect below doesn't clobber them).
+  const pendingReplayValuesRef = useRef<Record<string, string> | null>(null);
   // Real speed-over-time tracking for the run-screen chart. The ingest-progress
   // event floods (one per 256 KB), so the listener only writes refs; a fixed-cadence
   // timer samples them into render state. X axis uses a frontend monotonic clock so
@@ -157,6 +164,48 @@ export function IngestPage() {
       setError(String(caught));
       setLastAction("Preset load failed");
     }
+  }
+
+  async function refreshRecentJobs() {
+    try {
+      const jobs = await listHistory();
+      setRecentJobs(jobs.slice(0, 5));
+    } catch {
+      setRecentJobs([]);
+    }
+  }
+
+  // Replay a recent ingest: restore preset + variables (and destinations) so the
+  // operator only has to pick the new card. Source/scan/result are cleared to force a
+  // fresh scan of the next card.
+  function applyRecentJobState(job: IngestHistoryJob) {
+    const nextPresetId = job.preset_id ?? "";
+    const presetChanges =
+      Boolean(nextPresetId) &&
+      nextPresetId !== selectedPresetId &&
+      presets.some((candidate) => candidate.id === nextPresetId);
+    if (job.variable_values) {
+      const replayValues = job.variable_values;
+      // Stash for the defaults effect so a preset change doesn't reset them; also apply
+      // now so values land even when the preset is unchanged (effect won't re-fire).
+      pendingReplayValuesRef.current = replayValues;
+      setVariableValues((current) => ({ ...current, ...replayValues }));
+    }
+    if (presetChanges) {
+      setSelectedPresetId(nextPresetId);
+    }
+    if (job.destination_paths.length > 0) {
+      setDestinationPath(job.destination_paths[0] ?? "");
+      setSecondaryDestinationPaths(job.destination_paths.slice(1));
+    }
+    setSourcePaths([]);
+    setSourceScans([]);
+    setSelectedRelativePaths(new Set());
+    setIngestProgress(null);
+    setIsFileSelectorOpen(false);
+    setIngestResult(null);
+    setShowFilteredItems(false);
+    setLastAction(`Loaded recent ingest: ${job.preset_name}`);
   }
 
   async function loadSelectedPreset(id: string) {
@@ -387,7 +436,9 @@ export function IngestPage() {
       const completedAt = new Date().toISOString();
       const historyJob = {
         id: jobId,
+        preset_id: selectedPresetId,
         preset_name: preset.name,
+        variable_values: variableValues,
         status: result.verification_failed > 0 ? "needs_review" : "verified",
         started_at: startedAt,
         completed_at: completedAt,
@@ -403,11 +454,13 @@ export function IngestPage() {
         sidecars_deleted: result.skipped.filter((file) => file.reason === "Sidecar deletion is enabled.").length,
       };
       await saveHistoryJob(historyJob);
+      void refreshRecentJobs();
       if (appSettings.report_defaults.write_html_report && result.root_path) {
         void buildReportInBackground({
           completedAt,
           destinationPaths: destinationTargets,
           jobId,
+          presetId: selectedPresetId,
           presetName: preset.name,
           result,
           sourcePaths,
@@ -437,6 +490,7 @@ export function IngestPage() {
     completedAt,
     destinationPaths,
     jobId,
+    presetId,
     presetName,
     result,
     sourcePaths,
@@ -446,6 +500,7 @@ export function IngestPage() {
     completedAt: string;
     destinationPaths: string[];
     jobId: string;
+    presetId: string;
     presetName: string;
     result: IngestResult;
     sourcePaths: string[];
@@ -482,7 +537,9 @@ export function IngestPage() {
       setReportBuild({ status: "ready", progress: null, path: reportPath });
       await saveHistoryJob({
         id: jobId,
+        preset_id: presetId,
         preset_name: presetName,
+        variable_values: variableValues,
         status: result.verification_failed > 0 ? "needs_review" : "verified",
         started_at: startedAt,
         completed_at: completedAt,
@@ -539,6 +596,7 @@ export function IngestPage() {
       })
       .catch(() => setGlobalParameters([]));
     void refreshPresets("");
+    void refreshRecentJobs();
   }, []);
 
   useEffect(() => {
@@ -556,7 +614,18 @@ export function IngestPage() {
   }, []);
 
   useEffect(() => {
-    setVariableValues(defaultsForParameters(ingestParameters));
+    const defaults = defaultsForParameters(ingestParameters);
+    const replay = pendingReplayValuesRef.current;
+    if (replay) {
+      pendingReplayValuesRef.current = null;
+      // Keep only replayed values for parameters that still exist on this preset.
+      for (const key of Object.keys(defaults)) {
+        if (replay[key] !== undefined) {
+          defaults[key] = replay[key];
+        }
+      }
+    }
+    setVariableValues(defaults);
   }, [ingestParameters]);
 
   useEffect(() => {
@@ -717,14 +786,21 @@ export function IngestPage() {
       ) : null}
 
       <div className="grid min-h-0 flex-1 gap-2 xl:grid-cols-[220px_320px_minmax(0,1fr)]">
-        <PresetBrowser
-          presets={presets}
-          selectedPresetId={selectedPresetId}
-          onSelect={(id) => {
-            setSelectedPresetId(id);
-            setIngestResult(null);
-          }}
-        />
+        <div className="flex min-h-0 min-w-0 flex-col gap-2">
+          <RecentIngestsCarousel
+            recentJobs={recentJobs}
+            presets={presets}
+            onSelect={applyRecentJobState}
+          />
+          <PresetBrowser
+            presets={presets}
+            selectedPresetId={selectedPresetId}
+            onSelect={(id) => {
+              setSelectedPresetId(id);
+              setIngestResult(null);
+            }}
+          />
+        </div>
 
         <section className="relative z-20 overflow-visible rounded-2xl border border-mist bg-white">
           <div className="flex h-9 items-center justify-between border-b border-mist px-3">

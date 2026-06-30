@@ -143,7 +143,9 @@ export type IngestProgress = {
 
 export type IngestHistoryJob = {
   id: string;
+  preset_id?: string;
   preset_name: string;
+  variable_values?: Record<string, string>;
   status: string;
   started_at: string;
   completed_at: string;
