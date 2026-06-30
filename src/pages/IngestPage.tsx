@@ -1701,10 +1701,6 @@ function ParameterField({
   value: string;
   variable: PresetVariable;
 }) {
-  // Free-text fields get autocomplete from previously-used values (not dates/dropdowns).
-  const showSuggestions =
-    variable.type !== "date" && variable.type !== "dropdown" && (suggestions?.length ?? 0) > 0;
-  const datalistId = `recent-${variable.id}`;
   return (
     <label className="grid min-h-12 grid-cols-[180px_1fr] items-center gap-3 px-3 py-2">
       <span className="min-w-0">
@@ -1728,24 +1724,87 @@ function ParameterField({
           value={value || "false"}
         />
       ) : (
-        <span className="min-w-0">
-          <input
-            className="h-9 w-full min-w-0 rounded-xl border border-mist bg-white px-3 text-sm outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
-            list={showSuggestions ? datalistId : undefined}
-            onChange={(event) => onChange(event.target.value)}
-            type={variable.type === "date" ? "date" : "text"}
-            value={value}
-          />
-          {showSuggestions ? (
-            <datalist id={datalistId}>
-              {suggestions!.map((suggestion) => (
-                <option key={suggestion} value={suggestion} />
-              ))}
-            </datalist>
-          ) : null}
-        </span>
+        <AutocompleteInput
+          onChange={onChange}
+          suggestions={variable.type === "date" ? [] : suggestions ?? []}
+          type={variable.type === "date" ? "date" : "text"}
+          value={value}
+        />
       )}
     </label>
+  );
+}
+
+// Free-text variable input with a styled suggestion dropdown (matches SelectMenu's
+// menu look) drawn from previously-used values.
+function AutocompleteInput({
+  onChange,
+  suggestions,
+  type,
+  value,
+}: {
+  onChange: (value: string) => void;
+  suggestions: string[];
+  type: "text" | "date";
+  value: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const filtered = useMemo(() => {
+    const query = value.trim().toLowerCase();
+    return suggestions
+      .filter((item) => item.toLowerCase() !== query && (!query || item.toLowerCase().includes(query)))
+      .slice(0, 8);
+  }, [suggestions, value]);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    function handlePointerDown(event: PointerEvent) {
+      if (!containerRef.current?.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    }
+    window.addEventListener("pointerdown", handlePointerDown);
+    return () => window.removeEventListener("pointerdown", handlePointerDown);
+  }, [open]);
+
+  const showMenu = open && type === "text" && filtered.length > 0;
+
+  return (
+    <div ref={containerRef} className="relative min-w-0">
+      <input
+        className="h-9 w-full min-w-0 rounded-xl border border-mist bg-white px-3 text-sm outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+        onChange={(event) => {
+          onChange(event.target.value);
+          setOpen(true);
+        }}
+        onFocus={() => setOpen(true)}
+        type={type}
+        value={value}
+      />
+      {showMenu ? (
+        <div className="absolute left-0 right-0 top-full z-50 mt-1 overflow-hidden rounded-xl border border-mist bg-white p-1 shadow-panel">
+          <div className="max-h-56 overflow-auto">
+            {filtered.map((item) => (
+              <button
+                key={item}
+                className="flex h-8 w-full items-center rounded-lg px-2 text-left text-sm text-graphite transition hover:bg-porcelain"
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  onChange(item);
+                  setOpen(false);
+                }}
+                type="button"
+              >
+                <span className="min-w-0 flex-1 truncate font-semibold">{item}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
