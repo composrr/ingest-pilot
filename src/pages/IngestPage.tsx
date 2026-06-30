@@ -2,7 +2,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { Check, ChevronDown, FolderOpen, Image, Layers, List, Plus, RefreshCw, Search, Star, X } from "lucide-react";
+import { Check, ChevronDown, FolderOpen, Image, Layers, List, Plus, RefreshCw, Search, X } from "lucide-react";
 import { type Dispatch, type SetStateAction, useEffect, useMemo, useRef, useState } from "react";
 import {
   defaultsForParameters,
@@ -30,7 +30,6 @@ import {
   runIngest,
   retryFailedCopies,
   saveHistoryJob,
-  saveSettings,
   scanSource,
   detectCameraSources,
   type CameraSource,
@@ -871,30 +870,6 @@ export function IngestPage() {
     }
   }
 
-  // ---- Favorite locations -----------------------------------------------------
-
-  async function persistFavorites(nextFavorites: string[]) {
-    const nextSettings = { ...appSettings, favorite_locations: nextFavorites };
-    setAppSettings(nextSettings);
-    try {
-      await saveSettings(nextSettings);
-    } catch (caught) {
-      setError(`Could not save favorite: ${String(caught)}`);
-    }
-  }
-
-  function addFavorite(path: string) {
-    const trimmed = path.trim();
-    if (!trimmed || appSettings.favorite_locations.includes(trimmed)) {
-      return;
-    }
-    void persistFavorites([...appSettings.favorite_locations, trimmed]);
-  }
-
-  function removeFavorite(path: string) {
-    void persistFavorites(appSettings.favorite_locations.filter((entry) => entry !== path));
-  }
-
   function removeQueueCard(id: string) {
     cardScanPromises.current.delete(id);
     setQueue((current) => current.filter((card) => card.id !== id));
@@ -1642,7 +1617,7 @@ export function IngestPage() {
                   </span>
                 ) : null}
               </span>
-              <div className="grid grid-cols-[1fr_auto_auto_auto] gap-2">
+              <div className="grid grid-cols-[1fr_auto_auto] gap-2">
                 <input
                   className="h-9 min-w-0 rounded-xl border border-mist bg-white px-3 text-sm outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
                   onChange={(event) => {
@@ -1651,31 +1626,6 @@ export function IngestPage() {
                   }}
                   value={destinationPath}
                 />
-                <button
-                  aria-label={
-                    appSettings.favorite_locations.includes(destinationPath.trim())
-                      ? "Remove from favorites"
-                      : "Save as favorite location"
-                  }
-                  className="inline-flex h-9 items-center justify-center rounded-xl border border-mist bg-white px-2.5 text-graphite transition hover:bg-porcelain disabled:opacity-40"
-                  disabled={!destinationPath.trim()}
-                  onClick={() =>
-                    appSettings.favorite_locations.includes(destinationPath.trim())
-                      ? removeFavorite(destinationPath.trim())
-                      : addFavorite(destinationPath)
-                  }
-                  title="Save this location as a favorite"
-                  type="button"
-                >
-                  <Star
-                    size={15}
-                    className={
-                      appSettings.favorite_locations.includes(destinationPath.trim())
-                        ? "fill-signal text-signal"
-                        : ""
-                    }
-                  />
-                </button>
                 <button
                   className="inline-flex h-9 items-center gap-1 rounded-xl border border-mist bg-white px-3 text-sm font-semibold text-graphite transition hover:bg-porcelain"
                   onClick={() => void chooseDestination()}
@@ -1731,43 +1681,6 @@ export function IngestPage() {
                       </div>
                     </div>
                   ))}
-                </div>
-              ) : null}
-
-              {appSettings.favorite_locations.length > 0 ? (
-                <div className="mt-2 rounded-xl border border-mist bg-porcelain/40 p-2">
-                  <div className="mb-1 flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-graphite/60">
-                    <Star size={11} className="fill-signal text-signal" />
-                    Favorites
-                  </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {appSettings.favorite_locations.map((path) => (
-                      <span
-                        key={path}
-                        className="group inline-flex items-center gap-1 rounded-full border border-mist bg-white py-1 pl-2.5 pr-1 text-[11px] font-semibold text-graphite"
-                      >
-                        <button
-                          className="max-w-[160px] truncate hover:text-ink"
-                          onClick={() => {
-                            setDestinationPath(path);
-                            setIngestResult(null);
-                          }}
-                          title={`Use ${path} as the destination`}
-                          type="button"
-                        >
-                          {pathDisplayName(path)}
-                        </button>
-                        <button
-                          aria-label={`Remove favorite ${pathDisplayName(path)}`}
-                          className="rounded-full p-0.5 text-graphite/50 transition hover:bg-porcelain hover:text-ink"
-                          onClick={() => removeFavorite(path)}
-                          type="button"
-                        >
-                          <X size={11} />
-                        </button>
-                      </span>
-                    ))}
-                  </div>
                 </div>
               ) : null}
             </label>

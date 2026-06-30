@@ -30,7 +30,6 @@ export const defaultAppSettings: AppSettings = {
     group_by_date: true,
   },
   operator_name: "",
-  favorite_locations: [],
 };
 
 export type DroppedTemplateItems = {

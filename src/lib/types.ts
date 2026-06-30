@@ -98,7 +98,6 @@ export type AppSettings = {
     group_by_date: boolean;
   };
   operator_name: string;
-  favorite_locations: string[];
 };
 
 export type TokenContext = {

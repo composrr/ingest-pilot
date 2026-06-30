@@ -20,9 +20,6 @@ pub struct AppSettings {
     /// Operator name printed on offload integrity proofs.
     #[serde(default)]
     pub operator_name: String,
-    /// Saved favorite folder locations for quick source/destination picking.
-    #[serde(default)]
-    pub favorite_locations: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
