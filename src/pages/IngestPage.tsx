@@ -78,6 +78,7 @@ export function IngestPage() {
   const [isRetrying, setIsRetrying] = useState(false);
   const [isSavingProof, setIsSavingProof] = useState(false);
   const [cameraAliases, setCameraAliases] = useState<Record<string, string>>({});
+  const [currentSegment, setCurrentSegment] = useState<{ label: string; index: number; total: number } | null>(null);
   const currentIngestJobId = useRef<string | null>(null);
   // Variable values from a replayed recent ingest, applied once the new preset's
   // parameters resolve (so the defaults effect below doesn't clobber them).
@@ -528,6 +529,13 @@ export function IngestPage() {
     }, SAMPLE_INTERVAL_MS);
     try {
       const results: IngestResult[] = [];
+      const activeSources = sourceScans.filter((entry) =>
+        entry.scan.files.some((file) =>
+          selectedRelativePaths.has(sourceFileKey(entry.sourcePath, file.relative_path)),
+        ),
+      );
+      const totalSegments = destinationTargets.length * Math.max(1, activeSources.length);
+      let segmentIndex = 0;
       for (const destination of destinationTargets) {
         let projectRoot = destination;
         for (let sourceIndex = 0; sourceIndex < sourceScans.length; sourceIndex += 1) {
@@ -538,6 +546,12 @@ export function IngestPage() {
           if (includedRelativePaths.length === 0) {
             continue;
           }
+          segmentIndex += 1;
+          setCurrentSegment({
+            label: `${pathDisplayName(entry.sourcePath)} → ${pathDisplayName(destination)}`,
+            index: segmentIndex,
+            total: totalSegments,
+          });
           const result = await runIngest(
             selectedPresetId,
             entry.sourcePath,
@@ -609,6 +623,7 @@ export function IngestPage() {
       }
       setIsIngesting(false);
       setIsCancelling(false);
+      setCurrentSegment(null);
       currentIngestJobId.current = null;
     }
   }
@@ -882,6 +897,7 @@ export function IngestPage() {
         progress={ingestProgress}
         speedSeries={speedSeries}
         instantaneousBps={instantaneousBps}
+        currentSegment={currentSegment}
         selectedBytes={selectedBytes}
         selectedCount={selectedFileCount}
       />
@@ -1430,6 +1446,7 @@ function IngestRunScreen({
   progress,
   speedSeries,
   instantaneousBps,
+  currentSegment,
   selectedBytes,
   selectedCount,
 }: {
@@ -1438,6 +1455,7 @@ function IngestRunScreen({
   progress: IngestProgress | null;
   speedSeries: SpeedPoint[];
   instantaneousBps: number;
+  currentSegment: { label: string; index: number; total: number } | null;
   selectedBytes: number;
   selectedCount: number;
 }) {
@@ -1459,9 +1477,17 @@ function IngestRunScreen({
   return (
     <div className="tool-density flex min-h-full w-full min-w-0 flex-col rounded-[28px] border border-mist bg-paper p-2 shadow-panel xl:p-3">
       <header className="mb-2 flex items-center justify-between gap-3">
-        <div>
-          <p className="mb-0.5 text-[11px] font-semibold text-graphite/70">Verified ingest</p>
+        <div className="min-w-0">
+          <p className="mb-0.5 text-[11px] font-semibold text-graphite/70">
+            Verified ingest
+            {currentSegment && currentSegment.total > 1
+              ? ` · card ${currentSegment.index} of ${currentSegment.total}`
+              : ""}
+          </p>
           <h1 className="text-xl font-semibold tracking-normal">{progress?.phase ?? "Preparing ingest"}</h1>
+          {currentSegment ? (
+            <p className="mt-0.5 truncate text-xs font-semibold text-graphite">{currentSegment.label}</p>
+          ) : null}
         </div>
         <button
           className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-2.5 text-xs font-semibold text-red-800 transition hover:bg-red-100 disabled:opacity-60"
