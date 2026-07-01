@@ -644,6 +644,9 @@ export function IngestPage() {
         if (nextPreset.metadata_preset_id) {
           setMetadataPresetId(nextPreset.metadata_preset_id);
         }
+        // Pre-fill the tags the preset chose (e.g. Content Type=Story), still editable
+        // per import. The metadata-load effect fills any remaining fields with defaults.
+        setMetadataValues({ ...(nextPreset.metadata_values ?? {}) });
       }
     } catch (caught) {
       setError(String(caught));

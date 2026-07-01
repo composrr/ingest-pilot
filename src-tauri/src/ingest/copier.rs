@@ -1582,7 +1582,9 @@ mod tests {
             file_type_routing_overrides: BTreeMap::new(),
             preserve_xml_sidecars: true,
             rename_files_default: true,
-            metadata_preset_id: None,            created_at: "2026-04-24T00:00:00Z".to_string(),
+            metadata_preset_id: None,
+            metadata_values: BTreeMap::new(),
+            created_at: "2026-04-24T00:00:00Z".to_string(),
             updated_at: "2026-04-24T00:00:00Z".to_string(),
         };
 
@@ -1653,7 +1655,9 @@ mod tests {
             file_type_routing_overrides: BTreeMap::new(),
             preserve_xml_sidecars: true,
             rename_files_default: true,
-            metadata_preset_id: None,            created_at: "2026-04-24T00:00:00Z".to_string(),
+            metadata_preset_id: None,
+            metadata_values: BTreeMap::new(),
+            created_at: "2026-04-24T00:00:00Z".to_string(),
             updated_at: "2026-04-24T00:00:00Z".to_string(),
         };
 
@@ -1712,6 +1716,7 @@ mod tests {
             preserve_xml_sidecars: true,
             rename_files_default: true,
             metadata_preset_id: None,
+            metadata_values: BTreeMap::new(),
             created_at: "2026-04-24T00:00:00Z".to_string(),
             updated_at: "2026-04-24T00:00:00Z".to_string(),
         };
@@ -1845,7 +1850,9 @@ mod tests {
             file_type_routing_overrides: BTreeMap::new(),
             preserve_xml_sidecars: true,
             rename_files_default: true,
-            metadata_preset_id: None,            created_at: "2026-04-24T00:00:00Z".to_string(),
+            metadata_preset_id: None,
+            metadata_values: BTreeMap::new(),
+            created_at: "2026-04-24T00:00:00Z".to_string(),
             updated_at: "2026-04-24T00:00:00Z".to_string(),
         };
 
@@ -1916,7 +1923,9 @@ mod tests {
             file_type_routing_overrides: BTreeMap::new(),
             preserve_xml_sidecars: true,
             rename_files_default: true,
-            metadata_preset_id: None,            created_at: "2026-04-24T00:00:00Z".to_string(),
+            metadata_preset_id: None,
+            metadata_values: BTreeMap::new(),
+            created_at: "2026-04-24T00:00:00Z".to_string(),
             updated_at: "2026-04-24T00:00:00Z".to_string(),
         };
 
@@ -1987,7 +1996,9 @@ mod tests {
             file_type_routing_overrides: BTreeMap::new(),
             preserve_xml_sidecars: true,
             rename_files_default: true,
-            metadata_preset_id: None,            created_at: "2026-04-24T00:00:00Z".to_string(),
+            metadata_preset_id: None,
+            metadata_values: BTreeMap::new(),
+            created_at: "2026-04-24T00:00:00Z".to_string(),
             updated_at: "2026-04-24T00:00:00Z".to_string(),
         };
 
@@ -2067,7 +2078,9 @@ mod tests {
             file_type_routing_overrides: BTreeMap::new(),
             preserve_xml_sidecars: true,
             rename_files_default: true,
-            metadata_preset_id: None,            created_at: "2026-04-24T00:00:00Z".to_string(),
+            metadata_preset_id: None,
+            metadata_values: BTreeMap::new(),
+            created_at: "2026-04-24T00:00:00Z".to_string(),
             updated_at: "2026-04-24T00:00:00Z".to_string(),
         };
 
@@ -2162,7 +2175,9 @@ mod tests {
             file_type_routing_overrides: BTreeMap::new(),
             preserve_xml_sidecars: true,
             rename_files_default: true,
-            metadata_preset_id: None,            created_at: "2026-04-24T00:00:00Z".to_string(),
+            metadata_preset_id: None,
+            metadata_values: BTreeMap::new(),
+            created_at: "2026-04-24T00:00:00Z".to_string(),
             updated_at: "2026-04-24T00:00:00Z".to_string(),
         };
 
