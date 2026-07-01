@@ -71,10 +71,19 @@ type RunSource = {
 // Maps an OS drag-drop position to the marked drop zone under it, if any. Tauri
 // reports positions in CSS pixels in this setup (same as FolderTreeEditor), so they
 // can be passed straight to elementFromPoint.
-function dropZoneFromPoint(x: number, y: number): "queue" | "destinations" | null {
+type DropZone = "queue" | "destinations" | "sources";
+
+// Parent folder of a path (handles both / and \ separators); null if at a root.
+function parentDirectory(path: string): string | null {
+  const trimmed = path.replace(/[\\/]+$/, "");
+  const index = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  return index > 0 ? trimmed.slice(0, index) : null;
+}
+
+function dropZoneFromPoint(x: number, y: number): DropZone | null {
   const zone = document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-drop-zone]");
   const name = zone?.dataset.dropZone;
-  return name === "queue" || name === "destinations" ? name : null;
+  return name === "queue" || name === "destinations" || name === "sources" ? name : null;
 }
 
 export function IngestPage() {
@@ -117,16 +126,17 @@ export function IngestPage() {
   const [queueMode, setQueueMode] = useState(false);
   const [queue, setQueue] = useState<QueueCard[]>([]);
   const [isQueueRunning, setIsQueueRunning] = useState(false);
-  // Which drop zone the OS drag is currently over ("queue" | "destinations" | null).
-  const [dragZone, setDragZone] = useState<"queue" | "destinations" | null>(null);
+  // Which drop zone the OS drag is currently over ("queue" | "destinations" | "sources" | null).
+  const [dragZone, setDragZone] = useState<DropZone | null>(null);
   const currentIngestJobId = useRef<string | null>(null);
   // Live mirror of the queue so the async runner sees cards added mid-run.
   const queueRef = useRef<QueueCard[]>([]);
   // Dedupes scan-ahead: one in-flight scan promise per card id.
   const cardScanPromises = useRef<Map<string, Promise<SourceScan>>>(new Map());
-  // Live mirrors so the window-level drop handler reads current destinations.
+  // Live mirrors so the window-level drop handler reads current destinations/sources.
   const destinationPathRef = useRef("");
   const secondaryDestinationsRef = useRef<string[]>([]);
+  const sourcePathsRef = useRef<string[]>([]);
   // Variable values from a replayed recent ingest, applied once the new preset's
   // parameters resolve (so the defaults effect below doesn't clobber them).
   const pendingReplayValuesRef = useRef<Record<string, string> | null>(null);
@@ -224,6 +234,9 @@ export function IngestPage() {
   useEffect(() => {
     secondaryDestinationsRef.current = secondaryDestinationPaths;
   }, [secondaryDestinationPaths]);
+  useEffect(() => {
+    sourcePathsRef.current = sourcePaths;
+  }, [sourcePaths]);
   // Native folder drag-and-drop. A single window-level listener routes the drop by
   // which marked zone (data-drop-zone) it lands on: the card queue or the
   // destinations panel. Each dropped folder becomes a card / a destination.
@@ -244,6 +257,8 @@ export function IngestPage() {
             void handleDestinationDrop(payload.paths);
           } else if (zone === "queue") {
             void handleQueueDrop(payload.paths);
+          } else if (zone === "sources") {
+            void handleSourceDrop(payload.paths);
           }
         }
       })
@@ -876,6 +891,32 @@ export function IngestPage() {
         setSecondaryDestinationPaths((current) => [...current, ...additions]);
       }
     }
+  }
+
+  // Native folder/file drop onto the "Copy From" source area (non-queue mode).
+  // Dropped folders become sources; dropped files add their parent folders.
+  async function handleSourceDrop(paths: string[]) {
+    let directories: string[];
+    try {
+      directories = await filterDirectories(paths);
+    } catch {
+      directories = [];
+    }
+    if (directories.length === 0) {
+      directories = [...new Set(paths.map(parentDirectory).filter((path): path is string => Boolean(path)))];
+    }
+    if (directories.length === 0) {
+      setError("Drop source folders (or files) to add them.");
+      return;
+    }
+    setError(null);
+    const nextPaths = uniquePaths([...sourcePathsRef.current, ...directories]);
+    setSourcePaths(nextPaths);
+    setSourceScans([]);
+    setSelectedRelativePaths(new Set());
+    setIsFileSelectorOpen(false);
+    setIngestResult(null);
+    void scanPaths(nextPaths);
   }
 
   function removeQueueCard(id: string) {
@@ -1525,9 +1566,14 @@ export function IngestPage() {
                 />
               </div>
             ) : null}
-            <label className={`block ${queueMode ? "hidden" : ""}`}>
+            <label
+              className={`block rounded-xl p-1 transition ${queueMode ? "hidden" : ""} ${
+                dragZone === "sources" ? "bg-lavender/10 outline outline-2 outline-dashed outline-signal" : ""
+              }`}
+              data-drop-zone="sources"
+            >
               <div className="mb-1 flex items-center justify-between gap-2 text-xs font-semibold text-graphite">
-                <FieldLabel help="Choose one or more camera cards or source folders. Detected camera cards are auto-filled when possible.">
+                <FieldLabel help="Choose one or more camera cards or source folders — or drag folders/files here. Detected camera cards are auto-filled when possible.">
                   Copy From
                 </FieldLabel>
                 {sourcePaths.some((path) => detectedSources.some((source) => source.path === path)) ? (
@@ -3112,10 +3158,10 @@ function SummaryTile({
           ? "text-red-600"
           : "text-ink";
   return (
-    <div className="rounded-xl border border-mist bg-white px-3 py-2">
+    <div className="min-w-0 rounded-xl border border-mist bg-white px-3 py-2">
       <div className="text-xs font-semibold text-graphite">{label}</div>
-      <div className={`mt-1 truncate text-lg font-semibold ${valueClass}`}>{value}</div>
-      {sub ? <div className="truncate text-[10px] font-medium text-graphite/70">{sub}</div> : null}
+      <div className={`mt-1 text-lg font-semibold leading-tight break-words ${valueClass}`}>{value}</div>
+      {sub ? <div className="break-words text-[10px] font-medium text-graphite/70">{sub}</div> : null}
     </div>
   );
 }

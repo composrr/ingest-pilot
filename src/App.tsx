@@ -130,7 +130,13 @@ export function App() {
         </aside>
 
         <section className="flex min-w-0 flex-1 p-2 xl:p-3 2xl:p-4">
-          {renderView(activeView, selectView)}
+          {/* IngestPage stays mounted so its setup (sources, scans, selection,
+              queue, options) survives switching tabs within a session; it's just
+              hidden when another view is active. */}
+          <div className={activeView === "ingest" ? "flex min-w-0 flex-1" : "hidden"}>
+            <IngestPage />
+          </div>
+          {activeView !== "ingest" ? renderView(activeView, selectView) : null}
         </section>
       </div>
       {isWalkthroughOpen ? (
@@ -158,9 +164,7 @@ function renderView(activeView: AppView, selectView: (view: AppView) => void) {
     return <PresetsPage />;
   }
 
-  if (activeView === "ingest") {
-    return <IngestPage />;
-  }
+  // "ingest" is rendered persistently in App (kept mounted); never here.
 
   if (activeView === "ingestPreview") {
     return <IngestConsolePreviewPage />;
