@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { createShippedPresets } from "./presetFactory";
-import { createNamingPresets, type NamingCatalog } from "./namingCatalog";
+import type { NamingCatalog } from "./namingCatalog";
 import type {
   AppSettings,
   FolderNode,
@@ -12,7 +12,7 @@ import type {
 } from "./types";
 
 const shippedPresetSeedKey = "ingest-pilot:shipped-presets-seeded";
-const namingPackSeedKey = "ingest-pilot:naming-pack-v2-seeded";
+const namingPackCleanupKey = "ingest-pilot:naming-pack-removed";
 
 export const defaultAppSettings: AppSettings = {
   global_parameters: [],
@@ -186,18 +186,17 @@ export async function listPresets() {
     presets = await invoke<PresetSummary[]>("list_presets");
   }
 
-  // One-time naming pack: add the SOP naming presets as their own files for new AND
-  // existing installs, skipping any that already exist so user edits/deletes stick.
-  if (localStorage.getItem(namingPackSeedKey) !== "true") {
-    const existingIds = new Set(presets.map((preset) => preset.id));
-    const namingPresets = createNamingPresets(new Date().toISOString()).filter(
-      (preset) => !existingIds.has(preset.id),
-    );
-    if (namingPresets.length > 0) {
-      await Promise.all(namingPresets.map((preset) => invoke<PresetSummary>("save_preset", { preset })));
+  // One-time cleanup: an earlier build wrongly seeded every naming template as a
+  // folder preset (ids `naming_*`). Naming templates live in the Naming tab, not the
+  // preset library, so remove those seeded files. User-created presets (including
+  // ones made via the Naming tab's "Create preset", ids `preset_*`) are untouched.
+  if (localStorage.getItem(namingPackCleanupKey) !== "true") {
+    const seeded = presets.filter((preset) => preset.id.startsWith("naming_"));
+    if (seeded.length > 0) {
+      await Promise.all(seeded.map((preset) => invoke<void>("delete_preset", { id: preset.id })));
       presets = await invoke<PresetSummary[]>("list_presets");
     }
-    localStorage.setItem(namingPackSeedKey, "true");
+    localStorage.setItem(namingPackCleanupKey, "true");
   }
 
   return presets;
@@ -327,6 +326,7 @@ export async function runIngest(
   includedRelativePaths: string[],
   useExistingRoot: boolean,
   jobId: string,
+  rootNameOverride?: string,
 ) {
   return invoke<IngestResult>("run_ingest", {
     presetId,
@@ -339,6 +339,7 @@ export async function runIngest(
     includedRelativePaths,
     useExistingRoot,
     jobId,
+    rootNameOverride: rootNameOverride || null,
   });
 }
 

@@ -309,12 +309,6 @@ export function buildNamingPreset(deliverable: NamingDeliverable, nowIso: string
   };
 }
 
-// One folder Preset per shipped deliverable — used to seed ready-made preset files
-// into the Documents library so the team can ingest immediately.
-export function createNamingPresets(nowIso: string): Preset[] {
-  return NAMING_DELIVERABLES.map((deliverable) => buildNamingPreset(deliverable, nowIso));
-}
-
 // Local preview of the SOP name (mirrors the Rust token resolver's separator
 // collapsing) so the Assistant can show the result live without a round-trip.
 export function previewNamingResult(deliverable: NamingDeliverable, values: Record<string, string>): string {

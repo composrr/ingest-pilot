@@ -48,9 +48,19 @@ pub async fn run_ingest(
     included_relative_paths: Option<Vec<String>>,
     use_existing_root: bool,
     job_id: Option<String>,
+    root_name_override: Option<String>,
 ) -> Result<IngestResult, String> {
-    let preset =
+    let mut preset =
         get_preset(app.clone(), preset_id)?.ok_or_else(|| "Preset not found.".to_string())?;
+    // A per-ingest project name from the Naming wizard: overrides the preset's root
+    // folder pattern for this run only (the preset itself is untouched). Resolved as
+    // a pattern, so it may carry tokens or be a plain literal name.
+    if let Some(name) = root_name_override
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        preset.root_folder_pattern = name.clone();
+    }
     let cancel_flag = Arc::new(AtomicBool::new(false));
     if let Some(job_id) = job_id.as_ref() {
         jobs.jobs

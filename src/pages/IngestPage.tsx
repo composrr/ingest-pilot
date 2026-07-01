@@ -34,7 +34,7 @@ import {
   runIngest,
   retryFailedCopies,
   saveHistoryJob,
-  savePreset,
+  getNamingCatalog,
   scanSource,
   detectCameraSources,
   type CameraSource,
@@ -59,8 +59,8 @@ import type {
 } from "../lib/types";
 import { useAppStore } from "../stores/appStore";
 import {
-  buildNamingPreset,
-  NAMING_DELIVERABLES,
+  defaultNamingCatalog,
+  mergeNamingCatalog,
   previewNamingResult,
   type NamingDeliverable,
 } from "../lib/namingCatalog";
@@ -156,6 +156,9 @@ export function IngestPage() {
   const [metadataValues, setMetadataValues] = useState<Record<string, string>>({});
   const [isSavingManifest, setIsSavingManifest] = useState(false);
   const [isNamingOpen, setIsNamingOpen] = useState(false);
+  // Project name chosen via the Naming wizard for THIS ingest. Overrides the
+  // preset's root folder name at run time without touching the preset itself.
+  const [projectNameOverride, setProjectNameOverride] = useState("");
   const [queueMode, setQueueMode] = useState(false);
   const [queue, setQueue] = useState<QueueCard[]>([]);
   const [isQueueRunning, setIsQueueRunning] = useState(false);
@@ -602,25 +605,18 @@ export function IngestPage() {
     setLastAction(`Loaded recent ingest: ${job.preset_name}`);
   }
 
-  // Naming Assistant: turn an SOP deliverable + its fields into the correct project
-  // folder by saving/selecting the matching seeded preset and pre-filling its
-  // variables (the preset's root_folder_pattern then resolves to the SOP name).
-  async function applyNaming(deliverable: NamingDeliverable, values: Record<string, string>) {
-    const preset = buildNamingPreset(deliverable, new Date().toISOString());
-    try {
-      await savePreset(preset);
-      await refreshPresets(preset.id);
-    } catch (caught) {
-      setError(String(caught));
+  // Naming wizard: resolve the chosen template + its fields into the SOP-correct
+  // project name and apply it to THIS ingest only. The selected folder preset (its
+  // tree, routing, variables) stays exactly as chosen — only the name changes.
+  function applyNaming(deliverable: NamingDeliverable, values: Record<string, string>) {
+    const name = previewNamingResult(deliverable, values);
+    if (!name.trim()) {
       return;
     }
-    // Stash values so the preset-load defaults effect doesn't clobber them.
-    pendingReplayValuesRef.current = values;
-    setVariableValues((current) => ({ ...current, ...values }));
-    setSelectedPresetId(preset.id);
+    setProjectNameOverride(name);
     setIngestResult(null);
     setIsNamingOpen(false);
-    setLastAction(`Naming Assistant: ${deliverable.label}`);
+    setLastAction(`Named via wizard: ${name}`);
   }
 
   async function loadSelectedPreset(id: string) {
@@ -865,6 +861,7 @@ export function IngestPage() {
           entry.includedRelativePaths,
           destinationMode === "existing_root" || !isFirstForDestination,
           jobId,
+          projectNameOverride.trim() || undefined,
         );
         results.push(result);
         rootByDestination.set(destination, result.root_path);
@@ -1447,6 +1444,7 @@ export function IngestPage() {
       destinationPath,
       destinationMode,
       preset,
+      projectNameOverride,
       renameFiles,
       scan,
       variableValues,
@@ -1471,7 +1469,7 @@ export function IngestPage() {
     return () => {
       isCurrent = false;
     };
-  }, [destinationMode, destinationPath, preset, renameFiles, scan, variableValues]);
+  }, [destinationMode, destinationPath, preset, projectNameOverride, renameFiles, scan, variableValues]);
 
   useEffect(() => {
     const paths = uniquePaths([...sourcePaths, ...destinationTargets]).filter((path) => path.trim().length > 0);
@@ -1735,11 +1733,30 @@ export function IngestPage() {
               help="This is the job setup: which preset rules to use, what media to copy, and where the project should land."
               title="1. Copy Job"
             />
-            <div className="flex items-center gap-1.5">
+            <div className="flex min-w-0 items-center gap-1.5">
+              {projectNameOverride ? (
+                <span
+                  className="inline-flex h-6 min-w-0 items-center gap-1 rounded-full border border-signal/40 bg-signal/10 px-2 text-[11px] font-semibold text-ink"
+                  title={`This ingest's project folder: ${projectNameOverride}`}
+                >
+                  <span className="max-w-[180px] truncate font-mono">{projectNameOverride}</span>
+                  <button
+                    aria-label="Clear project name"
+                    className="rounded-full text-graphite transition hover:text-ink"
+                    onClick={() => {
+                      setProjectNameOverride("");
+                      setIngestResult(null);
+                    }}
+                    type="button"
+                  >
+                    <X size={11} />
+                  </button>
+                </span>
+              ) : null}
               <button
                 className="inline-flex h-6 items-center gap-1.5 rounded-full border border-mist bg-white px-2 text-[11px] font-semibold text-graphite transition hover:bg-porcelain"
                 onClick={() => setIsNamingOpen(true)}
-                title="Naming Assistant: build the SOP-correct project name from a deliverable type."
+                title="Naming wizard: pick a naming template and apply the SOP-correct project name to this ingest. Your selected preset stays the same."
                 type="button"
               >
                 <Wand2 size={12} />
@@ -2213,7 +2230,7 @@ export function IngestPage() {
         />
       ) : null}
       {isNamingOpen ? (
-        <NamingAssistant onApply={(deliverable, values) => void applyNaming(deliverable, values)} onClose={() => setIsNamingOpen(false)} />
+        <NamingAssistant onApply={(deliverable, values) => applyNaming(deliverable, values)} onClose={() => setIsNamingOpen(false)} />
       ) : null}
     </div>
   );
@@ -2580,14 +2597,33 @@ function NamingAssistant({
   onApply: (deliverable: NamingDeliverable, values: Record<string, string>) => void;
   onClose: () => void;
 }) {
-  const [deliverableId, setDeliverableId] = useState(NAMING_DELIVERABLES[0]?.id ?? "");
+  // Templates come from the editable naming catalog (Naming tab), so anything the
+  // team adds or edits there is immediately available here.
+  const [templates, setTemplates] = useState<NamingDeliverable[]>(() => defaultNamingCatalog().deliverables);
+  const [deliverableId, setDeliverableId] = useState("");
   const [values, setValues] = useState<Record<string, string>>({});
-  const deliverable = NAMING_DELIVERABLES.find((item) => item.id === deliverableId) ?? NAMING_DELIVERABLES[0];
+
+  useEffect(() => {
+    let active = true;
+    getNamingCatalog()
+      .then((persisted) => {
+        if (active) {
+          setTemplates(mergeNamingCatalog(persisted).deliverables);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const deliverable = templates.find((item) => item.id === deliverableId) ?? templates[0];
   const preview = deliverable ? previewNamingResult(deliverable, values) : "";
   const missingRequired = deliverable
     ? deliverable.fields.some((field) => field.required && !(values[field.id] ?? "").trim())
     : true;
-  const groups: NamingDeliverable["group"][] = ["Video Capture", "Delivered Video"];
+  // Preserve catalog order while grouping.
+  const groups = [...new Set(templates.map((item) => item.group))];
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/30 p-4 backdrop-blur-sm">
@@ -2615,7 +2651,7 @@ function NamingAssistant({
               <div key={group} className="mb-2">
                 <div className="mb-1 px-1 text-[11px] font-semibold uppercase tracking-wide text-graphite/60">{group}</div>
                 <div className="space-y-1">
-                  {NAMING_DELIVERABLES.filter((item) => item.group === group).map((item) => (
+                  {templates.filter((item) => item.group === group).map((item) => (
                     <button
                       key={item.id}
                       className={`w-full rounded-lg px-2 py-1.5 text-left text-sm transition ${
@@ -4592,6 +4628,7 @@ async function buildOutputPreview({
   destinationPath,
   destinationMode,
   preset,
+  projectNameOverride,
   renameFiles,
   scan,
   variableValues,
@@ -4599,6 +4636,7 @@ async function buildOutputPreview({
   destinationPath: string;
   destinationMode: "create_new" | "existing_root";
   preset: Preset;
+  projectNameOverride?: string;
   renameFiles: boolean;
   scan: SourceScan | null;
   variableValues: Record<string, string>;
@@ -4606,7 +4644,9 @@ async function buildOutputPreview({
   const sampleFile = firstRoutableFile(scan);
   const sampleKind = sampleFile?.kind ?? "footage";
   const sampleExtension = sampleFile?.extension ?? ".mp4";
-  const rootName = await previewPattern(preset.root_folder_pattern, {
+  // A wizard-chosen project name replaces the preset's root pattern for this run,
+  // mirroring the backend's root_name_override.
+  const rootName = await previewPattern(projectNameOverride?.trim() || preset.root_folder_pattern, {
     preset_name: preset.name,
     variable_values: variableValues,
     clip_number_padding: preset.clip_number_padding,
