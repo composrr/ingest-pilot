@@ -7,8 +7,15 @@ import { OptionsTextField } from "./OptionsTextField";
 import { PatternInput } from "./PatternInput";
 import { SelectMenu } from "./SelectMenu";
 import { currentLocalDate, mergeGlobalAndPresetParameters, slugifyToken } from "../lib/parameters";
-import { getSettings } from "../lib/tauri";
-import type { FolderNode, Preset, PresetVariable, TokenContext, VariableType } from "../lib/types";
+import { getSettings, listMetadataPresets } from "../lib/tauri";
+import type {
+  FolderNode,
+  MetadataPresetSummary,
+  Preset,
+  PresetVariable,
+  TokenContext,
+  VariableType,
+} from "../lib/types";
 
 type PresetEditorProps = {
   initialPreset: Preset;
@@ -30,6 +37,11 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
     initialPreset.variables.map(() => createRowKey()),
   );
   const [globalParameters, setGlobalParameters] = useState<PresetVariable[]>([]);
+  const [metadataSummaries, setMetadataSummaries] = useState<MetadataPresetSummary[]>([]);
+
+  useEffect(() => {
+    void listMetadataPresets().then(setMetadataSummaries).catch(() => undefined);
+  }, []);
   const allParameters = useMemo(
     () => mergeGlobalAndPresetParameters(globalParameters, draft.variables),
     [draft.variables, globalParameters],
@@ -278,6 +290,22 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
                   onChange={(rename_files_default) => updateDraft({ rename_files_default })}
                   value={draft.rename_files_default}
                 />
+                <div className="px-3 py-2">
+                  <div className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-graphite">
+                    Metadata preset
+                    <FloatingHelp label="Metadata preset help">
+                      Optionally attach a metadata preset. When this preset is chosen at ingest, its metadata fields are
+                      pre-selected and written to the iconik CSV. Manage schemas in the Metadata tab.
+                    </FloatingHelp>
+                  </div>
+                  <SelectMenu
+                    onChange={(value) => updateDraft({ metadata_preset_id: value || null })}
+                    options={[{ label: "None", value: "" }, ...metadataSummaries.map((item) => ({ label: item.name, value: item.id }))]}
+                    placeholder="No metadata"
+                    size="sm"
+                    value={draft.metadata_preset_id ?? ""}
+                  />
+                </div>
               </div>
             </section>
 
@@ -365,6 +393,8 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
             context={context}
             folders={draft.folder_tree}
             onChange={(folder_tree) => updateDraft({ folder_tree })}
+            routingOverrides={draft.file_type_routing_overrides}
+            onRoutingChange={(file_type_routing_overrides) => updateDraft({ file_type_routing_overrides })}
             variables={allParameters}
           />
         </div>
