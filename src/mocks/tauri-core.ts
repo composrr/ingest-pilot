@@ -4,6 +4,7 @@
 // The real desktop build never imports this file.
 import { createShippedPresets } from "../lib/presetFactory";
 import { createDefaultMetadataPreset } from "../lib/metadataPresetFactory";
+import { defaultNamingCatalog, type NamingCatalog } from "../lib/namingCatalog";
 import { designJobState } from "./designJobState";
 import type {
   CameraSource,
@@ -31,6 +32,7 @@ const SAMPLE_DATE = "20260628";
 // In-memory preset store so save/delete/duplicate feel real while designing.
 let presets: Preset[] = createShippedPresets();
 let metadataPresets: MetadataPreset[] = [createDefaultMetadataPreset("2026-06-30T00:00:00Z")];
+let namingCatalog: NamingCatalog | null = defaultNamingCatalog();
 
 function summary(preset: Preset): PresetSummary {
   return {
@@ -272,6 +274,12 @@ export async function invoke<T = unknown>(command: string, args?: Record<string,
     }
     case "delete_metadata_preset":
       metadataPresets = metadataPresets.filter((p) => p.id !== a.id);
+      return undefined as T;
+
+    case "get_naming_catalog":
+      return (namingCatalog ?? null) as T;
+    case "save_naming_catalog":
+      namingCatalog = a.catalog ?? null;
       return undefined as T;
     case "export_metadata_manifest":
       return "E:/PROJECTS/2026-06-30_Project/2026-06-30_Project_Metadata.csv" as T;

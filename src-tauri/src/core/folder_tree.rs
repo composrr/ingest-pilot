@@ -35,7 +35,12 @@ pub fn scaffold_project(
         ..TokenContext::default()
     };
     let root_name = resolve_pattern(&preset.root_folder_pattern, &root_context)?;
-    let root_path = PathBuf::from(destination).join(root_name);
+    let base = apply_sub_path(
+        PathBuf::from(destination),
+        &preset.destinations.sub_path_pattern,
+        &root_context,
+    )?;
+    let root_path = base.join(root_name);
 
     let mut result = ScaffoldResult {
         root_path: root_path.to_string_lossy().to_string(),
@@ -145,6 +150,31 @@ fn copy_template_file(
         .push(target_path.to_string_lossy().to_string());
 
     Ok(())
+}
+
+/// Resolves the optional tokenized sub-path (e.g. `{year}/Broll`) onto `base`. Each
+/// `/`- or `\`-separated segment is resolved and sanitized independently; a segment
+/// that resolves empty (e.g. an unset optional variable) is skipped so it never
+/// creates a blank folder. This is what lets a preset point at a stable parent
+/// (…/Videos) and land inside the current year's structure every ingest.
+fn apply_sub_path(
+    base: PathBuf,
+    pattern: &str,
+    context: &TokenContext,
+) -> Result<PathBuf, String> {
+    let mut path = base;
+    for raw_segment in pattern.split(['/', '\\']) {
+        let trimmed = raw_segment.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let resolved = resolve_pattern(trimmed, context)?;
+        if resolved.trim().is_empty() {
+            continue;
+        }
+        path.push(resolved);
+    }
+    Ok(path)
 }
 
 fn create_directory(path: &Path, result: &mut ScaffoldResult) -> Result<(), String> {
@@ -322,10 +352,12 @@ mod tests {
                     }],
                     condition: None,
                     role: Some(FolderRole::Footage),
+                    metadata_preset_id: None,
                 }],
                 template_files: vec![],
                 condition: None,
                 role: Some(FolderRole::Footage),
+                metadata_preset_id: None,
             }],
             file_rename_pattern: "{folder_name}_{clip#}".to_string(),
             clip_number_padding: 3,
@@ -333,6 +365,7 @@ mod tests {
             destinations: PresetDestinations {
                 primary: destination.to_string_lossy().to_string(),
                 secondaries: vec![],
+                sub_path_pattern: String::new(),
             },
             file_type_routing_overrides: BTreeMap::new(),
             preserve_xml_sidecars: true,
@@ -365,6 +398,56 @@ mod tests {
             .join("MCK")
             .join("MCK.prproj")
             .exists());
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn scaffolds_into_year_aware_sub_path() {
+        let workspace = unique_temp_dir("ingest_pilot_subpath_test");
+        let destination = workspace.join("Videos");
+        let preset = Preset {
+            schema_version: 1,
+            id: "preset_subpath".to_string(),
+            name: "Broll".to_string(),
+            description: None,
+            icon: None,
+            color: None,
+            variables: vec![],
+            root_folder_pattern: "{date}_Capture".to_string(),
+            folder_tree: vec![],
+            file_rename_pattern: "{original_name}".to_string(),
+            clip_number_padding: 3,
+            per_folder_rename_overrides: BTreeMap::new(),
+            destinations: PresetDestinations {
+                primary: destination.to_string_lossy().to_string(),
+                secondaries: vec![],
+                // A blank optional segment ({unset}) must be dropped, not create a
+                // blank folder; {year}/Broll must be descended into/created.
+                sub_path_pattern: "{year}/Broll/{unset}".to_string(),
+            },
+            file_type_routing_overrides: BTreeMap::new(),
+            preserve_xml_sidecars: true,
+            rename_files_default: true,
+            metadata_preset_id: None,
+            created_at: "2026-04-24T00:00:00Z".to_string(),
+            updated_at: "2026-04-24T00:00:00Z".to_string(),
+        };
+
+        let result = scaffold_project(
+            &preset,
+            BTreeMap::from([("unset".to_string(), String::new())]),
+            None,
+        )
+        .expect("scaffold succeeds");
+
+        let root = PathBuf::from(&result.root_path);
+        assert!(root.exists());
+        // .../Videos/<year>/Broll/<root_name> — Broll is the parent of the project root.
+        let broll = root.parent().expect("root has parent");
+        assert_eq!(broll.file_name().and_then(|name| name.to_str()), Some("Broll"));
+        // The blank {unset} segment was skipped, so Broll is the immediate parent.
+        assert!(broll.starts_with(&destination));
 
         let _ = fs::remove_dir_all(workspace);
     }

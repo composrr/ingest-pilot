@@ -32,6 +32,7 @@ import type {
   FolderCondition,
   FolderNode,
   FolderRole,
+  MetadataPresetSummary,
   PresetVariable,
   TemplateFile,
   TokenContext,
@@ -47,6 +48,7 @@ type FolderTreeEditorProps = {
   routingOverrides: Record<string, string>;
   onRoutingChange: (overrides: Record<string, string>) => void;
   customFileKinds: Record<string, string>;
+  metadataSummaries: MetadataPresetSummary[];
   variables: PresetVariable[];
 };
 
@@ -86,6 +88,7 @@ export function FolderTreeEditor({
   routingOverrides,
   onRoutingChange,
   customFileKinds,
+  metadataSummaries,
   variables,
 }: FolderTreeEditorProps) {
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => collectFolderIds(folders));
@@ -640,6 +643,7 @@ export function FolderTreeEditor({
             routingOverrides={routingOverrides}
             onRoutingChange={onRoutingChange}
             customFileKinds={customFileKinds}
+            metadataSummaries={metadataSummaries}
             tokenPreviewValues={selectedFolder ? tokenPreviewValues[selectedFolder.id] ?? {} : {}}
             variables={variables}
           />
@@ -1041,6 +1045,7 @@ function FolderInspector({
   routingOverrides,
   onRoutingChange,
   customFileKinds,
+  metadataSummaries,
   tokenPreviewValues,
   variables,
 }: {
@@ -1052,6 +1057,7 @@ function FolderInspector({
   routingOverrides: Record<string, string>;
   onRoutingChange: (overrides: Record<string, string>) => void;
   customFileKinds: Record<string, string>;
+  metadataSummaries: MetadataPresetSummary[];
   tokenPreviewValues: Record<string, string>;
   variables: PresetVariable[];
 }) {
@@ -1183,6 +1189,25 @@ function FolderInspector({
               value={folder.role ?? ""}
             />
           </label>
+          {metadataSummaries.length ? (
+            <label className="block">
+              <span className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-graphite">
+                Folder metadata
+                <FloatingHelp label="Folder metadata help">
+                  Optional. Attach a metadata preset to this folder (e.g. a campus folder) and clips that land here are
+                  tagged in the iconik CSV with that preset's field defaults — so multiple campuses in one root each get
+                  their own metadata. Leave blank to use the ingest's shoot-wide metadata.
+                </FloatingHelp>
+              </span>
+              <SelectMenu
+                onChange={(value) => onUpdate({ metadata_preset_id: value || null })}
+                options={[{ label: "Use shoot-wide", value: "" }, ...metadataSummaries.map((item) => ({ label: item.name, value: item.id }))]}
+                placeholder="Use shoot-wide"
+                size="sm"
+                value={folder.metadata_preset_id ?? ""}
+              />
+            </label>
+          ) : null}
           <label className="flex min-h-8 items-center gap-2 rounded-lg border border-mist bg-white px-2 text-xs font-semibold text-graphite">
             <input
               checked={folder.is_footage_destination}

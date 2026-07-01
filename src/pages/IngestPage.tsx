@@ -40,6 +40,7 @@ import {
   type CameraSource,
   type CopiedFile,
   type DiskSpace,
+  type FolderMetadataOverride,
   type IngestHistoryJob,
   type IngestProgress,
   type IngestResult,
@@ -64,6 +65,12 @@ import {
   type NamingDeliverable,
 } from "../lib/namingCatalog";
 import { createDefaultMetadataPreset } from "../lib/metadataPresetFactory";
+
+// True if any folder in the tree carries its own metadata preset, so we still write
+// the manifest (from folder defaults) even when no shoot-wide values were entered.
+function folderTreeHasMetadata(nodes: FolderNode[]): boolean {
+  return nodes.some((node) => Boolean(node.metadata_preset_id) || folderTreeHasMetadata(node.children ?? []));
+}
 
 // Queue mode: a sequential pipeline of source cards. Each card is scanned in the
 // background (scan-ahead) while an earlier card copies, then copied in order into
@@ -477,6 +484,42 @@ export function IngestPage() {
     }
   }
 
+  // Resolves any per-folder metadata presets into absolute-path overrides so the
+  // manifest can tag each clip by the campus folder it landed in. Best-effort: a
+  // folder whose preset can't load is simply skipped.
+  async function buildFolderMetadataOverrides(rootPath: string): Promise<FolderMetadataOverride[]> {
+    if (!preset) {
+      return [];
+    }
+    const overrides: FolderMetadataOverride[] = [];
+    const cache = new Map<string, MetadataPreset | null>();
+    async function walk(nodes: FolderNode[], parentPath: string) {
+      for (const node of nodes) {
+        const name = await previewPattern(node.name_pattern, {
+          preset_name: preset!.name,
+          variable_values: variableValues,
+          clip_number_padding: preset!.clip_number_padding,
+        });
+        const folderPath = joinPreviewPath(parentPath, name);
+        if (node.metadata_preset_id) {
+          let loaded = cache.get(node.metadata_preset_id);
+          if (loaded === undefined) {
+            loaded = await getMetadataPreset(node.metadata_preset_id).catch(() => null);
+            cache.set(node.metadata_preset_id, loaded);
+          }
+          if (loaded) {
+            overrides.push({ path_prefix: folderPath, preset: loaded });
+          }
+        }
+        if (node.children?.length) {
+          await walk(node.children, folderPath);
+        }
+      }
+    }
+    await walk(preset.folder_tree, rootPath);
+    return overrides;
+  }
+
   // Writes the metadata manifest CSV for the delivered ingest and opens it.
   async function saveMetadataManifest() {
     if (!ingestResult || !metadataPreset) {
@@ -485,11 +528,13 @@ export function IngestPage() {
     setIsSavingManifest(true);
     setError(null);
     try {
+      const overrides = await buildFolderMetadataOverrides(ingestResult.root_path);
       const path = await exportMetadataManifest(
         ingestResult.root_path,
         ingestResult.copied_files,
         metadataPreset,
         metadataValues,
+        overrides,
       );
       await openPath(path);
       setLastAction("Metadata manifest saved");
@@ -503,12 +548,14 @@ export function IngestPage() {
   // Auto-writes the metadata manifest into every destination root after an ingest, so
   // each drive carries the CSV for iconik. Non-fatal: a failure never breaks delivery.
   async function autoWriteMetadataManifest(result: IngestResult, roots: string[]) {
-    if (!metadataPreset || !hasMetadataValues) {
+    const hasFolderMetadata = preset ? folderTreeHasMetadata(preset.folder_tree) : false;
+    if (!metadataPreset || (!hasMetadataValues && !hasFolderMetadata)) {
       return;
     }
+    const overrides = await buildFolderMetadataOverrides(result.root_path);
     for (const root of roots) {
       try {
-        await exportMetadataManifest(root, result.copied_files, metadataPreset, metadataValues);
+        await exportMetadataManifest(root, result.copied_files, metadataPreset, metadataValues, overrides);
       } catch {
         // best-effort per destination
       }
@@ -4561,7 +4608,25 @@ async function buildOutputPreview({
     variable_values: variableValues,
     clip_number_padding: preset.clip_number_padding,
   });
-  const resolvedRoot = destinationMode === "existing_root" ? destinationPath : joinPreviewPath(destinationPath, rootName);
+  // Year-aware sub-path (e.g. {year}/Broll) is inserted between the destination and
+  // the project root when creating a new project, mirroring the Rust scaffolder.
+  const subSegments = (preset.destinations.sub_path_pattern ?? "")
+    .split(/[/\\]/)
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0);
+  const resolvedSubSegments: string[] = [];
+  for (const segment of subSegments) {
+    const resolved = await previewPattern(segment, {
+      preset_name: preset.name,
+      variable_values: variableValues,
+      clip_number_padding: preset.clip_number_padding,
+    });
+    if (resolved.trim()) {
+      resolvedSubSegments.push(resolved);
+    }
+  }
+  const baseWithSub = resolvedSubSegments.reduce((path, segment) => joinPreviewPath(path, segment), destinationPath);
+  const resolvedRoot = destinationMode === "existing_root" ? destinationPath : joinPreviewPath(baseWithSub, rootName);
   const targetFolderPath =
     routeFolderPathForKindAndExtension(preset, sampleKind, sampleExtension) ??
     findDeepestFolderPathByRole(preset.folder_tree, "footage") ??

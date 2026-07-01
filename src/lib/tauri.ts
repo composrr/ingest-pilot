@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { createShippedPresets } from "./presetFactory";
+import type { NamingCatalog } from "./namingCatalog";
 import type {
   AppSettings,
   FolderNode,
@@ -237,13 +238,33 @@ export async function deleteMetadataPreset(id: string) {
   return invoke<void>("delete_metadata_preset", { id });
 }
 
+export async function getNamingCatalog() {
+  return invoke<NamingCatalog | null>("get_naming_catalog");
+}
+
+export async function saveNamingCatalog(catalog: NamingCatalog) {
+  return invoke<void>("save_naming_catalog", { catalog });
+}
+
+export type FolderMetadataOverride = {
+  path_prefix: string;
+  preset: MetadataPreset;
+};
+
 export async function exportMetadataManifest(
   rootPath: string,
   copiedFiles: CopiedFile[],
   preset: MetadataPreset,
   values: Record<string, string>,
+  folderOverrides: FolderMetadataOverride[] = [],
 ) {
-  return invoke<string>("export_metadata_manifest", { rootPath, copiedFiles, preset, values });
+  return invoke<string>("export_metadata_manifest", {
+    rootPath,
+    copiedFiles,
+    preset,
+    values,
+    folderOverrides,
+  });
 }
 
 export async function previewPattern(pattern: string, context: TokenContext) {

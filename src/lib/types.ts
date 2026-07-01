@@ -70,11 +70,19 @@ export type FolderNode = {
   template_files: TemplateFile[];
   condition?: FolderCondition | null;
   role?: FolderRole | null;
+  // Optional metadata preset for clips routed into this folder — lets different
+  // campus folders under one root carry their own metadata in a single import.
+  metadata_preset_id?: string | null;
 };
 
 export type PresetDestinations = {
   primary: string;
   secondaries: string[];
+  // Optional tokenized sub-path inserted between the chosen destination and the
+  // project root folder, resolved per ingest (e.g. "{year}/Broll"). Lets a preset
+  // point at a stable parent (…/Videos) and descend into/create the current year's
+  // structure automatically. Optional so existing presets/literals stay valid.
+  sub_path_pattern?: string;
 };
 
 export type Preset = {

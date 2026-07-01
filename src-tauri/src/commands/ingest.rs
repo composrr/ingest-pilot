@@ -5,7 +5,7 @@ use crate::ingest::copier::{
     IngestProgress, IngestResult, SkippedFile,
 };
 use crate::core::metadata_preset::MetadataPreset;
-use crate::ingest::metadata_manifest::write_metadata_manifest;
+use crate::ingest::metadata_manifest::{write_metadata_manifest, FolderMetadataOverride};
 use crate::ingest::offload_proof::{write_offload_proof, OffloadProofInput};
 use crate::ingest::reel_index::write_reel_index;
 use crate::ingest::report::{write_html_report, ReportInput};
@@ -185,9 +185,12 @@ pub async fn export_metadata_manifest(
     copied_files: Vec<CopiedFile>,
     preset: MetadataPreset,
     values: BTreeMap<String, String>,
+    folder_overrides: Option<Vec<FolderMetadataOverride>>,
 ) -> Result<String, String> {
+    let folder_overrides = folder_overrides.unwrap_or_default();
     tauri::async_runtime::spawn_blocking(move || {
-        let path = write_metadata_manifest(&root_path, &copied_files, &preset, &values)?;
+        let path =
+            write_metadata_manifest(&root_path, &copied_files, &preset, &values, &folder_overrides)?;
         Ok(path.to_string_lossy().to_string())
     })
     .await

@@ -103,6 +103,12 @@ pub struct FolderNode {
     pub condition: Option<FolderCondition>,
     #[serde(default)]
     pub role: Option<FolderRole>,
+    /// Optional metadata preset attached to this folder. Clips routed into it (or a
+    /// descendant without its own override) are tagged in the manifest with this
+    /// preset's field defaults — so different campus folders under one root carry
+    /// their own metadata in a single import.
+    #[serde(default)]
+    pub metadata_preset_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -141,6 +147,13 @@ pub struct PresetDestinations {
     pub primary: String,
     #[serde(default)]
     pub secondaries: Vec<String>,
+    /// Optional tokenized sub-path inserted between the chosen destination and the
+    /// project root folder, resolved per ingest (e.g. `{year}/Broll`). Lets a preset
+    /// point at a stable parent (…/Videos) and descend into/create the current
+    /// year's structure automatically. Segments are split on `/` and `\` and
+    /// resolved individually; a segment that resolves empty is dropped.
+    #[serde(default)]
+    pub sub_path_pattern: String,
 }
 
 fn default_clip_number_padding() -> u8 {
@@ -235,6 +248,7 @@ mod tests {
             destinations: PresetDestinations {
                 primary: String::new(),
                 secondaries: vec![],
+                sub_path_pattern: String::new(),
             },
             file_type_routing_overrides: BTreeMap::new(),
             preserve_xml_sidecars: true,
