@@ -26,6 +26,20 @@ pub fn app_data_root(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(root)
 }
 
+/// Visible, user-facing library root: `~/Documents/Ingest Pilot`. Holds the shareable
+/// preset files (one file per preset, in subfolders) so they can be seen in Finder and
+/// synced across machines with a git repo. Distinct from `app_data_root`, which keeps
+/// machine-specific settings/history in the hidden per-app config dir.
+pub fn library_root(app: &AppHandle) -> Result<PathBuf, String> {
+    let documents = app
+        .path()
+        .document_dir()
+        .map_err(|error| error.to_string())?;
+    let root = documents.join("Ingest Pilot");
+    fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+    Ok(root)
+}
+
 /// Copies the old `~/Documents/IngestPilot` tree into the new root if it exists
 /// and the new root has not been created yet. Best-effort: failures are ignored
 /// so a migration hiccup never blocks the app from starting fresh.

@@ -29,12 +29,10 @@ pub fn list_presets(app: AppHandle) -> Result<Vec<PresetSummary>, String> {
 
 #[tauri::command]
 pub fn get_preset(app: AppHandle, id: String) -> Result<Option<Preset>, String> {
-    let path = preset_path(&app, &id)?;
-    if !path.exists() {
-        return Ok(None);
+    match find_preset_file_by_id(&app, &id)? {
+        Some(path) => Ok(Some(read_preset_file(&path)?)),
+        None => Ok(None),
     }
-
-    Ok(Some(read_preset_file(&path)?))
 }
 
 #[tauri::command]
@@ -42,9 +40,13 @@ pub fn save_preset(app: AppHandle, preset: Preset) -> Result<PresetSummary, Stri
     validate_preset(&preset)?;
 
     let directory = preset_directory(&app)?;
-    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    // Remove any existing file for this preset first, so a rename doesn't leave a stale
+    // file behind under the old name.
+    if let Some(existing) = find_preset_file_by_id(&app, &preset.id)? {
+        let _ = fs::remove_file(existing);
+    }
 
-    let path = preset_path(&app, &preset.id)?;
+    let path = preset_path_for(&directory, &preset);
     let json = serde_json::to_string_pretty(&preset).map_err(|error| error.to_string())?;
     fs::write(path, json).map_err(|error| error.to_string())?;
 
@@ -53,8 +55,7 @@ pub fn save_preset(app: AppHandle, preset: Preset) -> Result<PresetSummary, Stri
 
 #[tauri::command]
 pub fn delete_preset(app: AppHandle, id: String) -> Result<(), String> {
-    let path = preset_path(&app, &id)?;
-    if path.exists() {
+    if let Some(path) = find_preset_file_by_id(&app, &id)? {
         fs::remove_file(path).map_err(|error| error.to_string())?;
     }
 
@@ -70,22 +71,16 @@ pub fn import_preset(app: AppHandle, file_path: String) -> Result<PresetSummary,
 
 #[tauri::command]
 pub fn export_preset(app: AppHandle, id: String, target_path: String) -> Result<(), String> {
-    let source = preset_path(&app, &id)?;
-    if !source.exists() {
-        return Err(format!("Preset '{id}' does not exist."));
-    }
-
+    let source =
+        find_preset_file_by_id(&app, &id)?.ok_or_else(|| format!("Preset '{id}' does not exist."))?;
     fs::copy(source, target_path).map_err(|error| error.to_string())?;
     Ok(())
 }
 
 #[tauri::command]
 pub fn duplicate_preset(app: AppHandle, id: String) -> Result<PresetSummary, String> {
-    let path = preset_path(&app, &id)?;
-    if !path.exists() {
-        return Err(format!("Preset '{id}' does not exist."));
-    }
-
+    let path =
+        find_preset_file_by_id(&app, &id)?.ok_or_else(|| format!("Preset '{id}' does not exist."))?;
     let preset = read_preset_file(&path)?;
     let duplicate = make_unique_preset(&app, preset)?;
     save_preset(app, duplicate)
@@ -138,7 +133,77 @@ pub fn inspect_template_drop(paths: Vec<String>) -> Result<DroppedTemplateItems,
 }
 
 fn preset_directory(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(crate::core::storage::app_data_root(app)?.join("Presets"))
+    let directory = crate::core::storage::library_root(app)?.join("Presets");
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    migrate_legacy_presets(app, &directory);
+    Ok(directory)
+}
+
+// One-time move of presets from the old hidden per-app config dir into the visible
+// Documents library, rewritten as one human-named file each. Marked done so it runs once.
+fn migrate_legacy_presets(app: &AppHandle, new_dir: &Path) {
+    let marker = new_dir.join(".migrated");
+    if marker.exists() {
+        return;
+    }
+    if let Ok(old_root) = crate::core::storage::app_data_root(app) {
+        let old_dir = old_root.join("Presets");
+        if old_dir.exists() && old_dir != *new_dir {
+            if let Ok(entries) = fs::read_dir(&old_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|value| value.to_str()) != Some("preset") {
+                        continue;
+                    }
+                    if let Ok(preset) = read_preset_file(&path) {
+                        if let Ok(json) = serde_json::to_string_pretty(&preset) {
+                            let _ = fs::write(preset_path_for(new_dir, &preset), json);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let _ = fs::write(marker, "");
+}
+
+// The file for a preset is named after the preset (so it's readable in Finder and git),
+// disambiguated only when a different preset already owns that filename.
+fn preset_path_for(directory: &Path, preset: &Preset) -> PathBuf {
+    let mut base = sanitize_filename(preset.name.trim());
+    if base.is_empty() {
+        base = sanitize_file_stem(&preset.id);
+    }
+    let candidate = directory.join(format!("{base}.preset"));
+    if let Ok(existing) = read_preset_file(&candidate) {
+        if existing.id != preset.id {
+            let suffix: String = preset
+                .id
+                .chars()
+                .filter(|character| character.is_ascii_alphanumeric())
+                .take(6)
+                .collect();
+            return directory.join(format!("{base}_{suffix}.preset"));
+        }
+    }
+    candidate
+}
+
+fn find_preset_file_by_id(app: &AppHandle, id: &str) -> Result<Option<PathBuf>, String> {
+    let directory = preset_directory(app)?;
+    for entry in fs::read_dir(&directory).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("preset") {
+            continue;
+        }
+        if let Ok(preset) = read_preset_file(&path) {
+            if preset.id == id {
+                return Ok(Some(path));
+            }
+        }
+    }
+    Ok(None)
 }
 
 fn folder_node_from_path(path: &Path, ids: &mut HashSet<String>) -> Result<FolderNode, String> {
@@ -206,11 +271,6 @@ fn unique_folder_id(name: &str, ids: &mut HashSet<String>) -> String {
     }
 
     candidate
-}
-
-fn preset_path(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
-    let safe_id = sanitize_file_stem(id);
-    Ok(preset_directory(app)?.join(format!("{safe_id}.preset")))
 }
 
 fn read_preset_file(path: &Path) -> Result<Preset, String> {
@@ -302,7 +362,7 @@ fn validate_folder_node(
 fn make_unique_preset(app: &AppHandle, mut preset: Preset) -> Result<Preset, String> {
     let original_name = preset.name.clone();
     let mut index = 1;
-    while preset_path(app, &preset.id)?.exists() {
+    while find_preset_file_by_id(app, &preset.id)?.is_some() {
         index += 1;
         let suffix = now_millis();
         preset.id = format!("{}_copy_{}", sanitize_file_stem(&preset.id), suffix);
@@ -334,4 +394,24 @@ fn sanitize_file_stem(value: &str) -> String {
             }
         })
         .collect()
+}
+
+// Readable, filesystem-safe filename (keeps spaces) for the human-named preset files.
+fn sanitize_filename(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric()
+                || character == '-'
+                || character == '_'
+                || character == ' '
+            {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
