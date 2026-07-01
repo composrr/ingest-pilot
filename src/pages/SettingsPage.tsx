@@ -202,16 +202,6 @@ export function SettingsPage() {
             />
           </SettingsSection>
 
-          <SettingsSection
-            help="Permanently classify extra file extensions into a media role. Anything you add here is treated as that role everywhere — scans, routing to the role's folder, and reports. Save to apply."
-            title="Custom File Types"
-          >
-            <CustomFileKindsEditor
-              onChange={(custom_file_kinds) => updateSettings({ custom_file_kinds })}
-              value={settings.custom_file_kinds}
-            />
-          </SettingsSection>
-
         </div>
 
         <div className="grid min-h-0 content-start gap-2">
@@ -289,6 +279,27 @@ export function SettingsPage() {
             />
           </SettingsSection>
         </div>
+
+        <section className="min-h-0 overflow-visible rounded-2xl border border-mist bg-white xl:col-span-2">
+          <div className="flex min-h-12 items-center justify-between gap-3 border-b border-mist px-3 py-2">
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5">
+                <h2 className="text-sm font-semibold">Custom File Types</h2>
+                <FloatingHelp label="Custom file types help">
+                  Permanently classify extra extensions into a media role. Anything you add is treated as that role
+                  everywhere — scans, routing to the role's folder, and reports. Save to apply.
+                </FloatingHelp>
+              </div>
+              <p className="mt-0.5 text-[11px] font-medium text-graphite">
+                Give an unusual extension a role so it lands with the rest of that media type.
+              </p>
+            </div>
+          </div>
+          <CustomFileKindsEditor
+            onChange={(custom_file_kinds) => updateSettings({ custom_file_kinds })}
+            value={settings.custom_file_kinds}
+          />
+        </section>
 
         <section className="min-h-0 overflow-visible rounded-2xl border border-mist bg-white xl:col-span-2">
             <div className="flex min-h-12 items-center justify-between gap-3 border-b border-mist px-3 py-2">
@@ -573,12 +584,21 @@ function dateDefaultInputValue(value: PresetVariable["default"]) {
   return !defaultValue || defaultValue.toLowerCase() === "today" ? currentLocalDate() : defaultValue;
 }
 
-const CUSTOM_KIND_ROWS: { kind: string; label: string }[] = [
-  { kind: "footage", label: "Footage" },
-  { kind: "audio", label: "Audio" },
-  { kind: "photo", label: "Photos" },
-  { kind: "document", label: "Docs" },
+const FILE_KIND_OPTIONS: { label: string; value: string }[] = [
+  { label: "Footage", value: "footage" },
+  { label: "Audio", value: "audio" },
+  { label: "Photos", value: "photo" },
+  { label: "Docs", value: "document" },
 ];
+
+// Built-in extensions per kind (mirrors the Rust scanner) so the user can see what's
+// already classified before adding their own.
+const BUILTIN_KIND_EXTENSIONS: Record<string, string[]> = {
+  footage: [".mp4", ".mov", ".mxf", ".avi", ".m4v", ".mts", ".m2ts", ".braw", ".r3d", ".crm", ".cine"],
+  audio: [".wav", ".mp3", ".aif", ".aiff", ".m4a", ".flac"],
+  photo: [".jpg", ".jpeg", ".png", ".heic", ".tif", ".tiff", ".cr2", ".nef", ".arw", ".dng", ".raw", ".orf", ".rw2"],
+  document: [".pdf", ".txt", ".doc", ".docx", ".csv", ".xlsx", ".xls", ".rtf"],
+};
 
 function normalizeExtension(value: string): string | null {
   const trimmed = value.trim().toLowerCase().replace(/\s+/g, "");
@@ -589,8 +609,9 @@ function normalizeExtension(value: string): string | null {
   return /^\.[a-z0-9]+$/.test(withDot) ? withDot : null;
 }
 
-// Lets the user permanently map extra extensions into a media role (footage/audio/
-// photos/docs). Stored in settings.custom_file_kinds (ext -> kind) and applied globally.
+// Lets the user permanently map extra extensions into a media role via a row per type
+// (extension + role dropdown), styled like Global Variables. Shows the built-in types
+// for reference. Stored in settings.custom_file_kinds (ext -> kind), applied globally.
 function CustomFileKindsEditor({
   value,
   onChange,
@@ -598,76 +619,85 @@ function CustomFileKindsEditor({
   value: Record<string, string>;
   onChange: (next: Record<string, string>) => void;
 }) {
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [newExtension, setNewExtension] = useState("");
+  const [newKind, setNewKind] = useState("audio");
+  const entries = Object.entries(value).sort((left, right) => left[0].localeCompare(right[0]));
 
-  function addExtension(kind: string) {
-    const extension = normalizeExtension(drafts[kind] ?? "");
-    setDrafts((current) => ({ ...current, [kind]: "" }));
+  function addEntry() {
+    const extension = normalizeExtension(newExtension);
+    setNewExtension("");
     if (extension) {
-      onChange({ ...value, [extension]: kind });
+      onChange({ ...value, [extension]: newKind });
     }
   }
 
-  function removeExtension(extension: string) {
+  function removeEntry(extension: string) {
     const next = { ...value };
     delete next[extension];
     onChange(next);
   }
 
   return (
-    <div className="space-y-2 px-3 py-2">
-      {CUSTOM_KIND_ROWS.map(({ kind, label }) => {
-        const extensions = Object.entries(value)
-          .filter(([, mappedKind]) => mappedKind === kind || (kind === "photo" && mappedKind === "photos") || (kind === "document" && mappedKind === "documents"))
-          .map(([extension]) => extension)
-          .sort();
-        return (
-          <div key={kind} className="rounded-lg border border-mist bg-white p-2">
-            <div className="mb-1 text-xs font-semibold text-graphite">{label}</div>
-            <div className="flex flex-wrap items-center gap-1">
-              {extensions.map((extension) => (
-                <span
-                  key={extension}
-                  className="inline-flex items-center gap-1 rounded-md bg-porcelain py-0.5 pl-2 pr-1 text-[11px] font-semibold text-ink"
-                >
-                  {extension}
-                  <button
-                    aria-label={`Remove ${extension}`}
-                    className="rounded p-0.5 text-graphite/60 transition hover:text-red-700"
-                    onClick={() => removeExtension(extension)}
-                    type="button"
-                  >
-                    <X size={11} />
-                  </button>
-                </span>
-              ))}
-              {extensions.length === 0 ? <span className="text-[11px] text-graphite/50">No custom types.</span> : null}
+    <div>
+      <div className="border-b border-mist bg-porcelain/25 px-3 py-2">
+        <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-graphite/50">Already included (built-in)</div>
+        <div className="space-y-0.5">
+          {FILE_KIND_OPTIONS.map(({ label, value: kind }) => (
+            <div key={kind} className="grid grid-cols-[70px_1fr] gap-2 text-[11px]">
+              <span className="font-semibold text-graphite">{label}</span>
+              <span className="text-graphite/70">{BUILTIN_KIND_EXTENSIONS[kind].join("  ")}</span>
             </div>
-            <div className="mt-1.5 flex items-center gap-1.5">
-              <input
-                className="h-7 w-24 rounded-lg border border-mist bg-white px-2 text-xs outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
-                onChange={(event) => setDrafts((current) => ({ ...current, [kind]: event.target.value }))}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    addExtension(kind);
-                  }
-                }}
-                placeholder=".ext"
-                value={drafts[kind] ?? ""}
+          ))}
+        </div>
+      </div>
+
+      {entries.length > 0 ? (
+        <div className="divide-y divide-mist">
+          {entries.map(([extension, kind]) => (
+            <div key={extension} className="grid grid-cols-[1fr_150px_auto] items-center gap-2 px-3 py-1.5">
+              <code className="text-xs font-semibold text-ink">{extension}</code>
+              <SelectMenu
+                onChange={(next) => onChange({ ...value, [extension]: next })}
+                options={FILE_KIND_OPTIONS}
+                size="sm"
+                value={kind === "photos" ? "photo" : kind === "documents" ? "document" : kind}
               />
               <button
-                className="inline-flex h-7 items-center gap-1 rounded-lg border border-mist bg-white px-2 text-xs font-semibold text-graphite transition hover:bg-porcelain"
-                onClick={() => addExtension(kind)}
+                aria-label={`Remove ${extension}`}
+                className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-graphite transition hover:bg-porcelain hover:text-red-700"
+                onClick={() => removeEntry(extension)}
                 type="button"
               >
-                <Plus size={12} />
-                Add
+                <Trash2 size={14} />
               </button>
             </div>
-          </div>
-        );
-      })}
+          ))}
+        </div>
+      ) : null}
+
+      <div className="grid grid-cols-[1fr_150px_auto] items-center gap-2 border-t border-mist px-3 py-2">
+        <input
+          className="h-8 rounded-lg border border-mist bg-white px-2 text-sm outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+          onChange={(event) => setNewExtension(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              addEntry();
+            }
+          }}
+          placeholder=".ext"
+          value={newExtension}
+        />
+        <SelectMenu onChange={setNewKind} options={FILE_KIND_OPTIONS} size="sm" value={newKind} />
+        <button
+          className="inline-flex h-8 items-center gap-1 rounded-lg border border-mist bg-white px-2.5 text-xs font-semibold text-graphite transition hover:bg-porcelain"
+          onClick={addEntry}
+          type="button"
+        >
+          <Plus size={13} />
+          Add file type
+        </button>
+      </div>
     </div>
   );
 }
