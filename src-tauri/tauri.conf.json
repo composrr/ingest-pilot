@@ -26,6 +26,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "category": "Productivity",
     "icon": [
       "icons/32x32.png",
@@ -34,5 +35,16 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/composrr/ingest-pilot-releases/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVFQTIyMUVENjg0Q0NERDgKUldUWXpVeG83U0dpN3BGZjR4aFpWekFZV1V5UWIyQTM2QUtGNm9HdzhGNmNHTzJWV0xTVkhxMEkK",
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }
