@@ -2,7 +2,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { Check, ChevronDown, ChevronUp, FolderOpen, Image, Layers, List, Plus, RefreshCw, Search, X } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, FolderOpen, Image, Layers, List, Plus, RefreshCw, Search, Wand2, X } from "lucide-react";
 import { type Dispatch, type SetStateAction, useEffect, useMemo, useRef, useState } from "react";
 import {
   defaultsForParameters,
@@ -56,6 +56,12 @@ import type {
   PresetVariable,
 } from "../lib/types";
 import { useAppStore } from "../stores/appStore";
+import {
+  buildNamingPreset,
+  NAMING_DELIVERABLES,
+  previewNamingResult,
+  type NamingDeliverable,
+} from "../lib/namingCatalog";
 
 // Queue mode: a sequential pipeline of source cards. Each card is scanned in the
 // background (scan-ahead) while an earlier card copies, then copied in order into
@@ -148,6 +154,7 @@ export function IngestPage() {
   const [metadataPreset, setMetadataPreset] = useState<MetadataPreset | null>(null);
   const [metadataValues, setMetadataValues] = useState<Record<string, string>>({});
   const [isSavingManifest, setIsSavingManifest] = useState(false);
+  const [isNamingOpen, setIsNamingOpen] = useState(false);
   const [queueMode, setQueueMode] = useState(false);
   const [queue, setQueue] = useState<QueueCard[]>([]);
   const [isQueueRunning, setIsQueueRunning] = useState(false);
@@ -549,6 +556,27 @@ export function IngestPage() {
     setIngestResult(null);
     setShowFilteredItems(false);
     setLastAction(`Loaded recent ingest: ${job.preset_name}`);
+  }
+
+  // Naming Assistant: turn an SOP deliverable + its fields into the correct project
+  // folder by saving/selecting the matching seeded preset and pre-filling its
+  // variables (the preset's root_folder_pattern then resolves to the SOP name).
+  async function applyNaming(deliverable: NamingDeliverable, values: Record<string, string>) {
+    const preset = buildNamingPreset(deliverable, new Date().toISOString());
+    try {
+      await savePreset(preset);
+      await refreshPresets(preset.id);
+    } catch (caught) {
+      setError(String(caught));
+      return;
+    }
+    // Stash values so the preset-load defaults effect doesn't clobber them.
+    pendingReplayValuesRef.current = values;
+    setVariableValues((current) => ({ ...current, ...values }));
+    setSelectedPresetId(preset.id);
+    setIngestResult(null);
+    setIsNamingOpen(false);
+    setLastAction(`Naming Assistant: ${deliverable.label}`);
   }
 
   async function loadSelectedPreset(id: string) {
@@ -1678,23 +1706,34 @@ export function IngestPage() {
               help="This is the job setup: which preset rules to use, what media to copy, and where the project should land."
               title="1. Copy Job"
             />
-            <button
-              className={`inline-flex h-6 items-center gap-1.5 rounded-full border px-2 text-[11px] font-semibold transition ${
-                queueMode
-                  ? "border-signal bg-signal text-paper"
-                  : "border-mist bg-white text-graphite hover:bg-porcelain"
-              }`}
-              onClick={() => {
-                setQueueMode((on) => !on);
-                setIngestResult(null);
-                setError(null);
-              }}
-              title="Queue mode: add cards one after another and copy them in sequence."
-              type="button"
-            >
-              <Layers size={12} />
-              Queue{queueMode ? " on" : ""}
-            </button>
+            <div className="flex items-center gap-1.5">
+              <button
+                className="inline-flex h-6 items-center gap-1.5 rounded-full border border-mist bg-white px-2 text-[11px] font-semibold text-graphite transition hover:bg-porcelain"
+                onClick={() => setIsNamingOpen(true)}
+                title="Naming Assistant: build the SOP-correct project name from a deliverable type."
+                type="button"
+              >
+                <Wand2 size={12} />
+                Name
+              </button>
+              <button
+                className={`inline-flex h-6 items-center gap-1.5 rounded-full border px-2 text-[11px] font-semibold transition ${
+                  queueMode
+                    ? "border-signal bg-signal text-paper"
+                    : "border-mist bg-white text-graphite hover:bg-porcelain"
+                }`}
+                onClick={() => {
+                  setQueueMode((on) => !on);
+                  setIngestResult(null);
+                  setError(null);
+                }}
+                title="Queue mode: add cards one after another and copy them in sequence."
+                type="button"
+              >
+                <Layers size={12} />
+                Queue{queueMode ? " on" : ""}
+              </button>
+            </div>
           </div>
           <div className="space-y-2 p-2">
             {queueMode ? (
@@ -2159,6 +2198,9 @@ export function IngestPage() {
           setSelectedRelativePaths={setSelectedRelativePaths}
         />
       ) : null}
+      {isNamingOpen ? (
+        <NamingAssistant onApply={(deliverable, values) => void applyNaming(deliverable, values)} onClose={() => setIsNamingOpen(false)} />
+      ) : null}
     </div>
   );
 }
@@ -2511,6 +2553,141 @@ function MetadataFillPanel({
         </p>
       )}
     </section>
+  );
+}
+
+// Guided naming per the team SOP: pick a deliverable, fill its fields, and the
+// preview shows the exact project folder name. Applying it selects the matching
+// seeded preset and pre-fills its variables (see applyNaming in IngestPage).
+function NamingAssistant({
+  onApply,
+  onClose,
+}: {
+  onApply: (deliverable: NamingDeliverable, values: Record<string, string>) => void;
+  onClose: () => void;
+}) {
+  const [deliverableId, setDeliverableId] = useState(NAMING_DELIVERABLES[0]?.id ?? "");
+  const [values, setValues] = useState<Record<string, string>>({});
+  const deliverable = NAMING_DELIVERABLES.find((item) => item.id === deliverableId) ?? NAMING_DELIVERABLES[0];
+  const preview = deliverable ? previewNamingResult(deliverable, values) : "";
+  const missingRequired = deliverable
+    ? deliverable.fields.some((field) => field.required && !(values[field.id] ?? "").trim())
+    : true;
+  const groups: NamingDeliverable["group"][] = ["Delivered Video", "Video Capture", "Photo"];
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/30 p-4 backdrop-blur-sm">
+      <section className="flex max-h-[86vh] w-full max-w-3xl select-none flex-col overflow-hidden rounded-[24px] border border-mist bg-white shadow-panel">
+        <div className="flex items-center justify-between border-b border-mist px-4 py-3">
+          <div>
+            <h2 className="flex items-center gap-2 text-base font-semibold">
+              <Wand2 size={16} />
+              Naming Assistant
+            </h2>
+            <p className="text-xs font-medium text-graphite">Build the SOP-correct project name, then apply it to this ingest.</p>
+          </div>
+          <button
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-mist bg-white text-graphite transition hover:bg-porcelain"
+            onClick={onClose}
+            type="button"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="grid min-h-0 flex-1 grid-cols-[220px_minmax(0,1fr)]">
+          <aside className="min-h-0 overflow-auto border-r border-mist bg-porcelain/25 p-2">
+            {groups.map((group) => (
+              <div key={group} className="mb-2">
+                <div className="mb-1 px-1 text-[11px] font-semibold uppercase tracking-wide text-graphite/60">{group}</div>
+                <div className="space-y-1">
+                  {NAMING_DELIVERABLES.filter((item) => item.group === group).map((item) => (
+                    <button
+                      key={item.id}
+                      className={`w-full rounded-lg px-2 py-1.5 text-left text-sm transition ${
+                        deliverableId === item.id
+                          ? "bg-lavender/25 font-semibold text-ink ring-1 ring-lavender/60"
+                          : "text-graphite hover:bg-white"
+                      }`}
+                      onClick={() => {
+                        setDeliverableId(item.id);
+                        setValues({});
+                      }}
+                      type="button"
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </aside>
+
+          <div className="flex min-h-0 flex-col overflow-auto p-4">
+            {deliverable ? (
+              <>
+                <p className="mb-3 text-xs text-graphite">
+                  Pattern: <code className="rounded bg-porcelain px-1 py-0.5">{deliverable.hint}</code>
+                </p>
+                <div className="space-y-2">
+                  {deliverable.fields.length === 0 ? (
+                    <p className="text-xs text-graphite">No fields needed — the date is filled automatically.</p>
+                  ) : (
+                    deliverable.fields.map((field) => (
+                      <div key={field.id} className="grid grid-cols-[120px_1fr] items-center gap-2">
+                        <label className="text-xs font-semibold text-graphite">
+                          {field.label}
+                          {field.required ? <span className="text-red-600"> *</span> : null}
+                        </label>
+                        {field.type === "dropdown" ? (
+                          <SelectMenu
+                            onChange={(value) => setValues((current) => ({ ...current, [field.id]: value }))}
+                            options={[{ label: "—", value: "" }, ...(field.options ?? []).map((option) => ({ label: option, value: option }))]}
+                            size="sm"
+                            value={values[field.id] ?? ""}
+                          />
+                        ) : (
+                          <input
+                            className="h-8 w-full rounded-lg border border-mist bg-white px-2 text-sm outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+                            onChange={(event) => setValues((current) => ({ ...current, [field.id]: event.target.value }))}
+                            placeholder={field.placeholder}
+                            value={values[field.id] ?? ""}
+                          />
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                <div className="mt-4 rounded-xl border border-mist bg-porcelain/40 p-3">
+                  <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-graphite/60">Project folder</div>
+                  <div className="break-words font-mono text-sm font-semibold text-ink">{preview || "—"}</div>
+                </div>
+
+                <div className="mt-auto flex items-center justify-end gap-2 pt-4">
+                  <button
+                    className="inline-flex h-9 items-center rounded-xl border border-mist bg-white px-3 text-sm font-semibold text-graphite transition hover:bg-porcelain"
+                    onClick={onClose}
+                    type="button"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-signal px-4 text-sm font-semibold text-paper transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-40"
+                    disabled={missingRequired}
+                    onClick={() => onApply(deliverable, values)}
+                    type="button"
+                  >
+                    <Check size={15} />
+                    Use this name
+                  </button>
+                </div>
+              </>
+            ) : null}
+          </div>
+        </div>
+      </section>
+    </div>
   );
 }
 
