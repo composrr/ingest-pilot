@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { createShippedPresets } from "./presetFactory";
-import type { NamingCatalog } from "./namingCatalog";
+import { createNamingPresets, type NamingCatalog } from "./namingCatalog";
 import type {
   AppSettings,
   FolderNode,
@@ -12,6 +12,7 @@ import type {
 } from "./types";
 
 const shippedPresetSeedKey = "ingest-pilot:shipped-presets-seeded";
+const namingPackSeedKey = "ingest-pilot:naming-pack-v1-seeded";
 
 export const defaultAppSettings: AppSettings = {
   global_parameters: [],
@@ -175,15 +176,31 @@ export type IngestHistoryJob = {
 };
 
 export async function listPresets() {
-  const presets = await invoke<PresetSummary[]>("list_presets");
-  if (presets.length > 0 || localStorage.getItem(shippedPresetSeedKey) === "true") {
-    return presets;
+  let presets = await invoke<PresetSummary[]>("list_presets");
+
+  // First-run: seed the base shipped presets.
+  if (presets.length === 0 && localStorage.getItem(shippedPresetSeedKey) !== "true") {
+    const shippedPresets = createShippedPresets();
+    await Promise.all(shippedPresets.map((preset) => invoke<PresetSummary>("save_preset", { preset })));
+    localStorage.setItem(shippedPresetSeedKey, "true");
+    presets = await invoke<PresetSummary[]>("list_presets");
   }
 
-  const shippedPresets = createShippedPresets();
-  await Promise.all(shippedPresets.map((preset) => invoke<PresetSummary>("save_preset", { preset })));
-  localStorage.setItem(shippedPresetSeedKey, "true");
-  return invoke<PresetSummary[]>("list_presets");
+  // One-time naming pack: add the SOP naming presets as their own files for new AND
+  // existing installs, skipping any that already exist so user edits/deletes stick.
+  if (localStorage.getItem(namingPackSeedKey) !== "true") {
+    const existingIds = new Set(presets.map((preset) => preset.id));
+    const namingPresets = createNamingPresets(new Date().toISOString()).filter(
+      (preset) => !existingIds.has(preset.id),
+    );
+    if (namingPresets.length > 0) {
+      await Promise.all(namingPresets.map((preset) => invoke<PresetSummary>("save_preset", { preset })));
+      presets = await invoke<PresetSummary[]>("list_presets");
+    }
+    localStorage.setItem(namingPackSeedKey, "true");
+  }
+
+  return presets;
 }
 
 export async function getPreset(id: string) {

@@ -10,6 +10,20 @@ and user-facing — this is what people read in the update popup.
 
 ## [Unreleased]
 
+### Added
+- **Milestone naming pack.** Ships the team's real naming SOP: video templates for
+  Event/B-Roll Capture, Impact, Promo, generic Edited (signifier picker), Individual
+  and Couple Stories and Baptism Stories, and Online Campus (ONL). Each installs as
+  its own preset file in Documents/Ingest Pilot, and the ~60-event calendar (with
+  ministry codes and campuses) is available as pickers in the Naming tab.
+- **Per-preset metadata tags.** A preset can pre-choose the metadata values it stamps
+  on its imports (e.g. Content Type = Story) without editing the schema.
+
+### Changed
+- The Naming tab is now a templates-first master/detail (like Metadata): templates on
+  the left, editor on the right, shared option lists behind a "Shared lists" button.
+- "Sub-folder path" is renamed **Pre-folder path** with a clearer live example.
+
 ## [0.1.5]
 
 ### Added

@@ -37,7 +37,9 @@ export function NamingPage() {
           setCatalog(merged);
           setSelectedId(merged.deliverables[0]?.id ?? "");
         }
-        if (!persisted) {
+        // Persist on first run OR when the shipped catalog is newer than what's on
+        // disk (so the real SOP data replaces earlier placeholder defaults).
+        if (!persisted || (persisted.schema_version ?? 1) < merged.schema_version) {
           await saveNamingCatalog(merged);
         }
       } catch (error) {
@@ -403,8 +405,8 @@ function TemplateEditor({
             </div>
             <div className="sm:col-span-2">
               <LabeledInput
-                help="Optional auto sub-folders created inside the destination before the project folder, e.g. {year}/Broll."
-                label="Auto sub-folders"
+                help="Optional pre-folders created inside the destination BEFORE the project folder, e.g. {year}/Broll."
+                label="Pre-folder path"
                 mono
                 onChange={(subPath) => onChange({ subPath })}
                 placeholder="{year}/Broll"

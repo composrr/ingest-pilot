@@ -437,14 +437,13 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
                 </div>
                 <div className="px-3 py-2">
                   <div className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-graphite">
-                    Auto sub-folders (optional)
-                    <FloatingHelp label="Auto sub-folders help">
-                      Folders created inside “Default Save To” on every ingest, before the project folder — resolved fresh
-                      each time. The point: leave “Default Save To” pointed at a folder that never changes (e.g. …/Videos)
-                      and put the parts that DO change here as tokens. {"{year}"} becomes the current year, so
-                      {" {year}/Broll"} always lands in this year's Broll folder — no editing the preset in January. If the
-                      folders already exist the ingest drops into them; otherwise it makes them. Leave blank to save
-                      straight into “Default Save To”.
+                    Pre-folder path (optional)
+                    <FloatingHelp label="Pre-folder path help">
+                      Folders placed BEFORE the project folder, inside “Default Save To”, resolved fresh each ingest.
+                      The point: leave “Default Save To” pointed at a folder that never changes (e.g. …/Videos) and put the
+                      parts that DO change here as tokens. {"{year}"} becomes the current year, so {" {year}/Broll"} always
+                      lands in this year's Broll folder — no editing the preset in January. If the folders already exist the
+                      ingest drops into them; otherwise it makes them. Leave blank to save straight into “Default Save To”.
                     </FloatingHelp>
                   </div>
                   <input
