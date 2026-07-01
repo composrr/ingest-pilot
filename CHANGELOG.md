@@ -11,11 +11,12 @@ and user-facing — this is what people read in the update popup.
 ## [Unreleased]
 
 ### Added
-- **Milestone naming pack.** Ships the team's real naming SOP: video templates for
-  Event/B-Roll Capture, Impact, Promo, generic Edited (signifier picker), Individual
-  and Couple Stories and Baptism Stories, and Online Campus (ONL). Each installs as
-  its own preset file in Documents/Ingest Pilot, and the ~60-event calendar (with
-  ministry codes and campuses) is available as pickers in the Naming tab.
+- **Milestone naming pack.** Ships the team's full Video Naming System (tabs 3 & 4):
+  a preset for every Capture folder (Weekends, Elevate, Growth Track, BOTS, Super
+  Series weeks, camps, Serve Day, seasonal events…) and every Delivered Video folder
+  (Baptism Stories, ONL, VAs, and all the Promos / Impacts / Recaps / Title Packages).
+  ~78 presets, each installed as its own file in Documents/Ingest Pilot with the exact
+  SOP folder-name pattern; all editable in the Naming tab.
 - **Per-preset metadata tags.** A preset can pre-choose the metadata values it stamps
   on its imports (e.g. Content Type = Story) without editing the schema.
 

@@ -12,7 +12,7 @@ import type {
 } from "./types";
 
 const shippedPresetSeedKey = "ingest-pilot:shipped-presets-seeded";
-const namingPackSeedKey = "ingest-pilot:naming-pack-v1-seeded";
+const namingPackSeedKey = "ingest-pilot:naming-pack-v2-seeded";
 
 export const defaultAppSettings: AppSettings = {
   global_parameters: [],

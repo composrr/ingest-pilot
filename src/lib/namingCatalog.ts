@@ -1,13 +1,14 @@
 import type { FolderNode, Preset, PresetVariable } from "./types";
 
-// The team's naming SOP, encoded as data so the Naming Assistant keeps everyone
-// aligned automatically. Ministry codes, campuses, and the event catalog come from
-// Chase's naming spreadsheet; the video deliverable templates and folder structure
-// come from the SOP Google Doc's "Folder Naming Conventions" section.
+// The team's video naming SOP, encoded as data so the Naming Assistant keeps everyone
+// aligned automatically. Ministry codes and campuses come from Chase's naming
+// spreadsheet; the deliverable templates below are every distinct row of the "Video
+// Naming System" tabs (Capture = date of first capture, Delivered = date of first
+// premiere). Each becomes its own folder preset saved to the Documents library.
 //
-// Video naming (what these templates build): YYYY-MM-DD_VideoName_Signifier.
-// Campus is NOT part of a video name — for a multi-campus capture it becomes a
-// subfolder under 02_Footage; for a single campus it's just tagged in iconik.
+// Pattern tokens: {year}-{month}-{day} for the date, {campus} for the campus
+// abbreviation (KLR/HLT/MCK), {series_name} for a series, {first_name}{last_name}
+// for stories. A blank optional token collapses its separator automatically.
 
 export const NAMING_MINISTRIES: { code: string; label: string }[] = [
   { code: "CEN", label: "Central" },
@@ -24,97 +25,24 @@ export const NAMING_MINISTRIES: { code: string; label: string }[] = [
 
 export const NAMING_CAMPUSES = ["Keller", "Haslet", "McKinney", "Online"];
 
-// Campus abbreviations used for multi-campus footage subfolders (Keller is home, no
-// abbreviation). Mirrors the HLT / MCK usage in the naming sheet.
-export const CAMPUS_ABBREVIATIONS: Record<string, string> = {
-  Keller: "KLR",
-  Haslet: "HLT",
-  McKinney: "MCK",
-  Online: "ONL",
-};
+// Campus abbreviations used inside names (KLR home, HLT Haslet, MCK McKinney).
+export const CAMPUS_ABBREVIATIONS = ["KLR", "HLT", "MCK"];
 
-// Video signifiers straight from the SOP doc (order preserved). Note: no "Recap".
+// Video signifiers from the SOP (appended to a delivered video name when needed).
 export const VIDEO_SIGNIFIERS = [
   "Impact",
+  "Recap",
   "Promo",
   "Story",
   "BaptismStory",
-  "Countdown",
-  "RollIn",
-  "TitlePackage",
-  "SpeakerIntro",
   "Opener",
-  "MusicVideo",
+  "RollIn",
+  "SpeakerIntro",
+  "TitlePackage",
   "SmallGroup",
+  "Countdown",
+  "MusicVideo",
 ];
-
-// The event catalog from the naming sheet: event label -> file-name token + ministry
-// code. Deduplicated across the calendar (recurring events listed once). Drives the
-// Event dropdown in the capture/edited templates so every event is one click away.
-export type NamingEvent = { label: string; token: string; code: string };
-
-export const NAMING_EVENTS: NamingEvent[] = [
-  { label: "Prepare", token: "Prepare", code: "CEN" },
-  { label: "Easter", token: "Easter", code: "CEN" },
-  { label: "Mother's Day", token: "MothersDay", code: "CEN" },
-  { label: "Father's Day", token: "FathersDay", code: "CEN" },
-  { label: "Summer Splash", token: "SummerSplash", code: "CEN" },
-  { label: "Summer Treats Kick-Off", token: "SummerTreats", code: "CEN" },
-  { label: "Serve Team Vision Night", token: "ServeTeamVisionNight", code: "CEN" },
-  { label: "Staff Gathering", token: "StaffGathering", code: "CEN" },
-  { label: "Men's Night", token: "MensNight", code: "CEN" },
-  { label: "ARC", token: "ARC", code: "CEN" },
-  { label: "JOY", token: "JOY", code: "CEN" },
-  { label: "Legacy", token: "Legacy", code: "CEN" },
-  { label: "CAM", token: "CAM", code: "CEN" },
-  { label: "CCC", token: "CCC", code: "CEN" },
-  { label: "Miracles Book", token: "MiraclesBook", code: "CEN" },
-  { label: "Unshakable Resource", token: "UnshakableResource", code: "CEN" },
-  { label: "Milestone Resources", token: "MilestoneResources", code: "CEN" },
-  { label: "Leaders Gathering", token: "LeadersGathering", code: "LTW" },
-  { label: "Baptism Weekend", token: "BaptismWeekend", code: "BAP" },
-  { label: "Young Adults (MYA)", token: "YoungAdults", code: "MYA" },
-  { label: "BOTS (High School)", token: "HSBOTS", code: "YTH" },
-  { label: "BOTS (Middle School)", token: "MSBOTS", code: "YTH" },
-  { label: "Super Series (Spring)", token: "SpringSuperSeries", code: "YTH" },
-  { label: "Super Series (Fall)", token: "FallSuperSeries", code: "YTH" },
-  { label: "NGSL Kickoff", token: "NGSL", code: "YTH" },
-  { label: "Senior Recognition", token: "SeniorRecognition", code: "YTH" },
-  { label: "Middle School Camp", token: "MSC", code: "YTH" },
-  { label: "High School Camp", token: "HSC", code: "YTH" },
-  { label: "NextGen Weekend", token: "NextGenWeekend", code: "YTH" },
-  { label: "Fall Retreat", token: "FallRetreat", code: "YTH" },
-  { label: "LADC", token: "LADC", code: "MC" },
-  { label: "MC Dinner", token: "CollegeDinner", code: "MC" },
-  { label: "MC Welcome Week", token: "WelcomeWeek", code: "MC" },
-  { label: "MC Headshots", token: "MCHeadshots", code: "MC" },
-  { label: "MC Interest Meeting", token: "CollegeInterestMeeting", code: "MC" },
-  { label: "MC Preview Day", token: "PreviewDay", code: "MC" },
-  { label: "Baby Dedications", token: "BabyDedications", code: "MK" },
-  { label: "Forty4 Camp", token: "Forty5Camp", code: "MK" },
-  { label: "VBS", token: "VBS", code: "MK" },
-  { label: "Fifty6 Camp (Session 2)", token: "Fifty6Camp2", code: "MK" },
-  { label: "2nd Saturday Serve", token: "2ndSatServe", code: "MIS" },
-  { label: "Evergreen", token: "Evergreen", code: "MIS" },
-  { label: "Refugee Food Distribution", token: "RefugeeDistribution", code: "MIS" },
-  { label: "Serve Day", token: "ServeDay", code: "MIS" },
-  { label: "Single Mother's Dinner", token: "SingleMomsDinner", code: "MIS" },
-  { label: "MYA Guatemala Trip", token: "MYAGuat", code: "MIS" },
-  { label: "Guatemala Mission Trip", token: "Guat", code: "MIS" },
-  { label: "FTW Refugee Mission Trip", token: "RefugeeMissionTrip", code: "MIS" },
-  { label: "Back To School Party", token: "BackToSchoolParty", code: "MIS" },
-  { label: "Shoe Giveaway Drive", token: "ShoeGiveawayDrive", code: "MIS" },
-  { label: "Teacher Appreciation Weekend", token: "TeacherAppreciation", code: "MIS" },
-  { label: "Fairy Tale Ball", token: "FairyTaleBall", code: "MIS" },
-  { label: "Missions Weekend", token: "MissionsWeekend", code: "MIS" },
-  { label: "Veterans Celebration", token: "VetCelebration", code: "MIS" },
-  { label: "Christmas Wonder", token: "ChristmasWonder", code: "MIS" },
-  { label: "Christmas Teacher Gifts", token: "ChristmasTeacherGifts", code: "MIS" },
-  { label: "Snow Outreach", token: "SnowOutreach", code: "MIS" },
-  { label: "Freedom Weekend", token: "FreedomWeekend", code: "SMG" },
-];
-
-const EVENT_TOKENS = NAMING_EVENTS.map((event) => event.token);
 
 export type NamingField = {
   id: string;
@@ -128,7 +56,7 @@ export type NamingField = {
 export type NamingDeliverable = {
   id: string;
   label: string;
-  group: "Delivered Video" | "Video Capture" | "Story" | "Photo";
+  group: "Video Capture" | "Delivered Video";
   hint: string;
   presetId: string;
   presetName: string;
@@ -137,6 +65,185 @@ export type NamingDeliverable = {
   subPath?: string;
   fields: NamingField[];
 };
+
+// Reusable field builders for the variable parts of a name.
+const campusField = (): NamingField => ({
+  id: "campus",
+  label: "Campus",
+  type: "dropdown",
+  required: true,
+  options: CAMPUS_ABBREVIATIONS,
+});
+const seriesField = (): NamingField => ({
+  id: "series_name",
+  label: "Series name",
+  type: "short_text",
+  required: true,
+  placeholder: "SeriesName",
+});
+const firstField = (): NamingField => ({ id: "first_name", label: "First name", type: "short_text", required: true });
+const lastField = (): NamingField => ({ id: "last_name", label: "Last name", type: "short_text", required: true });
+
+const DATE = "{year}-{month}-{day}";
+
+// [idSuffix, display label, name part after the date, fields]
+type Row = [string, string, string, NamingField[]];
+
+// Tab 3 — EVENT capture folders (date = first capture).
+const CAPTURE_ROWS: Row[] = [
+  ["weekend", "Weekends", "_Weekend_{campus}", [campusField()]],
+  ["elevate", "Elevate", "_Elevate_{campus}", [campusField()]],
+  ["mya", "MYA", "_MYA", []],
+  ["gt_step1", "Growth Track — Step 1", "_Step1_{campus}", [campusField()]],
+  ["gt_step2", "Growth Track — Step 2", "_Step2_{campus}", [campusField()]],
+  ["gt_step3", "Growth Track — Step 3", "_Step3_{campus}", [campusField()]],
+  ["small_groups", "Small Groups", "_SmallGroups", []],
+  ["milestone_college", "Milestone College", "_MilestoneCollege", []],
+  ["prepare", "Prepare", "_Prepare", []],
+  ["leaders_gathering", "Leaders Gathering", "_LeadersGathering", []],
+  ["hs_bots", "High School BOTS", "_HighSchoolBOTS", []],
+  ["ms_bots", "Middle School BOTS", "_MiddleSchoolBOTS", []],
+  ["mc_preview_day", "MC Preview Day", "_MCPreviewDay", []],
+  ["easter", "Easter", "_Easter", []],
+  ["super_series_wk1", "Super Series — Week 1", "_SuperSeriesWk1", []],
+  ["super_series_wk2", "Super Series — Week 2", "_SuperSeriesWk2", []],
+  ["super_series_wk3", "Super Series — Week 3", "_SuperSeriesWk3", []],
+  ["serve_day", "Serve Day", "_ServeDay", []],
+  ["mc_grad_dinner", "MC Graduation Dinner", "_MCGraduationDinner", []],
+  ["single_moms_dinner", "Single Mom's Dinner", "_SingleMomsDinner", []],
+  ["ms_camp", "Middle School Summer Camp", "_MiddleSchoolCamp", []],
+  ["summer_splash", "Summer Splash", "_SummerSplash", []],
+  ["forty5_blast", "Forty5 Summer Blast", "_Forty5SummerBlast", []],
+  ["vbs", "VBS", "_VBS", []],
+  ["hs_camp", "High School Summer Camp", "_HighSchoolCamp", []],
+  ["mya_conference", "MYA Conference", "_MYAConference", []],
+  ["freedom_weekend", "Freedom Weekend", "_FreedomWeekend", []],
+  ["mc_welcome_week", "MC Welcome Week", "_MCWelcomeWeek", []],
+  ["fairy_tale_ball", "Fairy Tale Ball", "_FairyTaleBall", []],
+  ["mens_night", "Men's Night", "_MensNight", []],
+  ["thanksgiving_boxes", "Thanksgiving Box Outreach", "_ThanksgivingBoxes", []],
+  ["veterans_celebration", "Veteran's Celebration", "_VeteransCelebration", []],
+  ["mc_fall_trip", "MC Fall Trip", "_MCFallTrip", []],
+  ["christmas_wonder", "Christmas Wonder", "_ChristmasWonder", []],
+  ["joy", "JOY", "_JOY", []],
+  ["christmas", "Christmas", "_Christmas", []],
+];
+
+// Tab 4 — DELIVERED VIDEO folders (date = first premiere).
+const DELIVERED_ROWS: Row[] = [
+  ["baptism_individual", "Individual Baptism Story", "_{first_name}{last_name}_Story", [firstField(), lastField()]],
+  ["baptism_couple", "Couple / Family Baptism Story", "_{last_name}_Story", [lastField()]],
+  ["onl", "Online Campus Hosting (ONL)", "_ONL", []],
+  ["vas", "Video Announcements (VAs)", "_VAs", []],
+  ["mlk_opener", "MLK Weekend Video", "_MLK_Opener", []],
+  ["noon_prayer", "Noon Prayer", "_NoonPrayer", []],
+  ["noon_prayer_worship", "Noon Prayer Worship", "_NoonPrayerWorship", []],
+  ["campaign_small_group", "Campaign Small Group Videos", "_{series_name}_SmallGroup", [seriesField()]],
+  ["spring_series_kids", "Spring Series Kids Video", "_{series_name}Kids_Recap", [seriesField()]],
+  ["milestone_college_promo", "Milestone College Promo", "_MilestoneCollege_Promo", []],
+  ["hs_bots_recap", "High School BOTS Recap", "_HighSchoolBOTS_Recap", []],
+  ["ms_bots_recap", "Middle School BOTS Recap", "_MiddleSchoolBOTS_Recap", []],
+  ["super_series_promo", "Super Series Promo", "_SuperSeries_Promo", []],
+  ["super_series_title", "Super Series Title Package", "_SuperSeries_TitlePackage", []],
+  ["easter_promo", "Easter Promo", "_Easter_Promo", []],
+  ["christ_haven_impact", "Christ's Haven Impact", "_ChristHaven_Impact", []],
+  ["lets_talk_family_promo", "Let's Talk Family Series Promo", "_LetsTalkFamily_Promo", []],
+  ["serve_day_impact", "Serve Day Impact", "_ServeDay_Impact", []],
+  ["summer_camp_promo", "Summer Camp Promo", "_SummerCamp_Promo", []],
+  ["summer_splash_promo", "Summer Splash Promo", "_SummerSplash_Promo", []],
+  ["summer_splash_rollin", "Summer Splash Roll-In", "_SummerSplash_RollIn", []],
+  ["summer_splash_speaker", "Summer Splash Speaker Intro", "_SummerSplash_SpeakerIntro", []],
+  ["memorial_day_opener", "Memorial Day Opener", "_MemorialDay_Opener", []],
+  ["memorial_day_story", "Memorial Day Story", "_MemorialDay_Story", []],
+  ["legacy_spring_vision", "Legacy Spring Vision Video", "_LegacySpringVision", []],
+  ["series_promo", "Series Promo", "_{series_name}_Promo", [seriesField()]],
+  ["ms_camp_recap", "Middle School Camp Recap", "_MSCamp_Recap", []],
+  ["vbs_forty5_recap", "VBS / Forty5 Recap", "_VBSForty5_Recap", []],
+  ["hs_camp_ngsl_recap", "High School Camp / NGSL Recap", "_HSCampNGSL_Recap", []],
+  ["small_groups_promo", "Small Groups Promo", "_SmallGroups_Promo", []],
+  ["school_outreach_impact", "Back to School / Teacher Outreach Impact", "_SchoolOutreach_Impact", []],
+  ["super_series_impact", "Next Gen / Super Series Impact", "_SuperSeries_Impact", []],
+  ["fairytale_ball_impact", "Fairytale Ball Impact", "_FairytaleBall_Impact", []],
+  ["make_a_difference_promo", "Make a Difference Series Promo", "_MakeADifference_Promo", []],
+  ["veterans_day_impact", "Veteran's Day Impact", "_VeteransDay_Impact", []],
+  ["joy_promo", "JOY Promo", "_JOY_Promo", []],
+  ["bots_promo", "BOTS Promo", "_BOTS_Promo", []],
+  ["christmas_promo", "Christmas Promo", "_Christmas_Promo", []],
+  ["thanksgiving_boxes_impact", "Thanksgiving Boxes Outreach Impact", "_ThanksgivingBoxes_Impact", []],
+  ["legacy_fall_vision", "Legacy Fall Vision Video", "_LegacyFallVision", []],
+  ["christmas_wonder_promo", "Christmas Wonder Impact", "_ChristmasWonder_Promo", []],
+  ["legacy_impact", "Legacy Impact", "_Legacy_Impact", []],
+];
+
+function rowsToDeliverables(rows: Row[], group: NamingDeliverable["group"]): NamingDeliverable[] {
+  return rows.map(([idSuffix, label, namePart, fields]) => {
+    const rootPattern = `${DATE}${namePart}`;
+    return {
+      id: idSuffix,
+      label,
+      group,
+      hint: rootPattern.replace("{year}-{month}-{day}", "YYYY-MM-DD"),
+      presetId: `naming_${idSuffix}`,
+      presetName: `${group === "Video Capture" ? "Capture" : "Delivered"} — ${label}`,
+      rootPattern,
+      fields,
+    };
+  });
+}
+
+export const NAMING_DELIVERABLES: NamingDeliverable[] = [
+  ...rowsToDeliverables(CAPTURE_ROWS, "Video Capture"),
+  ...rowsToDeliverables(DELIVERED_ROWS, "Delivered Video"),
+];
+
+// The full, editable naming catalog — persisted as one JSON file in the Documents
+// library so the team can adjust it and sync across machines.
+export type NamingMinistry = { code: string; label: string };
+
+export type NamingCatalog = {
+  schema_version: number;
+  ministries: NamingMinistry[];
+  campuses: string[];
+  signifiers: string[];
+  deliverables: NamingDeliverable[];
+};
+
+// Bump when the shipped defaults change so an older persisted catalog is refreshed.
+export const NAMING_CATALOG_VERSION = 3;
+
+export function defaultNamingCatalog(): NamingCatalog {
+  return {
+    schema_version: NAMING_CATALOG_VERSION,
+    ministries: NAMING_MINISTRIES.map((ministry) => ({ ...ministry })),
+    campuses: [...NAMING_CAMPUSES],
+    signifiers: [...VIDEO_SIGNIFIERS],
+    deliverables: NAMING_DELIVERABLES.map((deliverable) => ({
+      ...deliverable,
+      fields: deliverable.fields.map((field) => ({ ...field, options: field.options ? [...field.options] : undefined })),
+    })),
+  };
+}
+
+// Merges a persisted catalog over the shipped defaults. If the persisted catalog is
+// older than the shipped version (or missing), the shipped defaults win so the real
+// SOP data replaces earlier placeholders; otherwise user edits are kept.
+export function mergeNamingCatalog(persisted: Partial<NamingCatalog> | null | undefined): NamingCatalog {
+  const base = defaultNamingCatalog();
+  if (!persisted || (persisted.schema_version ?? 1) < NAMING_CATALOG_VERSION) {
+    return base;
+  }
+  return {
+    schema_version: persisted.schema_version ?? base.schema_version,
+    ministries: persisted.ministries?.length ? persisted.ministries : base.ministries,
+    campuses: persisted.campuses?.length ? persisted.campuses : base.campuses,
+    signifiers: persisted.signifiers?.length ? persisted.signifiers : base.signifiers,
+    deliverables: persisted.deliverables?.length ? persisted.deliverables : base.deliverables,
+  };
+}
+
+export function deliverableById(id: string): NamingDeliverable | undefined {
+  return NAMING_DELIVERABLES.find((deliverable) => deliverable.id === id);
+}
 
 // Standard video project tree from the SOP doc: project files, footage (with an
 // optional per-campus subfolder for multi-campus captures), audio, and exports
@@ -169,190 +276,8 @@ function standardVideoTree(): FolderNode[] {
   ];
 }
 
-const DATE = "{year}-{month}-{day}";
-
-const EVENT_FIELD: NamingField = {
-  id: "event_name",
-  label: "Event",
-  type: "dropdown",
-  required: true,
-  options: EVENT_TOKENS,
-  placeholder: "Choose event",
-};
-
-const CAMPUS_FIELD: NamingField = {
-  id: "campus",
-  label: "Campus (multi-campus only)",
-  type: "dropdown",
-  required: false,
-  options: NAMING_CAMPUSES,
-};
-
-const SIGNIFIER_FIELD: NamingField = {
-  id: "signifier",
-  label: "Signifier",
-  type: "dropdown",
-  required: false,
-  options: VIDEO_SIGNIFIERS,
-};
-
-export const NAMING_DELIVERABLES: NamingDeliverable[] = [
-  {
-    id: "video_capture",
-    label: "Event / B-Roll Capture",
-    group: "Video Capture",
-    hint: "YYYY-MM-DD_EventName  (date = first capture)",
-    presetId: "naming_video_capture",
-    presetName: "Capture — Event / B-Roll",
-    rootPattern: `${DATE}_{event_name}`,
-    subPath: "{year}/Broll",
-    fields: [EVENT_FIELD, CAMPUS_FIELD],
-  },
-  {
-    id: "impact_video",
-    label: "Impact Video",
-    group: "Delivered Video",
-    hint: "YYYY-MM-DD_EventName_Impact  (date = premiere)",
-    presetId: "naming_impact",
-    presetName: "Edited — Impact Video",
-    rootPattern: `${DATE}_{event_name}_Impact`,
-    fields: [EVENT_FIELD],
-  },
-  {
-    id: "promo_video",
-    label: "Promo Video",
-    group: "Delivered Video",
-    hint: "YYYY-MM-DD_VideoName_Promo",
-    presetId: "naming_promo",
-    presetName: "Edited — Promo Video",
-    rootPattern: `${DATE}_{video_name}_Promo`,
-    fields: [{ id: "video_name", label: "Video name", type: "short_text", required: true, placeholder: "SummerSplash" }],
-  },
-  {
-    id: "edited_video",
-    label: "Edited Video (choose signifier)",
-    group: "Delivered Video",
-    hint: "YYYY-MM-DD_VideoName[_Signifier]",
-    presetId: "naming_edited",
-    presetName: "Edited — Video",
-    rootPattern: `${DATE}_{video_name}_{signifier}`,
-    fields: [
-      { id: "video_name", label: "Video name", type: "short_text", required: true, placeholder: "MiddleSchoolCamp" },
-      SIGNIFIER_FIELD,
-    ],
-  },
-  {
-    id: "individual_story",
-    label: "Individual Story",
-    group: "Story",
-    hint: "YYYY-MM-DD_FirstLast_Story",
-    presetId: "naming_individual_story",
-    presetName: "Story — Individual",
-    rootPattern: `${DATE}_{first_name}{last_name}_Story`,
-    fields: [
-      { id: "first_name", label: "First name", type: "short_text", required: true },
-      { id: "last_name", label: "Last name", type: "short_text", required: true },
-    ],
-  },
-  {
-    id: "couple_story",
-    label: "Couple / Family Story",
-    group: "Story",
-    hint: "YYYY-MM-DD_LastName_Story",
-    presetId: "naming_couple_story",
-    presetName: "Story — Couple / Family",
-    rootPattern: `${DATE}_{last_name}_Story`,
-    fields: [{ id: "last_name", label: "Last name", type: "short_text", required: true }],
-  },
-  {
-    id: "individual_baptism_story",
-    label: "Individual Baptism Story",
-    group: "Story",
-    hint: "YYYY-MM-DD_FirstLast_BaptismStory",
-    presetId: "naming_individual_baptism",
-    presetName: "Story — Individual Baptism",
-    rootPattern: `${DATE}_{first_name}{last_name}_BaptismStory`,
-    fields: [
-      { id: "first_name", label: "First name", type: "short_text", required: true },
-      { id: "last_name", label: "Last name", type: "short_text", required: true },
-    ],
-  },
-  {
-    id: "couple_baptism_story",
-    label: "Couple / Family Baptism Story",
-    group: "Story",
-    hint: "YYYY-MM-DD_LastName_BaptismStory",
-    presetId: "naming_couple_baptism",
-    presetName: "Story — Couple / Family Baptism",
-    rootPattern: `${DATE}_{last_name}_BaptismStory`,
-    fields: [{ id: "last_name", label: "Last name", type: "short_text", required: true }],
-  },
-  {
-    id: "online_campus_hosting",
-    label: "Online Campus Hosting (ONL)",
-    group: "Delivered Video",
-    hint: "YYYY-MM-DD_ONL",
-    presetId: "naming_onl",
-    presetName: "Delivered — Online Campus (ONL)",
-    rootPattern: `${DATE}_ONL`,
-    fields: [],
-  },
-];
-
-// The full, editable naming catalog — persisted as one JSON file in the Documents
-// library so the team can adjust it and sync across machines.
-export type NamingMinistry = { code: string; label: string };
-
-export type NamingCatalog = {
-  schema_version: number;
-  ministries: NamingMinistry[];
-  campuses: string[];
-  signifiers: string[];
-  events: NamingEvent[];
-  deliverables: NamingDeliverable[];
-};
-
-// Bump when the shipped defaults change so an older persisted catalog is refreshed.
-export const NAMING_CATALOG_VERSION = 2;
-
-export function defaultNamingCatalog(): NamingCatalog {
-  return {
-    schema_version: NAMING_CATALOG_VERSION,
-    ministries: NAMING_MINISTRIES.map((ministry) => ({ ...ministry })),
-    campuses: [...NAMING_CAMPUSES],
-    signifiers: [...VIDEO_SIGNIFIERS],
-    events: NAMING_EVENTS.map((event) => ({ ...event })),
-    deliverables: NAMING_DELIVERABLES.map((deliverable) => ({
-      ...deliverable,
-      fields: deliverable.fields.map((field) => ({ ...field, options: field.options ? [...field.options] : undefined })),
-    })),
-  };
-}
-
-// Merges a persisted catalog over the shipped defaults. If the persisted catalog is
-// older than the shipped version (or missing), the shipped defaults win so the real
-// SOP data replaces earlier placeholders; otherwise user edits are kept.
-export function mergeNamingCatalog(persisted: Partial<NamingCatalog> | null | undefined): NamingCatalog {
-  const base = defaultNamingCatalog();
-  if (!persisted || (persisted.schema_version ?? 1) < NAMING_CATALOG_VERSION) {
-    return base;
-  }
-  return {
-    schema_version: persisted.schema_version ?? base.schema_version,
-    ministries: persisted.ministries?.length ? persisted.ministries : base.ministries,
-    campuses: persisted.campuses?.length ? persisted.campuses : base.campuses,
-    signifiers: persisted.signifiers?.length ? persisted.signifiers : base.signifiers,
-    events: persisted.events?.length ? persisted.events : base.events,
-    deliverables: persisted.deliverables?.length ? persisted.deliverables : base.deliverables,
-  };
-}
-
-export function deliverableById(id: string): NamingDeliverable | undefined {
-  return NAMING_DELIVERABLES.find((deliverable) => deliverable.id === id);
-}
-
-// Builds a folder Preset from a deliverable: its SOP name pattern + year-aware
-// pre-folder, its fields as variables, and the standard video subfolder tree.
+// Builds a folder Preset from a deliverable: its SOP name pattern + optional
+// year-aware pre-folder, its fields as variables, and the standard video subfolder tree.
 export function buildNamingPreset(deliverable: NamingDeliverable, nowIso: string): Preset {
   const variables: PresetVariable[] = deliverable.fields.map((field) => ({
     id: field.id,
@@ -368,7 +293,7 @@ export function buildNamingPreset(deliverable: NamingDeliverable, nowIso: string
     name: deliverable.presetName,
     description: `Auto-named per the SOP: ${deliverable.hint}`,
     icon: "folder-tree",
-    color: "#9fd7c7",
+    color: deliverable.group === "Video Capture" ? "#9fd7c7" : "#c9a7ff",
     variables,
     root_folder_pattern: deliverable.rootPattern,
     folder_tree: standardVideoTree(),
