@@ -30,6 +30,7 @@ import {
   runIngest,
   retryFailedCopies,
   saveHistoryJob,
+  savePreset,
   scanSource,
   detectCameraSources,
   type CameraSource,
@@ -72,6 +73,14 @@ type RunSource = {
 // reports positions in CSS pixels in this setup (same as FolderTreeEditor), so they
 // can be passed straight to elementFromPoint.
 type DropZone = "queue" | "destinations" | "sources";
+
+// Flattens a preset's folder tree to a depth-labeled list for routing dropdowns.
+function collectRoutableFolders(folders: FolderNode[], depth = 0): { id: string; label: string; depth: number }[] {
+  return folders.flatMap((folder) => [
+    { id: folder.id, label: folder.name_pattern, depth },
+    ...collectRoutableFolders(folder.children, depth + 1),
+  ]);
+}
 
 // Parent folder of a path (handles both / and \ separators); null if at a root.
 function parentDirectory(path: string): string | null {
@@ -164,6 +173,16 @@ export function IngestPage() {
   const routingPreview = useMemo(
     () => (preset && scan ? buildRoutingPreview(preset, scan, deleteSidecars) : []),
     [deleteSidecars, preset, scan],
+  );
+  const routingFolderOptions = useMemo(
+    () => [
+      { label: "Auto (by type)", value: "" },
+      ...(preset ? collectRoutableFolders(preset.folder_tree) : []).map((folder) => ({
+        label: `${"— ".repeat(folder.depth)}${folder.label}`,
+        value: folder.id,
+      })),
+    ],
+    [preset],
   );
   const visibleRoutingPreview = useMemo(
     () =>
@@ -917,6 +936,29 @@ export function IngestPage() {
     setIsFileSelectorOpen(false);
     setIngestResult(null);
     void scanPaths(nextPaths);
+  }
+
+  // Points a file extension at a specific folder (or back to "Auto" by type). This
+  // is a preset rule (file_type_routing_overrides), so it's saved to the preset and
+  // honored by the copy engine's route_folder on the next ingest.
+  async function setRoutingOverride(extension: string, folderId: string) {
+    if (!preset) {
+      return;
+    }
+    const overrides = { ...preset.file_type_routing_overrides };
+    if (folderId) {
+      overrides[extension] = folderId;
+    } else {
+      delete overrides[extension];
+    }
+    const nextPreset = { ...preset, file_type_routing_overrides: overrides };
+    setPreset(nextPreset);
+    setIngestResult(null);
+    try {
+      await savePreset(nextPreset);
+    } catch (caught) {
+      setError(`Could not save routing rule: ${String(caught)}`);
+    }
   }
 
   function removeQueueCard(id: string) {
@@ -1932,26 +1974,41 @@ export function IngestPage() {
                 </div>
               </summary>
               <div className="max-h-[420px] overflow-auto">
-                {visibleRoutingPreview.map((extension) => (
-                  <div
-                    key={`${extension.kind}-${extension.extension}`}
-                    className={`grid min-h-9 grid-cols-[80px_96px_1fr_104px] items-center gap-3 border-b border-mist px-3 py-1.5 text-sm last:border-b-0 ${
-                      isFilteredPreviewRow(extension) ? "bg-porcelain/35 opacity-75" : ""
-                    }`}
-                  >
-                    <code className="text-xs font-semibold text-ink">{extension.extension}</code>
-                    <div className="text-xs font-semibold text-graphite">{labelForKind(extension.kind)}</div>
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-semibold text-ink">{extension.targetFolderName}</div>
-                      <div className="truncate text-xs text-graphite">{extension.note}</div>
+                {visibleRoutingPreview.map((extension) => {
+                  const filtered = isFilteredPreviewRow(extension);
+                  return (
+                    <div
+                      key={`${extension.kind}-${extension.extension}`}
+                      className={`grid min-h-9 grid-cols-[64px_84px_1fr_150px_92px] items-center gap-3 border-b border-mist px-3 py-1.5 text-sm last:border-b-0 ${
+                        filtered ? "bg-porcelain/35 opacity-75" : ""
+                      }`}
+                    >
+                      <code className="text-xs font-semibold text-ink">{extension.extension}</code>
+                      <div className="text-xs font-semibold text-graphite">{labelForKind(extension.kind)}</div>
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-semibold text-ink">{extension.targetFolderName}</div>
+                        <div className="truncate text-xs text-graphite">{extension.note}</div>
+                      </div>
+                      <div className="min-w-0">
+                        {filtered ? (
+                          <span className="text-xs text-graphite/60">—</span>
+                        ) : (
+                          <SelectMenu
+                            onChange={(value) => void setRoutingOverride(extension.extension, value)}
+                            options={routingFolderOptions}
+                            size="sm"
+                            value={preset?.file_type_routing_overrides[extension.extension] ?? ""}
+                          />
+                        )}
+                      </div>
+                      <div className="text-right text-xs font-semibold text-graphite">
+                        {extension.count} file{extension.count === 1 ? "" : "s"}
+                        <br />
+                        {formatBytes(extension.total_bytes)}
+                      </div>
                     </div>
-                    <div className="text-right text-xs font-semibold text-graphite">
-                      {extension.count} file{extension.count === 1 ? "" : "s"}
-                      <br />
-                      {formatBytes(extension.total_bytes)}
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </details>
           ) : null}
