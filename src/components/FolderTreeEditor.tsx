@@ -9,6 +9,7 @@ import {
   GripVertical,
   Plus,
   Trash2,
+  X,
 } from "lucide-react";
 import { getCurrentWebview, type DragDropEvent } from "@tauri-apps/api/webview";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -43,6 +44,9 @@ type FolderTreeEditorProps = {
   context: TokenContext;
   folders: FolderNode[];
   onChange: (folders: FolderNode[]) => void;
+  routingOverrides: Record<string, string>;
+  onRoutingChange: (overrides: Record<string, string>) => void;
+  customFileKinds: Record<string, string>;
   variables: PresetVariable[];
 };
 
@@ -75,7 +79,15 @@ const roleOptions: Array<{ label: string; value: FolderRole | "" }> = [
   { label: "Other", value: "other" },
 ];
 
-export function FolderTreeEditor({ context, folders, onChange, variables }: FolderTreeEditorProps) {
+export function FolderTreeEditor({
+  context,
+  folders,
+  onChange,
+  routingOverrides,
+  onRoutingChange,
+  customFileKinds,
+  variables,
+}: FolderTreeEditorProps) {
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => collectFolderIds(folders));
   const [isDragOver, setIsDragOver] = useState(false);
   const [importMessage, setImportMessage] = useState<string | null>(null);
@@ -625,6 +637,9 @@ export function FolderTreeEditor({ context, folders, onChange, variables }: Fold
               updateFolders(updateFolder(folders, selectedFolder.id, (folder) => ({ ...folder, ...patch })))
             }
             onUpdateTokenPreview={updateFolderTokenPreview}
+            routingOverrides={routingOverrides}
+            onRoutingChange={onRoutingChange}
+            customFileKinds={customFileKinds}
             tokenPreviewValues={selectedFolder ? tokenPreviewValues[selectedFolder.id] ?? {} : {}}
             variables={variables}
           />
@@ -855,12 +870,177 @@ function TreeGuides({ row }: { row: FolderTreeRow }) {
   );
 }
 
+// Default extensions per media kind, mirroring the Rust scanner's classify_file so the
+// preset editor can show exactly what will route to a folder for its role.
+const KIND_EXTENSIONS: Record<string, string[]> = {
+  footage: [".mp4", ".mov", ".mxf", ".avi", ".m4v", ".mts", ".m2ts", ".braw", ".r3d", ".crm", ".cine"],
+  photos: [".jpg", ".jpeg", ".png", ".heic", ".tif", ".tiff", ".cr2", ".nef", ".arw", ".dng", ".raw", ".orf", ".rw2"],
+  audio: [".wav", ".mp3", ".aif", ".aiff", ".m4a", ".flac"],
+  documents: [".pdf", ".txt", ".doc", ".docx", ".csv", ".xlsx", ".xls", ".rtf"],
+};
+
+const ROLE_LABELS: Record<string, string> = {
+  footage: "footage",
+  photos: "photo",
+  audio: "audio",
+  documents: "document",
+  other: "other",
+};
+
+// Shows every file type that will land in a folder — the extensions for its role (plus
+// footage if it's the footage target), minus any that a custom rule sends elsewhere —
+// and lets the user add/remove custom types. Updates dynamically with the role dropdown.
+function FolderRoutingSection({
+  folder,
+  routingOverrides,
+  onRoutingChange,
+  customFileKinds,
+}: {
+  folder: FolderNode;
+  routingOverrides: Record<string, string>;
+  onRoutingChange: (overrides: Record<string, string>) => void;
+  customFileKinds: Record<string, string>;
+}) {
+  const [draftExtension, setDraftExtension] = useState("");
+
+  // Extensions this folder receives by role (built-in + user-defined custom kinds and
+  // the footage target), excluding any that a custom folder rule points elsewhere.
+  const roleKindExtensions = new Set<string>();
+  const addRoleExtensions = (roleKey: string) => {
+    (KIND_EXTENSIONS[roleKey] ?? []).forEach((extension) => roleKindExtensions.add(extension));
+    // custom_file_kinds uses singular "photo"/"document"; folder roles use plural.
+    const kindAliases = roleKey === "photos" ? ["photo", "photos"] : roleKey === "documents" ? ["document", "documents"] : [roleKey];
+    for (const [extension, kind] of Object.entries(customFileKinds)) {
+      if (kindAliases.includes(kind)) {
+        roleKindExtensions.add(extension);
+      }
+    }
+  };
+  if (folder.role) {
+    addRoleExtensions(folder.role);
+  }
+  if (folder.is_footage_destination) {
+    addRoleExtensions("footage");
+  }
+  const defaultExtensions = [...roleKindExtensions]
+    .filter((extension) => {
+      const override = routingOverrides[extension];
+      return override === undefined || override === folder.id;
+    })
+    .sort();
+  const customExtensions = Object.entries(routingOverrides)
+    .filter(([extension, folderId]) => folderId === folder.id && !roleKindExtensions.has(extension))
+    .map(([extension]) => extension)
+    .sort();
+
+  const roleDescriptor = folder.role ? ROLE_LABELS[folder.role] : null;
+
+  function normalizeExtension(value: string): string | null {
+    const trimmed = value.trim().toLowerCase().replace(/\s+/g, "");
+    if (!trimmed) {
+      return null;
+    }
+    const withDot = trimmed.startsWith(".") ? trimmed : `.${trimmed}`;
+    return /^\.[a-z0-9]+$/.test(withDot) ? withDot : null;
+  }
+
+  function addExtension() {
+    const extension = normalizeExtension(draftExtension);
+    setDraftExtension("");
+    if (extension) {
+      onRoutingChange({ ...routingOverrides, [extension]: folder.id });
+    }
+  }
+
+  function removeExtension(extension: string) {
+    const next = { ...routingOverrides };
+    delete next[extension];
+    onRoutingChange(next);
+  }
+
+  return (
+    <div className="rounded-xl border border-mist bg-porcelain/50 p-2">
+      <div className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-graphite">
+        Files routed here
+        <FloatingHelp label="Routing help">
+          These are the file types that land in this folder — the ones for its role above, plus any custom types you
+          add. A custom type always wins over the role defaults.
+        </FloatingHelp>
+      </div>
+
+      {defaultExtensions.length > 0 ? (
+        <div className="mb-1.5">
+          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-graphite/50">
+            {roleDescriptor ? `All ${roleDescriptor} files` : "By role"}
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {defaultExtensions.map((extension) => (
+              <span key={extension} className="rounded-md bg-porcelain px-1.5 py-0.5 text-[11px] font-semibold text-graphite">
+                {extension}
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-graphite/50">Custom types</div>
+      <div className="flex flex-wrap items-center gap-1">
+        {customExtensions.map((extension) => (
+          <span
+            key={extension}
+            className="inline-flex items-center gap-1 rounded-md bg-white py-0.5 pl-2 pr-1 text-[11px] font-semibold text-ink ring-1 ring-mist"
+          >
+            {extension}
+            <button
+              aria-label={`Remove ${extension}`}
+              className="rounded p-0.5 text-graphite/60 transition hover:text-red-700"
+              onClick={() => removeExtension(extension)}
+              type="button"
+            >
+              <X size={11} />
+            </button>
+          </span>
+        ))}
+        {customExtensions.length === 0 ? (
+          <span className="text-[11px] text-graphite/60">None yet.</span>
+        ) : null}
+      </div>
+
+      <div className="mt-1.5 flex items-center gap-1.5">
+        <input
+          className="h-7 w-24 rounded-lg border border-mist bg-white px-2 text-xs outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+          onChange={(event) => setDraftExtension(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              addExtension();
+            }
+          }}
+          placeholder=".mxf"
+          value={draftExtension}
+        />
+        <button
+          className="inline-flex h-7 items-center gap-1 rounded-lg border border-mist bg-white px-2 text-xs font-semibold text-graphite transition hover:bg-porcelain"
+          onClick={addExtension}
+          type="button"
+        >
+          <Plus size={12} />
+          Add type
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function FolderInspector({
   folder,
   folderContext,
   onSetFootage,
   onUpdate,
   onUpdateTokenPreview,
+  routingOverrides,
+  onRoutingChange,
+  customFileKinds,
   tokenPreviewValues,
   variables,
 }: {
@@ -869,6 +1049,9 @@ function FolderInspector({
   onSetFootage: () => void;
   onUpdate: (patch: Partial<FolderNode>) => void;
   onUpdateTokenPreview: (folderId: string, variableId: string, value: string) => void;
+  routingOverrides: Record<string, string>;
+  onRoutingChange: (overrides: Record<string, string>) => void;
+  customFileKinds: Record<string, string>;
   tokenPreviewValues: Record<string, string>;
   variables: PresetVariable[];
 }) {
@@ -1017,6 +1200,13 @@ function FolderInspector({
             </FloatingHelp>
           </label>
         </div>
+
+        <FolderRoutingSection
+          customFileKinds={customFileKinds}
+          folder={folder}
+          onRoutingChange={onRoutingChange}
+          routingOverrides={routingOverrides}
+        />
 
         <div className="rounded-xl border border-mist bg-porcelain/50 p-2">
           <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-graphite">

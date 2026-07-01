@@ -2,7 +2,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { Check, ChevronDown, FolderOpen, Image, Layers, List, Plus, RefreshCw, Search, X } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, FolderOpen, Image, Layers, List, Plus, RefreshCw, Search, Wand2, X } from "lucide-react";
 import { type Dispatch, type SetStateAction, useEffect, useMemo, useRef, useState } from "react";
 import {
   defaultsForParameters,
@@ -23,13 +23,18 @@ import {
   previewPattern,
   cancelIngest,
   diskSpace,
+  exportMetadataManifest,
   exportReelIndex,
   filterDirectories,
   generateIngestReport,
+  getMetadataPreset,
+  listMetadataPresets,
+  saveMetadataPreset,
   generateOffloadProof,
   runIngest,
   retryFailedCopies,
   saveHistoryJob,
+  savePreset,
   scanSource,
   detectCameraSources,
   type CameraSource,
@@ -42,8 +47,23 @@ import {
   type ScannedFile,
   type SourceScan,
 } from "../lib/tauri";
-import type { AppSettings, FolderNode, Preset, PresetSummary, PresetVariable } from "../lib/types";
+import type {
+  AppSettings,
+  FolderNode,
+  MetadataPreset,
+  MetadataPresetSummary,
+  Preset,
+  PresetSummary,
+  PresetVariable,
+} from "../lib/types";
 import { useAppStore } from "../stores/appStore";
+import {
+  buildNamingPreset,
+  NAMING_DELIVERABLES,
+  previewNamingResult,
+  type NamingDeliverable,
+} from "../lib/namingCatalog";
+import { createDefaultMetadataPreset } from "../lib/metadataPresetFactory";
 
 // Queue mode: a sequential pipeline of source cards. Each card is scanned in the
 // background (scan-ahead) while an earlier card copies, then copied in order into
@@ -71,10 +91,19 @@ type RunSource = {
 // Maps an OS drag-drop position to the marked drop zone under it, if any. Tauri
 // reports positions in CSS pixels in this setup (same as FolderTreeEditor), so they
 // can be passed straight to elementFromPoint.
-function dropZoneFromPoint(x: number, y: number): "queue" | "destinations" | null {
+type DropZone = "queue" | "destinations" | "sources";
+
+// Parent folder of a path (handles both / and \ separators); null if at a root.
+function parentDirectory(path: string): string | null {
+  const trimmed = path.replace(/[\\/]+$/, "");
+  const index = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  return index > 0 ? trimmed.slice(0, index) : null;
+}
+
+function dropZoneFromPoint(x: number, y: number): DropZone | null {
   const zone = document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-drop-zone]");
   const name = zone?.dataset.dropZone;
-  return name === "queue" || name === "destinations" ? name : null;
+  return name === "queue" || name === "destinations" || name === "sources" ? name : null;
 }
 
 export function IngestPage() {
@@ -92,6 +121,7 @@ export function IngestPage() {
   const [detectedSources, setDetectedSources] = useState<CameraSource[]>([]);
   const [ingestResult, setIngestResult] = useState<IngestResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [scanWarning, setScanWarning] = useState<string | null>(null);
   const [isScanning, setIsScanning] = useState(false);
   const [isIngesting, setIsIngesting] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
@@ -113,19 +143,26 @@ export function IngestPage() {
   const [isSavingProof, setIsSavingProof] = useState(false);
   const [cameraAliases, setCameraAliases] = useState<Record<string, string>>({});
   const [currentSegment, setCurrentSegment] = useState<{ label: string; index: number; total: number } | null>(null);
+  const [metadataSummaries, setMetadataSummaries] = useState<MetadataPresetSummary[]>([]);
+  const [metadataPresetId, setMetadataPresetId] = useState("");
+  const [metadataPreset, setMetadataPreset] = useState<MetadataPreset | null>(null);
+  const [metadataValues, setMetadataValues] = useState<Record<string, string>>({});
+  const [isSavingManifest, setIsSavingManifest] = useState(false);
+  const [isNamingOpen, setIsNamingOpen] = useState(false);
   const [queueMode, setQueueMode] = useState(false);
   const [queue, setQueue] = useState<QueueCard[]>([]);
   const [isQueueRunning, setIsQueueRunning] = useState(false);
-  // Which drop zone the OS drag is currently over ("queue" | "destinations" | null).
-  const [dragZone, setDragZone] = useState<"queue" | "destinations" | null>(null);
+  // Which drop zone the OS drag is currently over ("queue" | "destinations" | "sources" | null).
+  const [dragZone, setDragZone] = useState<DropZone | null>(null);
   const currentIngestJobId = useRef<string | null>(null);
   // Live mirror of the queue so the async runner sees cards added mid-run.
   const queueRef = useRef<QueueCard[]>([]);
   // Dedupes scan-ahead: one in-flight scan promise per card id.
   const cardScanPromises = useRef<Map<string, Promise<SourceScan>>>(new Map());
-  // Live mirrors so the window-level drop handler reads current destinations.
+  // Live mirrors so the window-level drop handler reads current destinations/sources.
   const destinationPathRef = useRef("");
   const secondaryDestinationsRef = useRef<string[]>([]);
+  const sourcePathsRef = useRef<string[]>([]);
   // Variable values from a replayed recent ingest, applied once the new preset's
   // parameters resolve (so the defaults effect below doesn't clobber them).
   const pendingReplayValuesRef = useRef<Record<string, string> | null>(null);
@@ -223,6 +260,9 @@ export function IngestPage() {
   useEffect(() => {
     secondaryDestinationsRef.current = secondaryDestinationPaths;
   }, [secondaryDestinationPaths]);
+  useEffect(() => {
+    sourcePathsRef.current = sourcePaths;
+  }, [sourcePaths]);
   // Native folder drag-and-drop. A single window-level listener routes the drop by
   // which marked zone (data-drop-zone) it lands on: the card queue or the
   // destinations panel. Each dropped folder becomes a card / a destination.
@@ -243,6 +283,8 @@ export function IngestPage() {
             void handleDestinationDrop(payload.paths);
           } else if (zone === "queue") {
             void handleQueueDrop(payload.paths);
+          } else if (zone === "sources") {
+            void handleSourceDrop(payload.paths);
           }
         }
       })
@@ -265,6 +307,60 @@ export function IngestPage() {
   const queueByteCount = useMemo(() => queue.reduce((sum, card) => sum + card.byteCount, 0), [queue]);
   const canStartQueue = Boolean(
     selectedPresetId && destinationTargets.length > 0 && queue.length > 0 && !isQueueRunning,
+  );
+
+  // Metadata presets: load the list once, and the full preset (with defaults) when
+  // the picker changes, so the ingest fill panel can render its fields.
+  useEffect(() => {
+    void (async () => {
+      try {
+        let list = await listMetadataPresets();
+        // Seed the starter iconik preset on first run so it's available here even if
+        // the user hasn't opened the Metadata tab yet.
+        if (list.length === 0) {
+          await saveMetadataPreset(createDefaultMetadataPreset(new Date().toISOString()));
+          list = await listMetadataPresets();
+        }
+        setMetadataSummaries(list);
+      } catch {
+        // non-fatal
+      }
+    })();
+  }, []);
+  useEffect(() => {
+    if (!metadataPresetId) {
+      setMetadataPreset(null);
+      return;
+    }
+    let active = true;
+    void getMetadataPreset(metadataPresetId)
+      .then((preset) => {
+        if (!active) {
+          return;
+        }
+        setMetadataPreset(preset);
+        if (preset) {
+          setMetadataValues((current) => {
+            const next = { ...current };
+            for (const category of preset.categories) {
+              for (const field of category.fields) {
+                if (!(field.id in next)) {
+                  next[field.id] = field.default ?? "";
+                }
+              }
+            }
+            return next;
+          });
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [metadataPresetId]);
+  const hasMetadataValues = useMemo(
+    () => metadataPreset != null && Object.values(metadataValues).some((value) => value.trim().length > 0),
+    [metadataPreset, metadataValues],
   );
 
   async function refreshPresets(preferredId = selectedPresetId) {
@@ -381,6 +477,44 @@ export function IngestPage() {
     }
   }
 
+  // Writes the metadata manifest CSV for the delivered ingest and opens it.
+  async function saveMetadataManifest() {
+    if (!ingestResult || !metadataPreset) {
+      return;
+    }
+    setIsSavingManifest(true);
+    setError(null);
+    try {
+      const path = await exportMetadataManifest(
+        ingestResult.root_path,
+        ingestResult.copied_files,
+        metadataPreset,
+        metadataValues,
+      );
+      await openPath(path);
+      setLastAction("Metadata manifest saved");
+    } catch (caught) {
+      setError(String(caught));
+    } finally {
+      setIsSavingManifest(false);
+    }
+  }
+
+  // Auto-writes the metadata manifest into every destination root after an ingest, so
+  // each drive carries the CSV for iconik. Non-fatal: a failure never breaks delivery.
+  async function autoWriteMetadataManifest(result: IngestResult, roots: string[]) {
+    if (!metadataPreset || !hasMetadataValues) {
+      return;
+    }
+    for (const root of roots) {
+      try {
+        await exportMetadataManifest(root, result.copied_files, metadataPreset, metadataValues);
+      } catch {
+        // best-effort per destination
+      }
+    }
+  }
+
   // The auto-detected camera for a source (used as the placeholder for its camera tag).
   function detectedCameraForSource(path: string) {
     const entry = sourceScans.find((scan) => scan.sourcePath === path);
@@ -421,6 +555,27 @@ export function IngestPage() {
     setLastAction(`Loaded recent ingest: ${job.preset_name}`);
   }
 
+  // Naming Assistant: turn an SOP deliverable + its fields into the correct project
+  // folder by saving/selecting the matching seeded preset and pre-filling its
+  // variables (the preset's root_folder_pattern then resolves to the SOP name).
+  async function applyNaming(deliverable: NamingDeliverable, values: Record<string, string>) {
+    const preset = buildNamingPreset(deliverable, new Date().toISOString());
+    try {
+      await savePreset(preset);
+      await refreshPresets(preset.id);
+    } catch (caught) {
+      setError(String(caught));
+      return;
+    }
+    // Stash values so the preset-load defaults effect doesn't clobber them.
+    pendingReplayValuesRef.current = values;
+    setVariableValues((current) => ({ ...current, ...values }));
+    setSelectedPresetId(preset.id);
+    setIngestResult(null);
+    setIsNamingOpen(false);
+    setLastAction(`Naming Assistant: ${deliverable.label}`);
+  }
+
   async function loadSelectedPreset(id: string) {
     if (!id) {
       setPreset(null);
@@ -437,6 +592,11 @@ export function IngestPage() {
         setRenameFiles(nextPreset.rename_files_default ?? true);
         setDestinationPath(nextPreset.destinations.primary ?? "");
         setSecondaryDestinationPaths(nextPreset.destinations.secondaries ?? []);
+        // A preset can carry its own metadata preset; auto-select it so the operator
+        // doesn't have to pick metadata separately on the ingest page.
+        if (nextPreset.metadata_preset_id) {
+          setMetadataPresetId(nextPreset.metadata_preset_id);
+        }
       }
     } catch (caught) {
       setError(String(caught));
@@ -521,6 +681,7 @@ export function IngestPage() {
 
     setIsScanning(true);
     setError(null);
+    setScanWarning(null);
     try {
       const nextScans = await Promise.all(
         paths.map(async (path) => ({
@@ -541,6 +702,12 @@ export function IngestPage() {
       setIngestResult(null);
       setShowFilteredItems(false);
       const totalFiles = nextScans.reduce((sum, entry) => sum + entry.scan.total_files, 0);
+      const unreadableCount = nextScans.reduce((sum, entry) => sum + entry.scan.unreadable_paths.length, 0);
+      setScanWarning(
+        unreadableCount > 0
+          ? `Skipped ${unreadableCount} item${unreadableCount === 1 ? "" : "s"} that couldn't be read (no access). The rest scanned fine.`
+          : null,
+      );
       setLastAction(`Scanned ${totalFiles} file${totalFiles === 1 ? "" : "s"} from ${nextScans.length} source${nextScans.length === 1 ? "" : "s"}`);
     } catch (caught) {
       setError(String(caught));
@@ -700,6 +867,7 @@ export function IngestPage() {
       const { results } = await copySourcesToDestinations(jobId, activeSources);
       const result = mergeIngestResults(results);
       setIngestResult(result);
+      void autoWriteMetadataManifest(result, [...new Set(results.map((entry) => entry.root_path))]);
       setLastAction(
         `Ingest copied ${result.files_copied} file${result.files_copied === 1 ? "" : "s"} from ${sourceScans.length} source${sourceScans.length === 1 ? "" : "s"} to ${destinationTargets.length} destination${destinationTargets.length === 1 ? "" : "s"}`,
       );
@@ -870,6 +1038,32 @@ export function IngestPage() {
     }
   }
 
+  // Native folder/file drop onto the "Copy From" source area (non-queue mode).
+  // Dropped folders become sources; dropped files add their parent folders.
+  async function handleSourceDrop(paths: string[]) {
+    let directories: string[];
+    try {
+      directories = await filterDirectories(paths);
+    } catch {
+      directories = [];
+    }
+    if (directories.length === 0) {
+      directories = [...new Set(paths.map(parentDirectory).filter((path): path is string => Boolean(path)))];
+    }
+    if (directories.length === 0) {
+      setError("Drop source folders (or files) to add them.");
+      return;
+    }
+    setError(null);
+    const nextPaths = uniquePaths([...sourcePathsRef.current, ...directories]);
+    setSourcePaths(nextPaths);
+    setSourceScans([]);
+    setSelectedRelativePaths(new Set());
+    setIsFileSelectorOpen(false);
+    setIngestResult(null);
+    void scanPaths(nextPaths);
+  }
+
   function removeQueueCard(id: string) {
     cardScanPromises.current.delete(id);
     setQueue((current) => current.filter((card) => card.id !== id));
@@ -979,6 +1173,7 @@ export function IngestPage() {
 
       const result = mergeIngestResults(allResults);
       setIngestResult(result);
+      void autoWriteMetadataManifest(result, [...new Set(allResults.map((entry) => entry.root_path))]);
       setLastAction(
         `Queue copied ${result.files_copied} file${result.files_copied === 1 ? "" : "s"} from ${processedSourcePaths.length} card${processedSourcePaths.length === 1 ? "" : "s"} to ${destinationTargets.length} destination${destinationTargets.length === 1 ? "" : "s"}`,
       );
@@ -1356,6 +1551,16 @@ export function IngestPage() {
             >
               Reel index (CSV)
             </button>
+            {metadataPreset ? (
+              <button
+                className="text-xs font-semibold text-graphite underline-offset-2 hover:underline disabled:opacity-60"
+                disabled={isSavingManifest}
+                onClick={() => void saveMetadataManifest()}
+                type="button"
+              >
+                {isSavingManifest ? "Saving…" : "Metadata CSV"}
+              </button>
+            ) : null}
             <button
               className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-signal px-3 text-xs font-semibold text-paper transition hover:bg-black"
               onClick={() => {
@@ -1441,6 +1646,20 @@ export function IngestPage() {
         </div>
       ) : null}
 
+      {scanWarning ? (
+        <div className="mb-3 flex items-start justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          <span>{scanWarning}</span>
+          <button
+            aria-label="Dismiss"
+            className="shrink-0 rounded p-0.5 text-amber-700 transition hover:bg-amber-100"
+            onClick={() => setScanWarning(null)}
+            type="button"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      ) : null}
+
       <div className="grid min-h-0 flex-1 gap-2 xl:grid-cols-[220px_320px_minmax(0,1fr)]">
         <div className="flex min-h-0 min-w-0 flex-col gap-2">
           <PresetBrowser
@@ -1466,23 +1685,34 @@ export function IngestPage() {
               help="This is the job setup: which preset rules to use, what media to copy, and where the project should land."
               title="1. Copy Job"
             />
-            <button
-              className={`inline-flex h-6 items-center gap-1.5 rounded-full border px-2 text-[11px] font-semibold transition ${
-                queueMode
-                  ? "border-signal bg-signal text-paper"
-                  : "border-mist bg-white text-graphite hover:bg-porcelain"
-              }`}
-              onClick={() => {
-                setQueueMode((on) => !on);
-                setIngestResult(null);
-                setError(null);
-              }}
-              title="Queue mode: add cards one after another and copy them in sequence."
-              type="button"
-            >
-              <Layers size={12} />
-              Queue{queueMode ? " on" : ""}
-            </button>
+            <div className="flex items-center gap-1.5">
+              <button
+                className="inline-flex h-6 items-center gap-1.5 rounded-full border border-mist bg-white px-2 text-[11px] font-semibold text-graphite transition hover:bg-porcelain"
+                onClick={() => setIsNamingOpen(true)}
+                title="Naming Assistant: build the SOP-correct project name from a deliverable type."
+                type="button"
+              >
+                <Wand2 size={12} />
+                Name
+              </button>
+              <button
+                className={`inline-flex h-6 items-center gap-1.5 rounded-full border px-2 text-[11px] font-semibold transition ${
+                  queueMode
+                    ? "border-signal bg-signal text-paper"
+                    : "border-mist bg-white text-graphite hover:bg-porcelain"
+                }`}
+                onClick={() => {
+                  setQueueMode((on) => !on);
+                  setIngestResult(null);
+                  setError(null);
+                }}
+                title="Queue mode: add cards one after another and copy them in sequence."
+                type="button"
+              >
+                <Layers size={12} />
+                Queue{queueMode ? " on" : ""}
+              </button>
+            </div>
           </div>
           <div className="space-y-2 p-2">
             {queueMode ? (
@@ -1503,9 +1733,14 @@ export function IngestPage() {
                 />
               </div>
             ) : null}
-            <label className={`block ${queueMode ? "hidden" : ""}`}>
+            <label
+              className={`block rounded-xl p-1 transition ${queueMode ? "hidden" : ""} ${
+                dragZone === "sources" ? "bg-lavender/10 outline outline-2 outline-dashed outline-signal" : ""
+              }`}
+              data-drop-zone="sources"
+            >
               <div className="mb-1 flex items-center justify-between gap-2 text-xs font-semibold text-graphite">
-                <FieldLabel help="Choose one or more camera cards or source folders. Detected camera cards are auto-filled when possible.">
+                <FieldLabel help="Choose one or more camera cards or source folders — or drag folders/files here. Detected camera cards are auto-filled when possible.">
                   Copy From
                 </FieldLabel>
                 {sourcePaths.some((path) => detectedSources.some((source) => source.path === path)) ? (
@@ -1813,6 +2048,18 @@ export function IngestPage() {
             <OutputPreviewCard preview={outputPreview} />
           </div>
 
+          <MetadataFillPanel
+            summaries={metadataSummaries}
+            presetId={metadataPresetId}
+            preset={metadataPreset}
+            values={metadataValues}
+            onSelectPreset={(id) => {
+              setMetadataPresetId(id);
+              setIngestResult(null);
+            }}
+            onChange={(fieldId, value) => setMetadataValues((current) => ({ ...current, [fieldId]: value }))}
+          />
+
           {scan ? (
             <section className="overflow-hidden rounded-2xl border border-mist bg-white">
               <div className="flex h-9 items-center justify-between gap-3 border-b border-mist px-3">
@@ -1914,6 +2161,9 @@ export function IngestPage() {
           selectedRelativePaths={selectedRelativePaths}
           setSelectedRelativePaths={setSelectedRelativePaths}
         />
+      ) : null}
+      {isNamingOpen ? (
+        <NamingAssistant onApply={(deliverable, values) => void applyNaming(deliverable, values)} onClose={() => setIsNamingOpen(false)} />
       ) : null}
     </div>
   );
@@ -2135,6 +2385,272 @@ function QueueCardsSummary({ cards }: { cards: QueueCard[] }) {
           );
         })}
       </div>
+    </div>
+  );
+}
+
+// Renders one metadata field input by type; values are stored as strings
+// (booleans as "true"/"false", multi-selects as comma-joined).
+function MetadataFieldInput({
+  field,
+  value,
+  onChange,
+}: {
+  field: MetadataPreset["categories"][number]["fields"][number];
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  if (field.field_type === "long_text") {
+    return (
+      <textarea
+        className="min-h-[52px] w-full rounded-lg border border-mist bg-white px-2 py-1.5 text-xs outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+        onChange={(event) => onChange(event.target.value)}
+        value={value}
+      />
+    );
+  }
+  if (field.field_type === "boolean") {
+    return (
+      <SelectMenu
+        onChange={onChange}
+        options={[
+          { label: "—", value: "" },
+          { label: "Yes", value: "true" },
+          { label: "No", value: "false" },
+        ]}
+        size="sm"
+        value={value}
+      />
+    );
+  }
+  if (field.field_type === "dropdown") {
+    return (
+      <SelectMenu
+        onChange={onChange}
+        options={[{ label: "—", value: "" }, ...field.options.map((option) => ({ label: option, value: option }))]}
+        size="sm"
+        value={value}
+      />
+    );
+  }
+  if (field.field_type === "date") {
+    return (
+      <input
+        className="h-8 w-full rounded-lg border border-mist bg-white px-2 text-xs outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+        onChange={(event) => onChange(event.target.value)}
+        type="date"
+        value={value}
+      />
+    );
+  }
+  // text and multi_select both edit as free text (multi-select is comma-separated).
+  return (
+    <input
+      className="h-8 w-full rounded-lg border border-mist bg-white px-2 text-xs outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+      onChange={(event) => onChange(event.target.value)}
+      placeholder={
+        field.field_type === "multi_select"
+          ? field.options.length > 0
+            ? `${field.options.slice(0, 3).join(", ")}…`
+            : "comma, separated"
+          : undefined
+      }
+      value={value}
+    />
+  );
+}
+
+function MetadataFillPanel({
+  summaries,
+  presetId,
+  preset,
+  values,
+  onSelectPreset,
+  onChange,
+}: {
+  summaries: MetadataPresetSummary[];
+  presetId: string;
+  preset: MetadataPreset | null;
+  values: Record<string, string>;
+  onSelectPreset: (id: string) => void;
+  onChange: (fieldId: string, value: string) => void;
+}) {
+  return (
+    <section className="overflow-hidden rounded-2xl border border-mist bg-white">
+      <div className="flex h-9 items-center justify-between gap-2 border-b border-mist px-3">
+        <SectionTitle
+          help="Optional shoot-level metadata tagged onto every clip and written as a CSV manifest for iconik. Manage schemas in the Metadata tab."
+          title="Metadata"
+        />
+        <div className="w-44">
+          <SelectMenu
+            onChange={onSelectPreset}
+            options={[{ label: "None", value: "" }, ...summaries.map((item) => ({ label: item.name, value: item.id }))]}
+            placeholder="No metadata"
+            size="sm"
+            value={presetId}
+          />
+        </div>
+      </div>
+      {preset ? (
+        <div className="max-h-[320px] space-y-2 overflow-auto p-2">
+          {preset.categories.map((category) => (
+            <div key={category.id} className="rounded-xl border border-mist bg-porcelain/30 p-2">
+              <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-graphite/60">{category.name}</div>
+              <div className="space-y-1.5">
+                {category.fields.map((field) => (
+                  <div key={field.id} className="grid grid-cols-[110px_1fr] items-center gap-2">
+                    <span className="truncate text-xs font-semibold text-graphite" title={field.label}>
+                      {field.label}
+                    </span>
+                    <MetadataFieldInput field={field} onChange={(value) => onChange(field.id, value)} value={values[field.id] ?? ""} />
+                  </div>
+                ))}
+                {category.fields.length === 0 ? <p className="text-[11px] text-graphite/60">No fields.</p> : null}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="px-3 py-2.5 text-xs text-graphite">
+          Pick a metadata preset to tag this import for iconik. Values apply to every clip.
+        </p>
+      )}
+    </section>
+  );
+}
+
+// Guided naming per the team SOP: pick a deliverable, fill its fields, and the
+// preview shows the exact project folder name. Applying it selects the matching
+// seeded preset and pre-fills its variables (see applyNaming in IngestPage).
+function NamingAssistant({
+  onApply,
+  onClose,
+}: {
+  onApply: (deliverable: NamingDeliverable, values: Record<string, string>) => void;
+  onClose: () => void;
+}) {
+  const [deliverableId, setDeliverableId] = useState(NAMING_DELIVERABLES[0]?.id ?? "");
+  const [values, setValues] = useState<Record<string, string>>({});
+  const deliverable = NAMING_DELIVERABLES.find((item) => item.id === deliverableId) ?? NAMING_DELIVERABLES[0];
+  const preview = deliverable ? previewNamingResult(deliverable, values) : "";
+  const missingRequired = deliverable
+    ? deliverable.fields.some((field) => field.required && !(values[field.id] ?? "").trim())
+    : true;
+  const groups: NamingDeliverable["group"][] = ["Delivered Video", "Video Capture", "Photo"];
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/30 p-4 backdrop-blur-sm">
+      <section className="flex max-h-[86vh] w-full max-w-3xl select-none flex-col overflow-hidden rounded-[24px] border border-mist bg-white shadow-panel">
+        <div className="flex items-center justify-between border-b border-mist px-4 py-3">
+          <div>
+            <h2 className="flex items-center gap-2 text-base font-semibold">
+              <Wand2 size={16} />
+              Naming Assistant
+            </h2>
+            <p className="text-xs font-medium text-graphite">Build the SOP-correct project name, then apply it to this ingest.</p>
+          </div>
+          <button
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-mist bg-white text-graphite transition hover:bg-porcelain"
+            onClick={onClose}
+            type="button"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="grid min-h-0 flex-1 grid-cols-[220px_minmax(0,1fr)]">
+          <aside className="min-h-0 overflow-auto border-r border-mist bg-porcelain/25 p-2">
+            {groups.map((group) => (
+              <div key={group} className="mb-2">
+                <div className="mb-1 px-1 text-[11px] font-semibold uppercase tracking-wide text-graphite/60">{group}</div>
+                <div className="space-y-1">
+                  {NAMING_DELIVERABLES.filter((item) => item.group === group).map((item) => (
+                    <button
+                      key={item.id}
+                      className={`w-full rounded-lg px-2 py-1.5 text-left text-sm transition ${
+                        deliverableId === item.id
+                          ? "bg-lavender/25 font-semibold text-ink ring-1 ring-lavender/60"
+                          : "text-graphite hover:bg-white"
+                      }`}
+                      onClick={() => {
+                        setDeliverableId(item.id);
+                        setValues({});
+                      }}
+                      type="button"
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </aside>
+
+          <div className="flex min-h-0 flex-col overflow-auto p-4">
+            {deliverable ? (
+              <>
+                <p className="mb-3 text-xs text-graphite">
+                  Pattern: <code className="rounded bg-porcelain px-1 py-0.5">{deliverable.hint}</code>
+                </p>
+                <div className="space-y-2">
+                  {deliverable.fields.length === 0 ? (
+                    <p className="text-xs text-graphite">No fields needed — the date is filled automatically.</p>
+                  ) : (
+                    deliverable.fields.map((field) => (
+                      <div key={field.id} className="grid grid-cols-[120px_1fr] items-center gap-2">
+                        <label className="text-xs font-semibold text-graphite">
+                          {field.label}
+                          {field.required ? <span className="text-red-600"> *</span> : null}
+                        </label>
+                        {field.type === "dropdown" ? (
+                          <SelectMenu
+                            onChange={(value) => setValues((current) => ({ ...current, [field.id]: value }))}
+                            options={[{ label: "—", value: "" }, ...(field.options ?? []).map((option) => ({ label: option, value: option }))]}
+                            size="sm"
+                            value={values[field.id] ?? ""}
+                          />
+                        ) : (
+                          <input
+                            className="h-8 w-full rounded-lg border border-mist bg-white px-2 text-sm outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+                            onChange={(event) => setValues((current) => ({ ...current, [field.id]: event.target.value }))}
+                            placeholder={field.placeholder}
+                            value={values[field.id] ?? ""}
+                          />
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                <div className="mt-4 rounded-xl border border-mist bg-porcelain/40 p-3">
+                  <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-graphite/60">Project folder</div>
+                  <div className="break-words font-mono text-sm font-semibold text-ink">{preview || "—"}</div>
+                </div>
+
+                <div className="mt-auto flex items-center justify-end gap-2 pt-4">
+                  <button
+                    className="inline-flex h-9 items-center rounded-xl border border-mist bg-white px-3 text-sm font-semibold text-graphite transition hover:bg-porcelain"
+                    onClick={onClose}
+                    type="button"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-signal px-4 text-sm font-semibold text-paper transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-40"
+                    disabled={missingRequired}
+                    onClick={() => onApply(deliverable, values)}
+                    type="button"
+                  >
+                    <Check size={15} />
+                    Use this name
+                  </button>
+                </div>
+              </>
+            ) : null}
+          </div>
+        </div>
+      </section>
     </div>
   );
 }
@@ -2653,6 +3169,42 @@ function MultiSelectParameter({
   );
 }
 
+const FILE_KIND_FILTERS: { kind: ScanFileKind; label: string }[] = [
+  { kind: "footage", label: "Footage" },
+  { kind: "photo", label: "Photos" },
+  { kind: "audio", label: "Audio" },
+  { kind: "document", label: "Docs" },
+];
+
+// A clickable column header for the file list — file-explorer style: click to sort
+// by that column, click again to flip direction; the active column shows an arrow.
+function SortHeaderButton({
+  label,
+  active,
+  direction,
+  onClick,
+  align,
+}: {
+  label: string;
+  active: boolean;
+  direction: FilePickerSortDirection;
+  onClick: () => void;
+  align?: "right";
+}) {
+  return (
+    <button
+      className={`inline-flex items-center gap-1 ${align === "right" ? "justify-self-end" : ""} ${
+        active ? "text-ink" : "text-graphite hover:text-ink"
+      }`}
+      onClick={onClick}
+      type="button"
+    >
+      {label}
+      {active ? direction === "asc" ? <ChevronUp size={12} /> : <ChevronDown size={12} /> : null}
+    </button>
+  );
+}
+
 function FileSelectionDialog({
   availableCount,
   defaultThumbnailSize,
@@ -2686,9 +3238,50 @@ function FileSelectionDialog({
   const [thumbnailSize, setThumbnailSize] = useState(defaultThumbnailSize);
   const [sortMode, setSortMode] = useState<FilePickerSortMode>("date");
   const [sortDirection, setSortDirection] = useState<FilePickerSortDirection>("desc");
-  const sourceGroups = useMemo(() => groupManifestFiles(files, sortMode, sortDirection), [files, sortDirection, sortMode]);
+  const [search, setSearch] = useState("");
+  const [kindFilter, setKindFilter] = useState<Set<ScanFileKind>>(new Set());
+  const filteredFiles = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    return files.filter((file) => {
+      if (needle && !file.file_name.toLowerCase().includes(needle)) {
+        return false;
+      }
+      // Sidecars ride along with their parent media, so the kind filter ignores them.
+      if (kindFilter.size > 0 && file.kind !== "sidecar" && !kindFilter.has(file.kind)) {
+        return false;
+      }
+      return true;
+    });
+  }, [files, kindFilter, search]);
+  const sourceGroups = useMemo(
+    () => groupManifestFiles(filteredFiles, sortMode, sortDirection),
+    [filteredFiles, sortDirection, sortMode],
+  );
   const selectableFileKeys = useMemo(() => flattenSelectableFileKeys(sourceGroups), [sourceGroups]);
   const highlightedCount = highlightedFileKeys.size;
+  const filteredOut = files.length - filteredFiles.length;
+
+  function handleSort(mode: FilePickerSortMode) {
+    if (mode === sortMode) {
+      setSortDirection((current) => (current === "asc" ? "desc" : "asc"));
+    } else {
+      setSortMode(mode);
+      // Sensible default direction per column: newest/largest first, names A→Z.
+      setSortDirection(mode === "date" || mode === "size" ? "desc" : "asc");
+    }
+  }
+
+  function toggleKindFilter(kind: ScanFileKind) {
+    setKindFilter((current) => {
+      const next = new Set(current);
+      if (next.has(kind)) {
+        next.delete(kind);
+      } else {
+        next.add(kind);
+      }
+      return next;
+    });
+  }
 
   useEffect(() => {
     setHighlightedFileKeys((current) => new Set([...current].filter((key) => selectableFileKeys.includes(key))));
@@ -2744,26 +3337,30 @@ function FileSelectionDialog({
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <div className="w-36">
-              <SelectMenu
-                onChange={(value) => setSortMode(value as FilePickerSortMode)}
-                options={[
-                  { label: "Date", value: "date" },
-                  { label: "Name", value: "name" },
-                  { label: "Type", value: "type" },
-                  { label: "Size", value: "size" },
-                ]}
-                size="sm"
-                value={sortMode}
-              />
-            </div>
-            <button
-              className="h-8 rounded-lg border border-mist bg-white px-2 text-xs font-semibold text-graphite transition hover:bg-porcelain"
-              onClick={() => setSortDirection((current) => (current === "asc" ? "desc" : "asc"))}
-              type="button"
-            >
-              {sortDirectionLabel(sortMode, sortDirection)}
-            </button>
+            {viewMode === "thumbs" ? (
+              <>
+                <div className="w-36">
+                  <SelectMenu
+                    onChange={(value) => setSortMode(value as FilePickerSortMode)}
+                    options={[
+                      { label: "Date", value: "date" },
+                      { label: "Name", value: "name" },
+                      { label: "Type", value: "type" },
+                      { label: "Size", value: "size" },
+                    ]}
+                    size="sm"
+                    value={sortMode}
+                  />
+                </div>
+                <button
+                  className="h-8 rounded-lg border border-mist bg-white px-2 text-xs font-semibold text-graphite transition hover:bg-porcelain"
+                  onClick={() => setSortDirection((current) => (current === "asc" ? "desc" : "asc"))}
+                  type="button"
+                >
+                  {sortDirectionLabel(sortMode, sortDirection)}
+                </button>
+              </>
+            ) : null}
             <div className="flex overflow-hidden rounded-lg border border-mist bg-white">
               <button
                 className={`inline-flex h-8 items-center gap-1 px-2 text-xs font-semibold transition ${
@@ -2824,6 +3421,59 @@ function FileSelectionDialog({
             </button>
           </div>
         </div>
+
+        <div className="flex flex-wrap items-center gap-2 border-b border-mist bg-porcelain/30 px-4 py-2">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-graphite/60" size={13} />
+            <input
+              className="h-8 w-52 rounded-lg border border-mist bg-white pl-7 pr-2 text-xs outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Filter by name…"
+              value={search}
+            />
+          </div>
+          <div className="flex items-center gap-1">
+            {FILE_KIND_FILTERS.map(({ kind, label }) => (
+              <button
+                key={kind}
+                className={`h-8 rounded-lg border px-2 text-xs font-semibold transition ${
+                  kindFilter.has(kind)
+                    ? "border-signal bg-signal text-paper"
+                    : "border-mist bg-white text-graphite hover:bg-porcelain"
+                }`}
+                onClick={() => toggleKindFilter(kind)}
+                type="button"
+              >
+                {label}
+              </button>
+            ))}
+            {kindFilter.size > 0 || search.trim() ? (
+              <button
+                className="h-8 rounded-lg px-2 text-xs font-semibold text-graphite underline-offset-2 hover:underline"
+                onClick={() => {
+                  setSearch("");
+                  setKindFilter(new Set());
+                }}
+                type="button"
+              >
+                Clear
+              </button>
+            ) : null}
+          </div>
+          {filteredOut > 0 ? (
+            <span className="text-[11px] font-medium text-graphite/70">{filteredOut} hidden by filters</span>
+          ) : null}
+        </div>
+
+        {viewMode === "list" ? (
+          <div className="grid grid-cols-[26px_82px_1fr_128px_96px] items-center gap-2 border-b border-mist bg-white px-4 py-1.5 text-[11px] font-semibold">
+            <span />
+            <SortHeaderButton active={sortMode === "type"} direction={sortDirection} label="Type" onClick={() => handleSort("type")} />
+            <SortHeaderButton active={sortMode === "name"} direction={sortDirection} label="Name" onClick={() => handleSort("name")} />
+            <SortHeaderButton active={sortMode === "date"} direction={sortDirection} label="Date" onClick={() => handleSort("date")} />
+            <SortHeaderButton active={sortMode === "size"} align="right" direction={sortDirection} label="Size" onClick={() => handleSort("size")} />
+          </div>
+        ) : null}
 
         <div className="min-h-0 flex-1 overflow-auto bg-white">
           {sourceGroups.map((sourceGroup) => (
@@ -3090,10 +3740,10 @@ function SummaryTile({
           ? "text-red-600"
           : "text-ink";
   return (
-    <div className="rounded-xl border border-mist bg-white px-3 py-2">
+    <div className="min-w-0 rounded-xl border border-mist bg-white px-3 py-2">
       <div className="text-xs font-semibold text-graphite">{label}</div>
-      <div className={`mt-1 truncate text-lg font-semibold ${valueClass}`}>{value}</div>
-      {sub ? <div className="truncate text-[10px] font-medium text-graphite/70">{sub}</div> : null}
+      <div className={`mt-1 text-lg font-semibold leading-tight break-words ${valueClass}`}>{value}</div>
+      {sub ? <div className="break-words text-[10px] font-medium text-graphite/70">{sub}</div> : null}
     </div>
   );
 }
@@ -3534,6 +4184,7 @@ function aggregateSourceScans(sourceScans: SourceScanEntry[]): SourceScan | null
     extensions: Array.from(extensionMap.values()).sort((a, b) => a.extension.localeCompare(b.extension)),
     kinds: Array.from(kindMap.values()),
     files,
+    unreadable_paths: sourceScans.flatMap((entry) => entry.scan.unreadable_paths),
   };
 }
 
@@ -3632,16 +4283,12 @@ function groupManifestFiles(
 
   return Array.from(sourceMap.entries()).map(([sourcePath, sourceFiles]) => {
     const sortedFiles = sortManifestFiles(sourceFiles, sortMode, sortDirection);
-    const days = [
-      {
-        dayKey: "sorted",
-        fileCount: sortedFiles.filter((file) => !file.disabled).length,
-        files: sortedFiles,
-        label: `${sortModeLabel(sortMode)} / ${sortDirectionLabel(sortMode, sortDirection)}`,
-        selectableKeys: sortedFiles.filter((file) => !file.disabled).map((file) => file.sourceKey),
-        sizeBytes: sortedFiles.reduce((sum, file) => sum + (file.disabled ? 0 : file.size_bytes), 0),
-      },
-    ];
+    // When sorting by date, break the list into calendar-day groups (Today /
+    // Yesterday / weekday / date); otherwise keep one group for the whole source.
+    const days =
+      sortMode === "date"
+        ? buildDayGroups(sortedFiles)
+        : [makeDayGroup("sorted", `${sortModeLabel(sortMode)} / ${sortDirectionLabel(sortMode, sortDirection)}`, sortedFiles)];
 
     return {
       days,
@@ -3652,6 +4299,65 @@ function groupManifestFiles(
       sourcePath,
     };
   });
+}
+
+function makeDayGroup(dayKey: string, label: string, files: ManifestFile[]): ManifestDayGroup {
+  const selectable = files.filter((file) => !file.disabled);
+  return {
+    dayKey,
+    label,
+    files,
+    fileCount: selectable.length,
+    selectableKeys: selectable.map((file) => file.sourceKey),
+    sizeBytes: files.reduce((sum, file) => sum + (file.disabled ? 0 : file.size_bytes), 0),
+  };
+}
+
+// Buckets an already-sorted file list by shot/modified calendar day, preserving the
+// incoming order so day groups appear newest→oldest (or oldest→newest) to match sort.
+function buildDayGroups(sortedFiles: ManifestFile[]): ManifestDayGroup[] {
+  const order: string[] = [];
+  const buckets = new Map<string, ManifestFile[]>();
+  for (const file of sortedFiles) {
+    const date = dateFromTimestamp(file.modified_at);
+    const key = date ? dayKeyForDate(date) : "unknown";
+    if (!buckets.has(key)) {
+      buckets.set(key, []);
+      order.push(key);
+    }
+    buckets.get(key)!.push(file);
+  }
+  return order.map((key) => {
+    const dayFiles = buckets.get(key)!;
+    const sample = dayFiles.find((file) => dateFromTimestamp(file.modified_at));
+    return makeDayGroup(key, key === "unknown" ? "Unknown date" : dayLabelForDate(sample?.modified_at), dayFiles);
+  });
+}
+
+function dayKeyForDate(date: Date) {
+  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+}
+
+// "Today" / "Yesterday" for the last 48h, weekday within the past week, else a date.
+function dayLabelForDate(value?: string | null) {
+  const date = dateFromTimestamp(value);
+  if (!date) {
+    return "Unknown date";
+  }
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const diffDays = Math.round((startOfToday.getTime() - startOfDate.getTime()) / 86_400_000);
+  if (diffDays === 0) {
+    return "Today";
+  }
+  if (diffDays === 1) {
+    return "Yesterday";
+  }
+  if (diffDays > 1 && diffDays < 7) {
+    return date.toLocaleDateString(undefined, { weekday: "long" });
+  }
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
 function flattenSelectableFileKeys(sourceGroups: ManifestSourceGroup[]) {

@@ -2,6 +2,25 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{OnceLock, RwLock};
+
+/// User-defined extension -> kind overrides, set from app settings. Lets the team
+/// permanently classify extra file types into a role (e.g. add ".foo" to Audio) so
+/// they route to that role's folder everywhere. Read on every classification.
+fn custom_kinds() -> &'static RwLock<BTreeMap<String, ScanFileKind>> {
+    static CELL: OnceLock<RwLock<BTreeMap<String, ScanFileKind>>> = OnceLock::new();
+    CELL.get_or_init(|| RwLock::new(BTreeMap::new()))
+}
+
+pub fn set_custom_kinds(entries: BTreeMap<String, ScanFileKind>) {
+    if let Ok(mut guard) = custom_kinds().write() {
+        *guard = entries;
+    }
+}
+
+fn custom_kind_for(extension: &str) -> Option<ScanFileKind> {
+    custom_kinds().read().ok().and_then(|guard| guard.get(extension).copied())
+}
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct SourceScan {
@@ -14,6 +33,10 @@ pub struct SourceScan {
     pub extensions: Vec<ExtensionSummary>,
     pub kinds: Vec<KindSummary>,
     pub files: Vec<ScannedFile>,
+    /// Paths that could not be read during the scan (e.g. permission denied on a
+    /// server share). Collected instead of aborting so the rest of the scan
+    /// completes; surfaced to the user as "N items skipped (no access)".
+    pub unreadable_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -89,6 +112,7 @@ pub fn scan_source(source_path: &str) -> Result<SourceScan, String> {
     let mut total_bytes = 0;
     let mut files = Vec::<ScannedFile>::new();
     let mut extensions = BTreeMap::<(ScanFileKind, String), ExtensionAccumulator>::new();
+    let mut unreadable_paths = Vec::<String>::new();
     scan_directory(
         &root,
         &root,
@@ -96,8 +120,17 @@ pub fn scan_source(source_path: &str) -> Result<SourceScan, String> {
         &mut total_bytes,
         &mut extensions,
         &mut files,
+        &mut unreadable_paths,
         None,
-    )?;
+    );
+    // If we couldn't read the top-level folder at all (and found nothing), that's a
+    // hard error worth surfacing; partial-access scans succeed with a skipped count.
+    if files.is_empty() && total_files == 0 && unreadable_paths.iter().any(|path| path == &root.to_string_lossy()) {
+        return Err(format!(
+            "'{}' could not be read (permission denied).",
+            root.display()
+        ));
+    }
     pair_sidecars(&mut files);
     attach_scan_thumbnails(&mut files);
 
@@ -158,6 +191,7 @@ pub fn scan_source(source_path: &str) -> Result<SourceScan, String> {
         extensions,
         kinds,
         files,
+        unreadable_paths,
     })
 }
 
@@ -175,16 +209,45 @@ fn scan_directory(
     total_bytes: &mut u64,
     extensions: &mut BTreeMap<(ScanFileKind, String), ExtensionAccumulator>,
     files: &mut Vec<ScannedFile>,
+    unreadable: &mut Vec<String>,
     forced_kind: Option<ScanFileKind>,
-) -> Result<(), String> {
-    for entry in
-        fs::read_dir(directory).map_err(|error| format!("{}: {error}", directory.display()))?
-    {
-        let entry = entry.map_err(|error| error.to_string())?;
+) {
+    // A folder we can't open (permission denied, offline share, etc.) is recorded and
+    // skipped rather than aborting the whole scan.
+    let read_dir = match fs::read_dir(directory) {
+        Ok(read_dir) => read_dir,
+        Err(_) => {
+            unreadable.push(directory.to_string_lossy().to_string());
+            return;
+        }
+    };
+
+    for entry in read_dir {
+        let Ok(entry) = entry else {
+            continue;
+        };
         let path = entry.path();
-        let metadata = entry
-            .metadata()
-            .map_err(|error| format!("{}: {error}", path.display()))?;
+
+        // Resolve the entry type WITHOUT following symlinks, then skip symlinks
+        // entirely so a scan can't escape the chosen tree or loop on a self-link.
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(_) => {
+                unreadable.push(path.to_string_lossy().to_string());
+                continue;
+            }
+        };
+        if file_type.is_symlink() {
+            continue;
+        }
+
+        let metadata = match entry.metadata() {
+            Ok(metadata) => metadata,
+            Err(_) => {
+                unreadable.push(path.to_string_lossy().to_string());
+                continue;
+            }
+        };
 
         if metadata.is_dir() {
             if is_skipped_directory(&path) {
@@ -198,8 +261,9 @@ fn scan_directory(
                 total_bytes,
                 extensions,
                 files,
+                unreadable,
                 child_forced_kind,
-            )?;
+            );
             continue;
         }
 
@@ -238,8 +302,6 @@ fn scan_directory(
             thumbnail_path: None,
         });
     }
-
-    Ok(())
 }
 
 fn attach_scan_thumbnails(files: &mut [ScannedFile]) {
@@ -418,6 +480,11 @@ fn classify_file(path: &Path, extension: &str) -> ScanFileKind {
 
     if is_ignored_file(file_name) {
         return ScanFileKind::Ignored;
+    }
+
+    // A user-configured extension override wins over the built-in classification.
+    if let Some(kind) = custom_kind_for(extension) {
+        return kind;
     }
 
     match extension {
@@ -617,6 +684,48 @@ mod tests {
             item.relative_path == "A.XML" && item.sidecar_for.as_deref() == Some("A.MP4")
         }));
 
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn normal_scan_reports_no_unreadable_paths() {
+        let workspace = unique_temp_dir("ingest_pilot_scan_clean");
+        fs::create_dir_all(&workspace).expect("dir");
+        fs::write(workspace.join("A.MP4"), vec![0; 4]).expect("mp4");
+
+        let scan = scan_source(&workspace.to_string_lossy()).expect("scan succeeds");
+        assert!(scan.unreadable_paths.is_empty());
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    // A folder we can't open must be skipped and recorded, not abort the whole scan.
+    // Only meaningful where permission bits are enforced (Unix); Windows CI skips it.
+    #[cfg(unix)]
+    #[test]
+    fn skips_and_records_unreadable_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let workspace = unique_temp_dir("ingest_pilot_scan_denied");
+        fs::create_dir_all(&workspace).expect("root");
+        fs::write(workspace.join("Readable.MP4"), vec![0; 8]).expect("mp4");
+        let locked = workspace.join("NoAccess");
+        fs::create_dir_all(&locked).expect("locked dir");
+        fs::write(locked.join("Secret.MP4"), vec![0; 16]).expect("secret");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).expect("chmod");
+
+        let scan = scan_source(&workspace.to_string_lossy()).expect("scan still succeeds");
+
+        // The readable file is found; the locked folder is skipped + recorded.
+        assert!(scan.files.iter().any(|file| file.relative_path == "Readable.MP4"));
+        assert!(scan.files.iter().all(|file| file.relative_path != "NoAccess/Secret.MP4"));
+        assert!(scan
+            .unreadable_paths
+            .iter()
+            .any(|path| path.ends_with("NoAccess")));
+
+        // Restore perms so cleanup can remove the tree.
+        let _ = fs::set_permissions(&locked, fs::Permissions::from_mode(0o755));
         let _ = fs::remove_dir_all(workspace);
     }
 

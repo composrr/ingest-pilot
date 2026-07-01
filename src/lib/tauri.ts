@@ -1,6 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { createShippedPresets } from "./presetFactory";
-import type { AppSettings, FolderNode, Preset, PresetSummary, TokenContext } from "./types";
+import type {
+  AppSettings,
+  FolderNode,
+  MetadataPreset,
+  MetadataPresetSummary,
+  Preset,
+  PresetSummary,
+  TokenContext,
+} from "./types";
 
 const shippedPresetSeedKey = "ingest-pilot:shipped-presets-seeded";
 
@@ -30,6 +38,7 @@ export const defaultAppSettings: AppSettings = {
     group_by_date: true,
   },
   operator_name: "",
+  custom_file_kinds: {},
 };
 
 export type DroppedTemplateItems = {
@@ -82,6 +91,7 @@ export type SourceScan = {
   extensions: ExtensionSummary[];
   kinds: KindSummary[];
   files: ScannedFile[];
+  unreadable_paths: string[];
 };
 
 export type CameraSource = {
@@ -209,6 +219,31 @@ export async function inspectTemplateDrop(paths: string[]) {
 
 export async function filterDirectories(paths: string[]) {
   return invoke<string[]>("filter_directories", { paths });
+}
+
+export async function listMetadataPresets() {
+  return invoke<MetadataPresetSummary[]>("list_metadata_presets");
+}
+
+export async function getMetadataPreset(id: string) {
+  return invoke<MetadataPreset | null>("get_metadata_preset", { id });
+}
+
+export async function saveMetadataPreset(preset: MetadataPreset) {
+  return invoke<MetadataPresetSummary>("save_metadata_preset", { preset });
+}
+
+export async function deleteMetadataPreset(id: string) {
+  return invoke<void>("delete_metadata_preset", { id });
+}
+
+export async function exportMetadataManifest(
+  rootPath: string,
+  copiedFiles: CopiedFile[],
+  preset: MetadataPreset,
+  values: Record<string, string>,
+) {
+  return invoke<string>("export_metadata_manifest", { rootPath, copiedFiles, preset, values });
 }
 
 export async function previewPattern(pattern: string, context: TokenContext) {

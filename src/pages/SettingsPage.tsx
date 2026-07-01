@@ -1,4 +1,4 @@
-import { Plus, Save, Trash2 } from "lucide-react";
+import { Plus, RefreshCw, Save, Trash2, X } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import { FloatingHelp } from "../components/FloatingHelp";
 import { OptionsTextField } from "../components/OptionsTextField";
@@ -6,6 +6,7 @@ import { SelectMenu } from "../components/SelectMenu";
 import { currentLocalDate, slugifyToken } from "../lib/parameters";
 import { defaultAppSettings, getSettings, saveSettings } from "../lib/tauri";
 import type { AppSettings, PresetVariable, VariableType } from "../lib/types";
+import { checkForUpdate } from "../lib/updater";
 import { useAppStore } from "../stores/appStore";
 
 const variableTypes: Array<{ value: VariableType; label: string }> = [
@@ -21,6 +22,9 @@ export function SettingsPage() {
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const setLastAction = useAppStore((state) => state.setLastAction);
+  const setPendingUpdate = useAppStore((state) => state.setPendingUpdate);
+  const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "uptodate" | "error">("idle");
+  const [updateError, setUpdateError] = useState<string | null>(null);
 
   useEffect(() => {
     getSettings()
@@ -82,6 +86,26 @@ export function SettingsPage() {
       setLastAction("Settings save failed");
     } finally {
       setIsSaving(false);
+    }
+  }
+
+  async function checkUpdates() {
+    setUpdateStatus("checking");
+    setUpdateError(null);
+    try {
+      const update = await checkForUpdate();
+      if (update) {
+        setPendingUpdate(update);
+        setUpdateStatus("idle");
+        setLastAction(`Update v${update.version} available`);
+      } else {
+        setUpdateStatus("uptodate");
+        setLastAction("No updates found");
+      }
+    } catch (caught) {
+      setUpdateStatus("error");
+      setUpdateError(String(caught));
+      setLastAction("Update check failed");
     }
   }
 
@@ -278,7 +302,64 @@ export function SettingsPage() {
               }
             />
           </SettingsSection>
+
+          <SettingsSection
+            help="Ingest Pilot checks for updates on launch and asks before installing. You can also check manually here."
+            title="About & Updates"
+          >
+            <div className="grid min-h-10 grid-cols-[1fr_auto] items-center gap-3 px-3 py-1.5">
+              <span className="min-w-0">
+                <span className="block text-xs font-semibold text-ink">Current version</span>
+                <span
+                  className={`block truncate text-[11px] ${
+                    updateStatus === "error" ? "text-red-700" : "text-graphite"
+                  }`}
+                >
+                  {updateStatus === "checking"
+                    ? "Checking for updates…"
+                    : updateStatus === "uptodate"
+                      ? "You’re on the latest version."
+                      : updateStatus === "error"
+                        ? (updateError ?? "Update check failed.")
+                        : "Updates install with your approval, then restart the app."}
+                </span>
+              </span>
+              <span className="flex items-center gap-2">
+                <span className="font-mono text-xs font-semibold text-graphite">v{__APP_VERSION__}</span>
+                <button
+                  className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-mist bg-white px-2.5 text-xs font-semibold text-graphite transition hover:bg-porcelain disabled:opacity-50"
+                  disabled={updateStatus === "checking"}
+                  onClick={() => void checkUpdates()}
+                  type="button"
+                >
+                  <RefreshCw className={updateStatus === "checking" ? "animate-spin" : ""} size={14} />
+                  Check for updates
+                </button>
+              </span>
+            </div>
+          </SettingsSection>
         </div>
+
+        <section className="min-h-0 overflow-visible rounded-2xl border border-mist bg-white xl:col-span-2">
+          <div className="flex min-h-12 items-center justify-between gap-3 border-b border-mist px-3 py-2">
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5">
+                <h2 className="text-sm font-semibold">Custom File Types</h2>
+                <FloatingHelp label="Custom file types help">
+                  Permanently classify extra extensions into a media role. Anything you add is treated as that role
+                  everywhere — scans, routing to the role's folder, and reports. Save to apply.
+                </FloatingHelp>
+              </div>
+              <p className="mt-0.5 text-[11px] font-medium text-graphite">
+                Give an unusual extension a role so it lands with the rest of that media type.
+              </p>
+            </div>
+          </div>
+          <CustomFileKindsEditor
+            onChange={(custom_file_kinds) => updateSettings({ custom_file_kinds })}
+            value={settings.custom_file_kinds}
+          />
+        </section>
 
         <section className="min-h-0 overflow-visible rounded-2xl border border-mist bg-white xl:col-span-2">
             <div className="flex min-h-12 items-center justify-between gap-3 border-b border-mist px-3 py-2">
@@ -561,4 +642,134 @@ function defaultForVariableType(type: VariableType) {
 function dateDefaultInputValue(value: PresetVariable["default"]) {
   const defaultValue = typeof value === "string" ? value.trim() : "";
   return !defaultValue || defaultValue.toLowerCase() === "today" ? currentLocalDate() : defaultValue;
+}
+
+const FILE_KIND_OPTIONS: { label: string; value: string }[] = [
+  { label: "Footage", value: "footage" },
+  { label: "Audio", value: "audio" },
+  { label: "Photos", value: "photo" },
+  { label: "Docs", value: "document" },
+];
+
+// Built-in extensions per kind (mirrors the Rust scanner) so the user can see what's
+// already classified before adding their own.
+const BUILTIN_KIND_EXTENSIONS: Record<string, string[]> = {
+  footage: [".mp4", ".mov", ".mxf", ".avi", ".m4v", ".mts", ".m2ts", ".braw", ".r3d", ".crm", ".cine"],
+  audio: [".wav", ".mp3", ".aif", ".aiff", ".m4a", ".flac"],
+  photo: [".jpg", ".jpeg", ".png", ".heic", ".tif", ".tiff", ".cr2", ".nef", ".arw", ".dng", ".raw", ".orf", ".rw2"],
+  document: [".pdf", ".txt", ".doc", ".docx", ".csv", ".xlsx", ".xls", ".rtf"],
+};
+
+function normalizeExtension(value: string): string | null {
+  const trimmed = value.trim().toLowerCase().replace(/\s+/g, "");
+  if (!trimmed) {
+    return null;
+  }
+  const withDot = trimmed.startsWith(".") ? trimmed : `.${trimmed}`;
+  return /^\.[a-z0-9]+$/.test(withDot) ? withDot : null;
+}
+
+// Lets the user permanently map extra extensions into a media role. A role selector at
+// the top-left drives two panels: the built-in extensions already covered for that role
+// (left) and the custom ones the user is adding for it (right). Stored in
+// settings.custom_file_kinds (ext -> kind) and applied globally.
+function CustomFileKindsEditor({
+  value,
+  onChange,
+}: {
+  value: Record<string, string>;
+  onChange: (next: Record<string, string>) => void;
+}) {
+  const [selectedKind, setSelectedKind] = useState("audio");
+  const [newExtension, setNewExtension] = useState("");
+
+  const kindLabel = FILE_KIND_OPTIONS.find((option) => option.value === selectedKind)?.label ?? "";
+  const kindAliases =
+    selectedKind === "photo" ? ["photo", "photos"] : selectedKind === "document" ? ["document", "documents"] : [selectedKind];
+  const customForKind = Object.entries(value)
+    .filter(([, kind]) => kindAliases.includes(kind))
+    .map(([extension]) => extension)
+    .sort();
+
+  function addExtension() {
+    const extension = normalizeExtension(newExtension);
+    setNewExtension("");
+    if (extension) {
+      onChange({ ...value, [extension]: selectedKind });
+    }
+  }
+
+  function removeExtension(extension: string) {
+    const next = { ...value };
+    delete next[extension];
+    onChange(next);
+  }
+
+  return (
+    <div className="grid gap-3 p-3 md:grid-cols-2">
+      <div>
+        <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-graphite/50">File type</div>
+        <SelectMenu onChange={setSelectedKind} options={FILE_KIND_OPTIONS} size="sm" value={selectedKind} />
+        <div className="mt-2 rounded-lg border border-mist bg-porcelain/25 p-2">
+          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-graphite/50">Already included</div>
+          <div className="flex flex-wrap gap-1">
+            {BUILTIN_KIND_EXTENSIONS[selectedKind].map((extension) => (
+              <span key={extension} className="rounded-md bg-white px-1.5 py-0.5 text-[11px] font-semibold text-graphite ring-1 ring-mist">
+                {extension}
+              </span>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-graphite/50">Custom {kindLabel.toLowerCase()} types</div>
+        <div className="min-h-[52px] rounded-lg border border-mist bg-white p-2">
+          <div className="flex flex-wrap gap-1">
+            {customForKind.map((extension) => (
+              <span
+                key={extension}
+                className="inline-flex items-center gap-1 rounded-md bg-porcelain py-0.5 pl-2 pr-1 text-[11px] font-semibold text-ink"
+              >
+                {extension}
+                <button
+                  aria-label={`Remove ${extension}`}
+                  className="rounded p-0.5 text-graphite/60 transition hover:text-red-700"
+                  onClick={() => removeExtension(extension)}
+                  type="button"
+                >
+                  <X size={11} />
+                </button>
+              </span>
+            ))}
+            {customForKind.length === 0 ? (
+              <span className="text-[11px] text-graphite/50">None yet — add {kindLabel.toLowerCase()} types below.</span>
+            ) : null}
+          </div>
+        </div>
+        <div className="mt-2 flex items-center gap-1.5">
+          <input
+            className="h-8 flex-1 rounded-lg border border-mist bg-white px-2 text-sm outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+            onChange={(event) => setNewExtension(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                addExtension();
+              }
+            }}
+            placeholder=".ext"
+            value={newExtension}
+          />
+          <button
+            className="inline-flex h-8 items-center gap-1 rounded-lg border border-mist bg-white px-2.5 text-xs font-semibold text-graphite transition hover:bg-porcelain"
+            onClick={addExtension}
+            type="button"
+          >
+            <Plus size={13} />
+            Add type
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }

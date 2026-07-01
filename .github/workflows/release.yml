@@ -1,11 +1,19 @@
 name: Release
 
-# Builds installers for macOS (universal), Windows, and Linux and attaches them
-# to a GitHub Release. Push a version tag (e.g. `git tag v0.1.3 && git push origin
-# v0.1.3`) and this runs automatically — no need to build on each OS by hand.
+# Builds installers for macOS (universal), Windows, and Linux, signs them for the
+# auto-updater, and publishes them (plus latest.json) to the PUBLIC releases repo
+# composrr/ingest-pilot-releases. Source stays private; the app fetches updates
+# from the public repo with no auth. Push a version tag (e.g. `git tag v0.1.4 &&
+# git push origin v0.1.4`) and this runs automatically.
 #
 # You can also trigger it manually (Actions -> Release -> Run workflow) for a tag
 # that already exists; tauri-action appends the built installers to that release.
+#
+# Required repository secrets (see docs/AUTO_UPDATE.md for the one-time setup):
+#   RELEASES_TOKEN                     PAT with contents:write on the releases repo
+#   TAURI_SIGNING_PRIVATE_KEY          contents of ~/.tauri/ingest-pilot-updater.key
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD empty string (the key was generated with no password)
+# The releases repo must exist and have an initial commit on its `main` branch.
 
 on:
   push:
@@ -78,14 +86,53 @@ jobs:
       - name: Install JS dependencies
         run: npm ci
 
+      - name: Prepare release notes
+        id: notes
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          VERSION="${TAG#v}"
+          NOTES_FILE="$(mktemp)"
+          # Pull the changelog section for this version out of CHANGELOG.md:
+          # everything between "## [VERSION]" (or "## VERSION") and the next "## ".
+          if [ -f CHANGELOG.md ]; then
+            awk -v ver="$VERSION" '
+              $0 ~ "^## \\[?" ver "\\]?([^0-9]|$)" { grab=1; next }
+              grab && /^## / { exit }
+              grab { print }
+            ' CHANGELOG.md > "$NOTES_FILE"
+          fi
+          # Fall back to a generic note so latest.json always has a body.
+          if [ ! -s "$NOTES_FILE" ]; then
+            printf "Ingest Pilot %s\n\nThis release includes general improvements and fixes.\n" "$VERSION" > "$NOTES_FILE"
+          fi
+          {
+            echo "body<<__NOTES_EOF__"
+            cat "$NOTES_FILE"
+            echo "__NOTES_EOF__"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build and publish release
         uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # PAT with contents:write on the PUBLIC releases repo (cross-repo publish).
+          GITHUB_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          # Updater signing (minisign). The password is empty by design — the
+          # secret value itself is the protection. See docs/AUTO_UPDATE.md.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
+          # Publish installers + latest.json to the public releases repo so the
+          # updater can fetch them without auth, while source stays private.
+          owner: composrr
+          repo: ingest-pilot-releases
+          releaseCommitish: main
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: Ingest Pilot ${{ github.event.inputs.tag || github.ref_name }}
-          releaseBody: "Download the installer for your platform from the assets below."
+          releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: false
           prerelease: false
+          # Point the updater at the NSIS (setup.exe) bundle on Windows so the
+          # "passive" install mode applies.
+          updaterJsonPreferNsis: true
           args: ${{ matrix.args }}

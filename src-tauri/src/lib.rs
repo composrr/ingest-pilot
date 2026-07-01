@@ -9,6 +9,15 @@ pub fn run() {
     tauri::Builder::default()
         .manage(commands::ingest::IngestJobs::default())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_process::init())
+        .setup(|app| {
+            // The auto-updater is desktop-only. Registered here (rather than in the
+            // builder chain) so it can be `#[cfg(desktop)]`-gated cleanly.
+            #[cfg(desktop)]
+            app.handle()
+                .plugin(tauri_plugin_updater::Builder::new().build())?;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::system::greet,
             commands::system::open_path,
@@ -28,11 +37,16 @@ pub fn run() {
             commands::presets::duplicate_preset,
             commands::presets::import_folder_tree,
             commands::presets::inspect_template_drop,
+            commands::metadata_presets::list_metadata_presets,
+            commands::metadata_presets::get_metadata_preset,
+            commands::metadata_presets::save_metadata_preset,
+            commands::metadata_presets::delete_metadata_preset,
             commands::ingest::scaffold_project,
             commands::ingest::run_ingest,
             commands::ingest::retry_failed_copies,
             commands::ingest::generate_offload_proof,
             commands::ingest::export_reel_index,
+            commands::ingest::export_metadata_manifest,
             commands::ingest::cancel_ingest,
             commands::ingest::write_ingest_report,
             commands::ingest::generate_ingest_report,

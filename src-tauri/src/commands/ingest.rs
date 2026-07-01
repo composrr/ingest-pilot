@@ -4,6 +4,8 @@ use crate::ingest::copier::{
     attach_report_thumbnails, recopy_and_verify, run_ingest as run_ingest_copy, CopiedFile,
     IngestProgress, IngestResult, SkippedFile,
 };
+use crate::core::metadata_preset::MetadataPreset;
+use crate::ingest::metadata_manifest::write_metadata_manifest;
 use crate::ingest::offload_proof::{write_offload_proof, OffloadProofInput};
 use crate::ingest::reel_index::write_reel_index;
 use crate::ingest::report::{write_html_report, ReportInput};
@@ -173,6 +175,23 @@ pub async fn export_reel_index(
     })
     .await
     .map_err(|error| format!("Reel index worker failed: {error}"))?
+}
+
+/// Write a metadata manifest CSV (one row per clip, shoot-wide values) to the
+/// project root for bulk import into iconik.
+#[tauri::command]
+pub async fn export_metadata_manifest(
+    root_path: String,
+    copied_files: Vec<CopiedFile>,
+    preset: MetadataPreset,
+    values: BTreeMap<String, String>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = write_metadata_manifest(&root_path, &copied_files, &preset, &values)?;
+        Ok(path.to_string_lossy().to_string())
+    })
+    .await
+    .map_err(|error| format!("Metadata manifest worker failed: {error}"))?
 }
 
 #[tauri::command]

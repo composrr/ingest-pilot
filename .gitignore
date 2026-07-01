@@ -8,3 +8,7 @@
 *.log
 .DS_Store
 Thumbs.db
+
+# Updater signing keys — never commit these (keep them in ~/.tauri or CI secrets)
+*.key
+*.pem

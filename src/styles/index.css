@@ -163,3 +163,47 @@ select {
   font-size: 11px !important;
   line-height: 14px !important;
 }
+
+/* Token pattern field (Lightroom-style inline tokens): show a placeholder when
+   empty, and render token pills with a delete X that only appears on hover. */
+.token-field:empty::before {
+  content: attr(data-placeholder);
+  color: rgb(107 114 128 / 0.65);
+  pointer-events: none;
+}
+.token-pill {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  margin: 0 2px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: inset 0 0 0 1px var(--tw-ring-color, #e6e4ee);
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.token-pill.is-selected {
+  box-shadow: inset 0 0 0 2px #6d5ef0;
+  background: #efeaff;
+}
+.token-pill-x {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 9999px;
+  background: #1c1c22;
+  color: #fff;
+  font-size: 10px;
+  line-height: 1;
+}
+.token-pill:hover .token-pill-x {
+  display: inline-flex;
+}

@@ -54,7 +54,28 @@ pub fn resolve_pattern(pattern: &str, context: &TokenContext) -> Result<String, 
         index = end + 1;
     }
 
-    Ok(sanitize_path_component(&output))
+    Ok(collapse_separators(&sanitize_path_component(&output)))
+}
+
+/// Collapses runs of separator characters (`_` / `-`) down to a single one and
+/// trims them from the ends. This is what makes optional tokens "clean": when a
+/// blank token resolves to an empty string, the separators that were meant to sit
+/// on either side of it fold together (e.g. `Date_{blank}_Story` -> `Date_Story`,
+/// `Date_{blank}` -> `Date`) instead of leaving a stray or trailing underscore.
+fn collapse_separators(value: &str) -> String {
+    let mut result = String::with_capacity(value.len());
+    let mut previous_was_separator = false;
+    for character in value.chars() {
+        let is_separator = character == '_' || character == '-';
+        if is_separator && previous_was_separator {
+            continue;
+        }
+        result.push(character);
+        previous_was_separator = is_separator;
+    }
+    result
+        .trim_matches(|character| character == '_' || character == '-' || character == ' ')
+        .to_string()
 }
 
 fn resolve_token(token: &str, context: &TokenContext) -> Result<String, String> {
@@ -202,7 +223,27 @@ mod tests {
 
         let output = resolve_pattern("{story_name}", &context).expect("pattern resolves");
 
-        assert_eq!(output, "John_son_Smith_");
+        // Sanitized separators collapse and the trailing one is trimmed.
+        assert_eq!(output, "John_son_Smith");
+    }
+
+    #[test]
+    fn drops_separator_for_blank_optional_token() {
+        let mut context = sample_context();
+        // An optional descriptor variable the user left blank.
+        context
+            .variable_values
+            .insert("descriptor".to_string(), String::new());
+
+        // Blank token in the middle: the two underscores fold into one.
+        let middle = resolve_pattern("{date}_{descriptor}_{story_name}", &context)
+            .expect("pattern resolves");
+        assert_eq!(middle, "20260424_Johnson");
+
+        // Blank token at the end: no trailing underscore is left behind.
+        let trailing =
+            resolve_pattern("{date}_{story_name}_{descriptor}", &context).expect("pattern resolves");
+        assert_eq!(trailing, "20260424_Johnson");
     }
 
     #[test]

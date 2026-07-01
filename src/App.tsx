@@ -5,22 +5,24 @@ import {
   FolderTree,
   HardDriveDownload,
   Home,
-  LayoutDashboard,
   PanelLeftClose,
   PanelLeftOpen,
   Settings,
   Sparkles,
+  Tags,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { UpdateModal } from "./components/UpdateModal";
 import { Walkthrough } from "./components/Walkthrough";
 import { Dashboard } from "./pages/Dashboard";
 import { HelpPage } from "./pages/HelpPage";
 import { HistoryPage } from "./pages/HistoryPage";
-import { IngestConsolePreviewPage } from "./pages/IngestConsolePreviewPage";
 import { IngestPage } from "./pages/IngestPage";
+import { MetadataPage } from "./pages/MetadataPage";
 import { PresetsPage } from "./pages/PresetsPage";
 import { ScaffoldPage } from "./pages/ScaffoldPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { checkForUpdate } from "./lib/updater";
 import { useAppStore } from "./stores/appStore";
 
 const navItems = [
@@ -28,7 +30,7 @@ const navItems = [
   { icon: ClipboardList, label: "Presets", view: "presets" },
   { icon: FolderTree, label: "Create Folders", view: "scaffold" },
   { icon: HardDriveDownload, label: "Ingest Media", view: "ingest" },
-  { icon: LayoutDashboard, label: "Console Preview", view: "ingestPreview" },
+  { icon: Tags, label: "Metadata", view: "metadata" },
   { icon: Archive, label: "History", view: "history" },
   { icon: Settings, label: "Settings", view: "settings" },
 ] as const;
@@ -40,12 +42,31 @@ export function App() {
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(true);
   const [isWalkthroughOpen, setIsWalkthroughOpen] = useState(false);
   const setLastAction = useAppStore((state) => state.setLastAction);
+  const pendingUpdate = useAppStore((state) => state.pendingUpdate);
+  const setPendingUpdate = useAppStore((state) => state.setPendingUpdate);
+  const didCheckUpdate = useRef(false);
 
   useEffect(() => {
     if (localStorage.getItem("ingest-pilot:onboarding-complete") !== "true") {
       setIsWalkthroughOpen(true);
     }
   }, []);
+
+  useEffect(() => {
+    // Check once per launch. Failures are swallowed so a flaky connection never
+    // blocks startup; a newer signed release opens the changelog modal.
+    if (didCheckUpdate.current) {
+      return;
+    }
+    didCheckUpdate.current = true;
+    checkForUpdate()
+      .then((update) => {
+        if (update) {
+          setPendingUpdate(update);
+        }
+      })
+      .catch((error) => console.error("[updater] startup check failed:", error));
+  }, [setPendingUpdate]);
 
   function selectView(view: AppView) {
     setActiveView(view);
@@ -130,7 +151,13 @@ export function App() {
         </aside>
 
         <section className="flex min-w-0 flex-1 p-2 xl:p-3 2xl:p-4">
-          {renderView(activeView, selectView)}
+          {/* IngestPage stays mounted so its setup (sources, scans, selection,
+              queue, options) survives switching tabs within a session; it's just
+              hidden when another view is active. */}
+          <div className={activeView === "ingest" ? "flex min-w-0 flex-1" : "hidden"}>
+            <IngestPage />
+          </div>
+          {activeView !== "ingest" ? renderView(activeView, selectView) : null}
         </section>
       </div>
       {isWalkthroughOpen ? (
@@ -138,6 +165,9 @@ export function App() {
           onClose={() => setIsWalkthroughOpen(false)}
           onGoTo={(view) => selectView(view)}
         />
+      ) : null}
+      {pendingUpdate ? (
+        <UpdateModal onDismiss={() => setPendingUpdate(null)} update={pendingUpdate} />
       ) : null}
     </main>
   );
@@ -158,12 +188,10 @@ function renderView(activeView: AppView, selectView: (view: AppView) => void) {
     return <PresetsPage />;
   }
 
-  if (activeView === "ingest") {
-    return <IngestPage />;
-  }
+  // "ingest" is rendered persistently in App (kept mounted); never here.
 
-  if (activeView === "ingestPreview") {
-    return <IngestConsolePreviewPage />;
+  if (activeView === "metadata") {
+    return <MetadataPage />;
   }
 
   if (activeView === "scaffold") {

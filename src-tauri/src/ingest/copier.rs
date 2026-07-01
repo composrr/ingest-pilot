@@ -198,7 +198,7 @@ pub fn run_ingest(
             );
         };
         let prev_verified_files = result.verified_files;
-        let copied = copy_file_to_folder(
+        let copied = match copy_file_to_folder(
             preset,
             file,
             &folder,
@@ -210,7 +210,18 @@ pub fn run_ingest(
             cancel_flag,
             &mut result,
             Some(&mut transfer_progress),
-        )?;
+        ) {
+            Ok(copied) => copied,
+            Err(error) => {
+                // A genuine cancellation still stops the whole run; any other
+                // per-file failure (unreadable source, write error) is recorded
+                // and the ingest continues with the remaining files.
+                check_cancelled(cancel_flag)?;
+                push_skip(&mut result, file, &format!("Copy failed: {error}"));
+                files_done += 1;
+                continue;
+            }
+        };
         files_done += 1;
         bytes_done += file.size_bytes;
         if result.verified_files > prev_verified_files {
@@ -1568,7 +1579,8 @@ mod tests {
             },
             file_type_routing_overrides: BTreeMap::new(),
             preserve_xml_sidecars: true,
-            rename_files_default: true,            created_at: "2026-04-24T00:00:00Z".to_string(),
+            rename_files_default: true,
+            metadata_preset_id: None,            created_at: "2026-04-24T00:00:00Z".to_string(),
             updated_at: "2026-04-24T00:00:00Z".to_string(),
         };
 
@@ -1637,7 +1649,8 @@ mod tests {
             },
             file_type_routing_overrides: BTreeMap::new(),
             preserve_xml_sidecars: true,
-            rename_files_default: true,            created_at: "2026-04-24T00:00:00Z".to_string(),
+            rename_files_default: true,
+            metadata_preset_id: None,            created_at: "2026-04-24T00:00:00Z".to_string(),
             updated_at: "2026-04-24T00:00:00Z".to_string(),
         };
 
@@ -1694,6 +1707,7 @@ mod tests {
             file_type_routing_overrides: BTreeMap::new(),
             preserve_xml_sidecars: true,
             rename_files_default: true,
+            metadata_preset_id: None,
             created_at: "2026-04-24T00:00:00Z".to_string(),
             updated_at: "2026-04-24T00:00:00Z".to_string(),
         };
@@ -1823,7 +1837,8 @@ mod tests {
             },
             file_type_routing_overrides: BTreeMap::new(),
             preserve_xml_sidecars: true,
-            rename_files_default: true,            created_at: "2026-04-24T00:00:00Z".to_string(),
+            rename_files_default: true,
+            metadata_preset_id: None,            created_at: "2026-04-24T00:00:00Z".to_string(),
             updated_at: "2026-04-24T00:00:00Z".to_string(),
         };
 
@@ -1891,7 +1906,8 @@ mod tests {
             },
             file_type_routing_overrides: BTreeMap::new(),
             preserve_xml_sidecars: true,
-            rename_files_default: true,            created_at: "2026-04-24T00:00:00Z".to_string(),
+            rename_files_default: true,
+            metadata_preset_id: None,            created_at: "2026-04-24T00:00:00Z".to_string(),
             updated_at: "2026-04-24T00:00:00Z".to_string(),
         };
 
@@ -1959,7 +1975,8 @@ mod tests {
             },
             file_type_routing_overrides: BTreeMap::new(),
             preserve_xml_sidecars: true,
-            rename_files_default: true,            created_at: "2026-04-24T00:00:00Z".to_string(),
+            rename_files_default: true,
+            metadata_preset_id: None,            created_at: "2026-04-24T00:00:00Z".to_string(),
             updated_at: "2026-04-24T00:00:00Z".to_string(),
         };
 
@@ -2036,7 +2053,8 @@ mod tests {
             },
             file_type_routing_overrides: BTreeMap::new(),
             preserve_xml_sidecars: true,
-            rename_files_default: true,            created_at: "2026-04-24T00:00:00Z".to_string(),
+            rename_files_default: true,
+            metadata_preset_id: None,            created_at: "2026-04-24T00:00:00Z".to_string(),
             updated_at: "2026-04-24T00:00:00Z".to_string(),
         };
 
@@ -2128,7 +2146,8 @@ mod tests {
             },
             file_type_routing_overrides: BTreeMap::new(),
             preserve_xml_sidecars: true,
-            rename_files_default: true,            created_at: "2026-04-24T00:00:00Z".to_string(),
+            rename_files_default: true,
+            metadata_preset_id: None,            created_at: "2026-04-24T00:00:00Z".to_string(),
             updated_at: "2026-04-24T00:00:00Z".to_string(),
         };
 

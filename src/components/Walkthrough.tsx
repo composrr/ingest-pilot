@@ -1,5 +1,7 @@
-import { CheckCircle2, ClipboardList, FolderTree, HardDriveDownload, Settings, Sparkles, X } from "lucide-react";
-import { useState } from "react";
+import { CheckCircle2, ClipboardList, FolderTree, HardDriveDownload, Settings, Sparkles, UserRound, X } from "lucide-react";
+import { useEffect, useState } from "react";
+import { defaultAppSettings, getSettings, saveSettings } from "../lib/tauri";
+import type { AppSettings } from "../lib/types";
 
 type WalkthroughProps = {
   onClose: () => void;
@@ -7,6 +9,12 @@ type WalkthroughProps = {
 };
 
 const steps = [
+  {
+    icon: UserRound,
+    title: "Who's operating?",
+    body: "Your name goes on offload proofs and reports so it's clear who ran the ingest. You can change it any time in Settings.",
+    kind: "name" as const,
+  },
   {
     icon: ClipboardList,
     title: "Presets are the recipe",
@@ -31,11 +39,36 @@ const steps = [
 
 export function Walkthrough({ onClose, onGoTo }: WalkthroughProps) {
   const [index, setIndex] = useState(0);
+  const [operatorName, setOperatorName] = useState("");
+  const [settings, setSettings] = useState<AppSettings | null>(null);
   const step = steps[index];
   const Icon = step.icon;
   const isLast = index === steps.length - 1;
 
+  useEffect(() => {
+    void getSettings()
+      .then((loaded) => {
+        setSettings(loaded);
+        setOperatorName(loaded.operator_name);
+      })
+      .catch(() => setSettings(defaultAppSettings));
+  }, []);
+
+  async function saveOperatorName() {
+    const base = settings ?? defaultAppSettings;
+    const trimmed = operatorName.trim();
+    if (trimmed === base.operator_name) {
+      return;
+    }
+    try {
+      await saveSettings({ ...base, operator_name: trimmed });
+    } catch {
+      // non-fatal; name can still be set later in Settings
+    }
+  }
+
   function finish(view?: "presets" | "scaffold" | "ingest" | "settings") {
+    void saveOperatorName();
     localStorage.setItem("ingest-pilot:onboarding-complete", "true");
     onClose();
     if (view) {
@@ -93,7 +126,27 @@ export function Walkthrough({ onClose, onGoTo }: WalkthroughProps) {
               <Icon size={24} />
             </div>
             <h2 className="mb-2 text-xl font-semibold tracking-normal">{step.title}</h2>
-            <p className="mb-5 text-sm leading-6 text-graphite">{step.body}</p>
+            <p className="mb-4 text-sm leading-6 text-graphite">{step.body}</p>
+
+            {"kind" in step && step.kind === "name" ? (
+              <label className="mb-5 block">
+                <span className="mb-1 block text-xs font-semibold text-graphite">Operator name</span>
+                <input
+                  autoFocus
+                  className="h-10 w-full rounded-xl border border-mist bg-white px-3 text-sm outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+                  onChange={(event) => setOperatorName(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      void saveOperatorName();
+                      setIndex((current) => current + 1);
+                    }
+                  }}
+                  placeholder="e.g. Jon Draper"
+                  value={operatorName}
+                />
+              </label>
+            ) : null}
 
             {isLast ? (
               <div className="grid gap-2 sm:grid-cols-2">
@@ -123,7 +176,12 @@ export function Walkthrough({ onClose, onGoTo }: WalkthroughProps) {
                 </button>
                 <button
                   className="h-9 rounded-lg bg-signal px-4 text-sm font-semibold text-paper transition hover:bg-black"
-                  onClick={() => setIndex((current) => current + 1)}
+                  onClick={() => {
+                    if ("kind" in step && step.kind === "name") {
+                      void saveOperatorName();
+                    }
+                    setIndex((current) => current + 1);
+                  }}
                   type="button"
                 >
                   Next
