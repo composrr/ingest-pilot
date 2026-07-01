@@ -10,6 +10,8 @@ and user-facing — this is what people read in the update popup.
 
 ## [Unreleased]
 
+## [0.1.5]
+
 ### Added
 - **Year-aware destinations.** A preset can now point at a stable parent folder (e.g.
   …/Videos) and auto-descend into a tokenized sub-path each ingest — for example
