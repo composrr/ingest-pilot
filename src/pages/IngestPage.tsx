@@ -29,6 +29,7 @@ import {
   generateIngestReport,
   getMetadataPreset,
   listMetadataPresets,
+  saveMetadataPreset,
   generateOffloadProof,
   runIngest,
   retryFailedCopies,
@@ -62,6 +63,7 @@ import {
   previewNamingResult,
   type NamingDeliverable,
 } from "../lib/namingCatalog";
+import { createDefaultMetadataPreset } from "../lib/metadataPresetFactory";
 
 // Queue mode: a sequential pipeline of source cards. Each card is scanned in the
 // background (scan-ahead) while an earlier card copies, then copied in order into
@@ -328,7 +330,20 @@ export function IngestPage() {
   // Metadata presets: load the list once, and the full preset (with defaults) when
   // the picker changes, so the ingest fill panel can render its fields.
   useEffect(() => {
-    void listMetadataPresets().then(setMetadataSummaries).catch(() => undefined);
+    void (async () => {
+      try {
+        let list = await listMetadataPresets();
+        // Seed the starter iconik preset on first run so it's available here even if
+        // the user hasn't opened the Metadata tab yet.
+        if (list.length === 0) {
+          await saveMetadataPreset(createDefaultMetadataPreset(new Date().toISOString()));
+          list = await listMetadataPresets();
+        }
+        setMetadataSummaries(list);
+      } catch {
+        // non-fatal
+      }
+    })();
   }, []);
   useEffect(() => {
     if (!metadataPresetId) {
@@ -2131,6 +2146,13 @@ export function IngestPage() {
                   <span className="text-xs font-semibold text-graphite">{formatBytes(scan.total_bytes)}</span>
                 </div>
               </summary>
+              <div className="grid grid-cols-[64px_84px_1fr_150px_92px] items-center gap-3 border-b border-mist bg-porcelain/40 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-graphite/60">
+                <span>Ext</span>
+                <span>Type</span>
+                <span>Goes to</span>
+                <span>Route to</span>
+                <span className="text-right">Files</span>
+              </div>
               <div className="max-h-[420px] overflow-auto">
                 {visibleRoutingPreview.map((extension) => {
                   const filtered = isFilteredPreviewRow(extension);

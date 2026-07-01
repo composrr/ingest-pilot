@@ -1,8 +1,8 @@
-import { Plus, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Plus } from "lucide-react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { previewPattern } from "../lib/tauri";
 import { getTokenDefinitions, parsePattern } from "../lib/tokens";
-import type { TokenDefinition, TokenScope } from "../lib/tokens";
+import type { TokenScope } from "../lib/tokens";
 import type { PresetVariable, TokenContext } from "../lib/types";
 
 type PatternInputProps = {
@@ -14,22 +14,163 @@ type PatternInputProps = {
   onChange: (value: string) => void;
   density?: "regular" | "compact";
   showTokenButtons?: boolean;
+  // Retained for API compatibility; tokens now render inline in the field.
   showTokenPills?: boolean;
 };
 
-type SlashMenuState = {
-  isOpen: boolean;
-  query: string;
-  start: number;
-  highlightedIndex: number;
-};
+type TokenFieldHandle = { insertToken: (tokenId: string) => void };
 
-const closedSlashMenu: SlashMenuState = {
-  isOpen: false,
-  query: "",
-  start: 0,
-  highlightedIndex: 0,
-};
+// Serialize the contenteditable field back to a pattern string: text nodes contribute
+// their text; token pills contribute {token} from their data-token attribute.
+function serializeField(el: HTMLElement): string {
+  let output = "";
+  el.childNodes.forEach((node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      output += node.textContent ?? "";
+    } else if (node instanceof HTMLElement) {
+      const token = node.dataset.token;
+      output += token != null ? `{${token}}` : (node.textContent ?? "");
+    }
+  });
+  return output;
+}
+
+function makePill(token: string): HTMLElement {
+  const span = document.createElement("span");
+  span.dataset.token = token;
+  span.contentEditable = "false";
+  span.className = "token-pill group text-ink";
+  span.textContent = `{${token}}`;
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.tabIndex = -1;
+  remove.dataset.remove = "1";
+  remove.className = "token-pill-x";
+  remove.textContent = "×";
+  span.appendChild(remove);
+  return span;
+}
+
+function renderInto(el: HTMLElement, value: string) {
+  el.textContent = "";
+  for (const part of parsePattern(value)) {
+    if (part.type === "text") {
+      if (part.value) {
+        el.appendChild(document.createTextNode(part.value));
+      }
+    } else {
+      el.appendChild(makePill(part.value));
+    }
+  }
+}
+
+function clearSelectedPills(el: HTMLElement) {
+  el.querySelectorAll(".token-pill.is-selected").forEach((pill) => pill.classList.remove("is-selected"));
+}
+
+// A single-line, contenteditable pattern field where tokens are atomic pills: click a
+// pill to select it and press Delete/Backspace to remove it, or use the X that appears
+// on hover. Typing edits the literal text between tokens.
+const TokenPatternField = forwardRef<TokenFieldHandle, {
+  value: string;
+  onChange: (value: string) => void;
+  ariaLabel: string;
+  placeholder?: string;
+  dense?: boolean;
+}>(function TokenPatternField({ value, onChange, ariaLabel, placeholder, dense }, ref) {
+  const fieldRef = useRef<HTMLDivElement>(null);
+
+  // Rebuild the DOM only when the value diverges from what's already shown, so typing
+  // and pill edits keep their caret (our own edits set value === serialized DOM).
+  useEffect(() => {
+    const el = fieldRef.current;
+    if (el && serializeField(el) !== value) {
+      renderInto(el, value);
+    }
+  }, [value]);
+
+  function emit() {
+    const el = fieldRef.current;
+    if (el) {
+      onChange(serializeField(el));
+    }
+  }
+
+  useImperativeHandle(ref, () => ({
+    insertToken(tokenId: string) {
+      const el = fieldRef.current;
+      if (!el) {
+        return;
+      }
+      el.focus();
+      const selection = window.getSelection();
+      const pill = makePill(tokenId);
+      if (selection && selection.rangeCount > 0 && el.contains(selection.anchorNode)) {
+        const range = selection.getRangeAt(0);
+        range.deleteContents();
+        range.insertNode(pill);
+        range.setStartAfter(pill);
+        range.collapse(true);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      } else {
+        el.appendChild(pill);
+      }
+      emit();
+    },
+  }));
+
+  return (
+    <div
+      ref={fieldRef}
+      aria-label={ariaLabel}
+      className={`token-field w-full overflow-x-auto whitespace-nowrap rounded-xl border border-mist bg-white outline-none transition focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30 ${
+        dense ? "min-h-8 px-2 py-1 text-xs" : "min-h-9 px-3 py-1.5 text-sm"
+      } font-medium`}
+      contentEditable
+      suppressContentEditableWarning
+      data-placeholder={placeholder ?? ""}
+      onBlur={() => clearSelectedPills(fieldRef.current!)}
+      onClick={(event) => {
+        const el = fieldRef.current;
+        if (!el) {
+          return;
+        }
+        const pill = (event.target as HTMLElement).closest<HTMLElement>(".token-pill");
+        clearSelectedPills(el);
+        if (pill && !(event.target as HTMLElement).dataset.remove) {
+          pill.classList.add("is-selected");
+          const range = document.createRange();
+          range.selectNode(pill);
+          const selection = window.getSelection();
+          selection?.removeAllRanges();
+          selection?.addRange(range);
+        }
+      }}
+      onInput={emit}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+        }
+      }}
+      onMouseDown={(event) => {
+        const target = event.target as HTMLElement;
+        if (target.dataset.remove) {
+          // Delete the whole pill without disturbing focus/caret.
+          event.preventDefault();
+          target.closest(".token-pill")?.remove();
+          emit();
+        }
+      }}
+      onPaste={(event) => {
+        event.preventDefault();
+        const text = event.clipboardData.getData("text/plain").replace(/\r?\n/g, " ");
+        // execCommand is deprecated but still the simplest caret-preserving insert.
+        document.execCommand("insertText", false, text);
+      }}
+    />
+  );
+});
 
 export function PatternInput({
   label,
@@ -40,17 +181,10 @@ export function PatternInput({
   onChange,
   density = "regular",
   showTokenButtons = true,
-  showTokenPills = true,
 }: PatternInputProps) {
   const [preview, setPreview] = useState("Resolving...");
-  const [slashMenu, setSlashMenu] = useState<SlashMenuState>(closedSlashMenu);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const tokens = useMemo(() => getTokenDefinitions(scope, variables), [scope, variables]);
-  const parts = useMemo(() => parsePattern(value), [value]);
-  const filteredTokens = useMemo(
-    () => filterTokens(tokens, slashMenu.query),
-    [slashMenu.query, tokens],
-  );
+  const fieldRef = useRef<TokenFieldHandle>(null);
+  const tokens = getTokenDefinitions(scope, variables);
 
   useEffect(() => {
     let isCurrent = true;
@@ -65,198 +199,38 @@ export function PatternInput({
           setPreview(String(caught));
         }
       });
-
     return () => {
       isCurrent = false;
     };
   }, [value, context]);
 
-  function insertToken(tokenId: string) {
-    const input = inputRef.current;
-    const tokenText = `{${tokenId}}`;
-    if (!input) {
-      onChange(`${value}${tokenText}`);
-      return;
-    }
-
-    const start = input.selectionStart ?? value.length;
-    const end = input.selectionEnd ?? value.length;
-    const nextValue = `${value.slice(0, start)}${tokenText}${value.slice(end)}`;
-    onChange(nextValue);
-    closeSlashMenu();
-
-    window.requestAnimationFrame(() => {
-      input.focus();
-      const nextCursor = start + tokenText.length;
-      input.setSelectionRange(nextCursor, nextCursor);
-    });
-  }
-
-  function insertAutocompleteToken(token: TokenDefinition) {
-    const input = inputRef.current;
-    const tokenText = `{${token.id}}`;
-    const cursor = input?.selectionStart ?? value.length;
-    const nextValue = `${value.slice(0, slashMenu.start)}${tokenText}${value.slice(cursor)}`;
-    const nextCursor = slashMenu.start + tokenText.length;
-    onChange(nextValue);
-    closeSlashMenu();
-
-    window.requestAnimationFrame(() => {
-      input?.focus();
-      input?.setSelectionRange(nextCursor, nextCursor);
-    });
-  }
-
-  function removePart(start: number, end: number) {
-    const input = inputRef.current;
-    const nextValue = `${value.slice(0, start)}${value.slice(end)}`;
-    onChange(nextValue);
-    closeSlashMenu();
-
-    window.requestAnimationFrame(() => {
-      input?.focus();
-      input?.setSelectionRange(start, start);
-    });
-  }
-
-  function updateSlashMenu(nextValue: string, cursor: number | null) {
-    if (cursor === null) {
-      closeSlashMenu();
-      return;
-    }
-
-    const beforeCursor = nextValue.slice(0, cursor);
-    const slashIndex = beforeCursor.lastIndexOf("/");
-    if (slashIndex === -1) {
-      closeSlashMenu();
-      return;
-    }
-
-    const query = beforeCursor.slice(slashIndex + 1);
-    const isValidQuery = /^[a-zA-Z0-9_# ]*$/.test(query);
-    const isAtTokenBoundary = slashIndex === 0 || /[\s_-]/.test(beforeCursor[slashIndex - 1]);
-    if (!isValidQuery || !isAtTokenBoundary) {
-      closeSlashMenu();
-      return;
-    }
-
-    setSlashMenu({ isOpen: true, query, start: slashIndex, highlightedIndex: 0 });
-  }
-
-  function closeSlashMenu() {
-    setSlashMenu((current) => (current.isOpen ? closedSlashMenu : current));
-  }
-
-  function handleKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
-    if (!slashMenu.isOpen) {
-      return;
-    }
-
-    if (event.key === "Escape") {
-      event.preventDefault();
-      closeSlashMenu();
-      return;
-    }
-
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      setSlashMenu((current) => ({
-        ...current,
-        highlightedIndex: (current.highlightedIndex + 1) % Math.max(filteredTokens.length, 1),
-      }));
-      return;
-    }
-
-    if (event.key === "ArrowUp") {
-      event.preventDefault();
-      setSlashMenu((current) => ({
-        ...current,
-        highlightedIndex:
-          (current.highlightedIndex - 1 + Math.max(filteredTokens.length, 1)) %
-          Math.max(filteredTokens.length, 1),
-      }));
-      return;
-    }
-
-    if ((event.key === "Enter" || event.key === "Tab") && filteredTokens.length > 0) {
-      event.preventDefault();
-      insertAutocompleteToken(filteredTokens[slashMenu.highlightedIndex] ?? filteredTokens[0]);
-    }
-  }
+  const tokenButtons = showTokenButtons ? (
+    <div className={`mt-2 flex flex-wrap gap-1 ${density === "compact" ? "max-h-20 overflow-auto rounded-lg bg-porcelain/70 p-1" : ""}`}>
+      {tokens.map((token) => (
+        <button
+          key={token.id}
+          className={`inline-flex items-center gap-1 rounded-lg border border-mist bg-white font-semibold text-graphite transition hover:bg-porcelain hover:text-ink ${
+            density === "compact" ? "h-6 px-1.5 text-[11px]" : "h-7 px-2 text-xs"
+          }`}
+          onClick={() => fieldRef.current?.insertToken(token.id)}
+          type="button"
+        >
+          <Plus size={density === "compact" ? 10 : 12} />
+          {token.label}
+        </button>
+      ))}
+    </div>
+  ) : null;
 
   if (density === "compact") {
     return (
-      <div className="relative">
-        <input
-          ref={inputRef}
-          aria-label={label}
-          className="h-8 w-full rounded-lg border border-mist bg-white px-2 text-xs font-medium outline-none transition focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
-          onChange={(event) => {
-            onChange(event.target.value);
-            updateSlashMenu(event.target.value, event.target.selectionStart);
-          }}
-          onClick={(event) => updateSlashMenu(value, event.currentTarget.selectionStart)}
-          onKeyDown={handleKeyDown}
-          onKeyUp={(event) => {
-            if (["ArrowDown", "ArrowUp", "Enter", "Tab", "Escape"].includes(event.key)) {
-              return;
-            }
-            updateSlashMenu(event.currentTarget.value, event.currentTarget.selectionStart);
-          }}
-          value={value}
-        />
-
+      <div>
+        <TokenPatternField ariaLabel={label} dense onChange={onChange} placeholder="Pattern" ref={fieldRef} value={value} />
         <div className="mt-1 grid grid-cols-[44px_1fr] gap-1 text-[11px]">
           <span className="font-semibold text-graphite">Preview</span>
           <span className="min-w-0 truncate font-medium text-ink">{preview}</span>
         </div>
-
-        {slashMenu.isOpen ? (
-          <SlashMenu
-            filteredTokens={filteredTokens}
-            highlightedIndex={slashMenu.highlightedIndex}
-            onInsert={insertAutocompleteToken}
-          />
-        ) : null}
-
-        {showTokenPills && parts.some((part) => part.type === "token") ? (
-          <div className="mt-1.5 flex flex-wrap items-center gap-1 rounded-lg bg-porcelain/70 p-1">
-            {parts.map((part, index) =>
-              part.type === "token" ? (
-                <button
-                  key={`${part.value}-${index}`}
-                  className="inline-flex items-center gap-1 rounded-md bg-white px-1.5 py-0.5 text-[11px] font-semibold text-ink ring-1 ring-mist transition hover:bg-red-50 hover:text-red-800 hover:ring-red-200"
-                  onClick={() => removePart(part.start, part.end)}
-                  title={`Remove ${part.value}`}
-                  type="button"
-                >
-                  {part.value}
-                  <X size={10} />
-                </button>
-              ) : part.value.trim() ? (
-                <span key={`${part.value}-${index}`} className="px-0.5 text-[11px] font-medium text-graphite">
-                  {part.value}
-                </span>
-              ) : null,
-            )}
-          </div>
-        ) : null}
-
-        {showTokenButtons ? (
-          <div className="mt-2 flex max-h-20 flex-wrap gap-1 overflow-auto rounded-lg bg-porcelain/70 p-1">
-            {tokens.map((token) => (
-              <button
-                key={token.id}
-                className="inline-flex h-6 items-center gap-1 rounded-md border border-mist bg-white px-1.5 text-[11px] font-semibold text-graphite transition hover:bg-porcelain hover:text-ink"
-                onClick={() => insertToken(token.id)}
-                type="button"
-              >
-                <Plus size={10} />
-                {token.label}
-              </button>
-            ))}
-          </div>
-        ) : null}
+        {tokenButtons}
       </div>
     );
   }
@@ -269,120 +243,8 @@ export function PatternInput({
           {preview}
         </div>
       </div>
-
-      <input
-        ref={inputRef}
-        className="h-9 w-full rounded-xl border border-mist bg-white px-3 text-sm font-medium outline-none transition focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
-        onChange={(event) => {
-          onChange(event.target.value);
-          updateSlashMenu(event.target.value, event.target.selectionStart);
-        }}
-        onClick={(event) => updateSlashMenu(value, event.currentTarget.selectionStart)}
-        onKeyDown={handleKeyDown}
-        onKeyUp={(event) => {
-          if (["ArrowDown", "ArrowUp", "Enter", "Tab", "Escape"].includes(event.key)) {
-            return;
-          }
-          updateSlashMenu(event.currentTarget.value, event.currentTarget.selectionStart);
-        }}
-        value={value}
-      />
-
-      {slashMenu.isOpen ? (
-        <SlashMenu
-          filteredTokens={filteredTokens}
-          highlightedIndex={slashMenu.highlightedIndex}
-          onInsert={insertAutocompleteToken}
-        />
-      ) : null}
-
-      {showTokenPills ? (
-        <div className="mt-2 flex min-h-8 flex-wrap items-center gap-1.5 rounded-xl bg-porcelain p-1.5">
-          {parts.map((part, index) =>
-            part.type === "token" ? (
-              <button
-                key={`${part.value}-${index}`}
-                className="inline-flex items-center gap-1 rounded-lg bg-white px-2 py-1 text-xs font-semibold text-ink ring-1 ring-mist transition hover:bg-red-50 hover:text-red-800 hover:ring-red-200"
-                onClick={() => removePart(part.start, part.end)}
-                title={`Remove ${part.value}`}
-                type="button"
-              >
-                {part.value}
-                <X size={11} />
-              </button>
-            ) : part.value ? (
-              <span key={`${part.value}-${index}`} className="px-1 text-xs font-medium text-graphite">
-                {part.value}
-              </span>
-            ) : null,
-          )}
-        </div>
-      ) : null}
-
-      {showTokenButtons ? (
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {tokens.map((token) => (
-            <button
-              key={token.id}
-              className="inline-flex h-7 items-center gap-1 rounded-lg border border-mist bg-white px-2 text-xs font-semibold text-graphite transition hover:bg-porcelain hover:text-ink"
-              onClick={() => insertToken(token.id)}
-              type="button"
-            >
-              <Plus size={12} />
-              {token.label}
-            </button>
-          ))}
-        </div>
-      ) : null}
+      <TokenPatternField ariaLabel={label} onChange={onChange} placeholder="Type text and insert tokens…" ref={fieldRef} value={value} />
+      {tokenButtons}
     </div>
-  );
-}
-
-function SlashMenu({
-  filteredTokens,
-  highlightedIndex,
-  onInsert,
-}: {
-  filteredTokens: TokenDefinition[];
-  highlightedIndex: number;
-  onInsert: (token: TokenDefinition) => void;
-}) {
-  return (
-    <div className="mt-2 max-h-40 overflow-auto rounded-xl border border-mist bg-white p-1 shadow-panel">
-      {filteredTokens.length === 0 ? (
-        <div className="px-2 py-1.5 text-xs font-medium text-graphite">No matching tokens</div>
-      ) : (
-        filteredTokens.map((token, index) => (
-          <button
-            key={token.id}
-            className={`flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-xs transition ${
-              index === highlightedIndex ? "bg-porcelain text-ink" : "text-graphite hover:bg-porcelain"
-            }`}
-            onMouseDown={(event) => {
-              event.preventDefault();
-              onInsert(token);
-            }}
-            type="button"
-          >
-            <span className="font-semibold">{token.label}</span>
-            <code>{`{${token.id}}`}</code>
-          </button>
-        ))
-      )}
-    </div>
-  );
-}
-
-function filterTokens(tokens: TokenDefinition[], query: string) {
-  if (!query) {
-    return tokens;
-  }
-
-  const normalizedQuery = query.toLowerCase();
-  return tokens.filter(
-    (token) =>
-      token.id.toLowerCase().includes(normalizedQuery) ||
-      token.label.toLowerCase().includes(normalizedQuery) ||
-      token.scope.toLowerCase().includes(normalizedQuery),
   );
 }
