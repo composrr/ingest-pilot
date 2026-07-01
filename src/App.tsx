@@ -11,7 +11,8 @@ import {
   Sparkles,
   Tags,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { UpdateModal } from "./components/UpdateModal";
 import { Walkthrough } from "./components/Walkthrough";
 import { Dashboard } from "./pages/Dashboard";
 import { HelpPage } from "./pages/HelpPage";
@@ -21,6 +22,7 @@ import { MetadataPage } from "./pages/MetadataPage";
 import { PresetsPage } from "./pages/PresetsPage";
 import { ScaffoldPage } from "./pages/ScaffoldPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { checkForUpdate } from "./lib/updater";
 import { useAppStore } from "./stores/appStore";
 
 const navItems = [
@@ -40,12 +42,31 @@ export function App() {
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(true);
   const [isWalkthroughOpen, setIsWalkthroughOpen] = useState(false);
   const setLastAction = useAppStore((state) => state.setLastAction);
+  const pendingUpdate = useAppStore((state) => state.pendingUpdate);
+  const setPendingUpdate = useAppStore((state) => state.setPendingUpdate);
+  const didCheckUpdate = useRef(false);
 
   useEffect(() => {
     if (localStorage.getItem("ingest-pilot:onboarding-complete") !== "true") {
       setIsWalkthroughOpen(true);
     }
   }, []);
+
+  useEffect(() => {
+    // Check once per launch. Failures are swallowed so a flaky connection never
+    // blocks startup; a newer signed release opens the changelog modal.
+    if (didCheckUpdate.current) {
+      return;
+    }
+    didCheckUpdate.current = true;
+    checkForUpdate()
+      .then((update) => {
+        if (update) {
+          setPendingUpdate(update);
+        }
+      })
+      .catch((error) => console.error("[updater] startup check failed:", error));
+  }, [setPendingUpdate]);
 
   function selectView(view: AppView) {
     setActiveView(view);
@@ -144,6 +165,9 @@ export function App() {
           onClose={() => setIsWalkthroughOpen(false)}
           onGoTo={(view) => selectView(view)}
         />
+      ) : null}
+      {pendingUpdate ? (
+        <UpdateModal onDismiss={() => setPendingUpdate(null)} update={pendingUpdate} />
       ) : null}
     </main>
   );

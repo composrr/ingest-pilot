@@ -9,6 +9,15 @@ pub fn run() {
     tauri::Builder::default()
         .manage(commands::ingest::IngestJobs::default())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_process::init())
+        .setup(|app| {
+            // The auto-updater is desktop-only. Registered here (rather than in the
+            // builder chain) so it can be `#[cfg(desktop)]`-gated cleanly.
+            #[cfg(desktop)]
+            app.handle()
+                .plugin(tauri_plugin_updater::Builder::new().build())?;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::system::greet,
             commands::system::open_path,

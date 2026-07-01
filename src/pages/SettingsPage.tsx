@@ -1,4 +1,4 @@
-import { Plus, Save, Trash2, X } from "lucide-react";
+import { Plus, RefreshCw, Save, Trash2, X } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import { FloatingHelp } from "../components/FloatingHelp";
 import { OptionsTextField } from "../components/OptionsTextField";
@@ -6,6 +6,7 @@ import { SelectMenu } from "../components/SelectMenu";
 import { currentLocalDate, slugifyToken } from "../lib/parameters";
 import { defaultAppSettings, getSettings, saveSettings } from "../lib/tauri";
 import type { AppSettings, PresetVariable, VariableType } from "../lib/types";
+import { checkForUpdate } from "../lib/updater";
 import { useAppStore } from "../stores/appStore";
 
 const variableTypes: Array<{ value: VariableType; label: string }> = [
@@ -21,6 +22,9 @@ export function SettingsPage() {
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const setLastAction = useAppStore((state) => state.setLastAction);
+  const setPendingUpdate = useAppStore((state) => state.setPendingUpdate);
+  const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "uptodate" | "error">("idle");
+  const [updateError, setUpdateError] = useState<string | null>(null);
 
   useEffect(() => {
     getSettings()
@@ -82,6 +86,26 @@ export function SettingsPage() {
       setLastAction("Settings save failed");
     } finally {
       setIsSaving(false);
+    }
+  }
+
+  async function checkUpdates() {
+    setUpdateStatus("checking");
+    setUpdateError(null);
+    try {
+      const update = await checkForUpdate();
+      if (update) {
+        setPendingUpdate(update);
+        setUpdateStatus("idle");
+        setLastAction(`Update v${update.version} available`);
+      } else {
+        setUpdateStatus("uptodate");
+        setLastAction("No updates found");
+      }
+    } catch (caught) {
+      setUpdateStatus("error");
+      setUpdateError(String(caught));
+      setLastAction("Update check failed");
     }
   }
 
@@ -277,6 +301,42 @@ export function SettingsPage() {
                 updateSettings({ camera_watcher: { ...settings.camera_watcher, tray_mode } })
               }
             />
+          </SettingsSection>
+
+          <SettingsSection
+            help="Ingest Pilot checks for updates on launch and asks before installing. You can also check manually here."
+            title="About & Updates"
+          >
+            <div className="grid min-h-10 grid-cols-[1fr_auto] items-center gap-3 px-3 py-1.5">
+              <span className="min-w-0">
+                <span className="block text-xs font-semibold text-ink">Current version</span>
+                <span
+                  className={`block truncate text-[11px] ${
+                    updateStatus === "error" ? "text-red-700" : "text-graphite"
+                  }`}
+                >
+                  {updateStatus === "checking"
+                    ? "Checking for updates…"
+                    : updateStatus === "uptodate"
+                      ? "You’re on the latest version."
+                      : updateStatus === "error"
+                        ? (updateError ?? "Update check failed.")
+                        : "Updates install with your approval, then restart the app."}
+                </span>
+              </span>
+              <span className="flex items-center gap-2">
+                <span className="font-mono text-xs font-semibold text-graphite">v{__APP_VERSION__}</span>
+                <button
+                  className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-mist bg-white px-2.5 text-xs font-semibold text-graphite transition hover:bg-porcelain disabled:opacity-50"
+                  disabled={updateStatus === "checking"}
+                  onClick={() => void checkUpdates()}
+                  type="button"
+                >
+                  <RefreshCw className={updateStatus === "checking" ? "animate-spin" : ""} size={14} />
+                  Check for updates
+                </button>
+              </span>
+            </div>
           </SettingsSection>
         </div>
 
