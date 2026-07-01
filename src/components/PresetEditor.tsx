@@ -7,13 +7,16 @@ import { MetadataPresetsManager } from "./MetadataPresetsManager";
 import { OptionsTextField } from "./OptionsTextField";
 import { PatternInput } from "./PatternInput";
 import { SelectMenu } from "./SelectMenu";
+import { TokenSuggestInput } from "./TokenSuggest";
 import {
   defaultNamingCatalog,
   mergeNamingCatalog,
   type NamingDeliverable,
+  type NamingField,
 } from "../lib/namingCatalog";
 import { currentLocalDate, mergeGlobalAndPresetParameters, slugifyToken } from "../lib/parameters";
-import { getMetadataPreset, getNamingCatalog, getSettings, listMetadataPresets } from "../lib/tauri";
+import { getMetadataPreset, getNamingCatalog, getSettings, listMetadataPresets, saveNamingCatalog } from "../lib/tauri";
+import { getTokenDefinitions, parsePattern } from "../lib/tokens";
 import type {
   FolderNode,
   MetadataField,
@@ -168,6 +171,64 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
       active = false;
     };
   }, [draft.metadata_preset_id]);
+
+  // "New naming preset": save this preset's current folder-name pattern (and
+  // pre-folder path) into the naming catalog so it's reusable from the Naming tab
+  // and the ingest Name wizard. Fields are derived from the pattern's non-date
+  // tokens, using the preset's variables for labels/options.
+  const [namingSaveOpen, setNamingSaveOpen] = useState(false);
+  const [namingSaveName, setNamingSaveName] = useState("");
+  const [namingSaveGroup, setNamingSaveGroup] = useState<NamingDeliverable["group"]>("Video Capture");
+  const [namingSaveStatus, setNamingSaveStatus] = useState<string | null>(null);
+
+  async function saveAsNamingPreset() {
+    const label = namingSaveName.trim();
+    if (!label) {
+      return;
+    }
+    const globalIds = new Set(["date", "year", "month", "day", "preset_name"]);
+    const tokenIds = [
+      ...new Set(
+        parsePattern(draft.root_folder_pattern)
+          .filter((part) => part.type === "token")
+          .map((part) => part.value)
+          .filter((id) => !globalIds.has(id)),
+      ),
+    ];
+    const fields = tokenIds.map((id) => {
+      const variable = allParameters.find((item) => item.id === id);
+      return {
+        id,
+        label: variable?.name ?? id,
+        type: (variable?.type === "dropdown" ? "dropdown" : "short_text") as NamingField["type"],
+        required: variable?.required ?? true,
+        options: variable?.options?.length ? [...variable.options] : undefined,
+      };
+    });
+    const deliverableId = `deliverable_${Date.now()}`;
+    const deliverable: NamingDeliverable = {
+      id: deliverableId,
+      label,
+      group: namingSaveGroup,
+      hint: draft.root_folder_pattern.replace("{year}-{month}-{day}", "YYYY-MM-DD").replace("{date}", "YYYYMMDD"),
+      presetId: deliverableId,
+      presetName: label,
+      rootPattern: draft.root_folder_pattern,
+      subPath: draft.destinations.sub_path_pattern?.trim() || undefined,
+      fields,
+    };
+    try {
+      const catalog = mergeNamingCatalog(await getNamingCatalog());
+      const next = { ...catalog, deliverables: [...catalog.deliverables, deliverable] };
+      await saveNamingCatalog(next);
+      setNamingDeliverables(next.deliverables);
+      setNamingSaveOpen(false);
+      setNamingSaveStatus(`Saved “${label}” to Naming`);
+      window.setTimeout(() => setNamingSaveStatus(null), 2200);
+    } catch (error) {
+      setNamingSaveStatus(`Couldn't save: ${String(error)}`);
+    }
+  }
 
   function setMetadataValue(fieldId: string, value: string) {
     setDraft((current) => {
@@ -393,19 +454,19 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
                 {namingDeliverables.length ? (
                   <div className="grid min-h-10 grid-cols-[110px_1fr] items-center gap-2 px-3 py-1.5">
                     <div className="flex items-center gap-1 text-xs font-semibold text-graphite">
-                      Naming SOP
-                      <FloatingHelp label="Naming template help">
-                        Apply a naming template to set this preset's folder name pattern (and its year-aware sub-path)
-                        per the team SOP, and pull in the fields it needs. Manage templates in the Naming tab.
+                      Naming preset
+                      <FloatingHelp label="Naming preset help">
+                        Apply a naming preset to set this preset's folder name pattern (and its year-aware pre-folder
+                        path) per the team SOP, and pull in the fields it needs. Manage naming presets in the Naming tab.
                       </FloatingHelp>
                     </div>
                     <SelectMenu
                       onChange={(value) => value && applyNamingTemplate(value)}
                       options={[
-                        { label: "Apply a template…", value: "" },
+                        { label: "Apply a naming preset…", value: "" },
                         ...namingDeliverables.map((item) => ({ label: item.label, value: item.id })),
                       ]}
-                      placeholder="Apply a template…"
+                      placeholder="Apply a naming preset…"
                       size="sm"
                       value=""
                     />
@@ -446,14 +507,16 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
                       ingest drops into them; otherwise it makes them. Leave blank to save straight into “Default Save To”.
                     </FloatingHelp>
                   </div>
-                  <input
+                  <TokenSuggestInput
+                    ariaLabel="Pre-folder path"
                     className="h-8 w-full min-w-0 rounded-lg border border-mist bg-white px-2 font-mono text-xs outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
-                    onChange={(event) =>
+                    onChange={(sub_path_pattern) =>
                       updateDraft({
-                        destinations: { ...draft.destinations, sub_path_pattern: event.target.value },
+                        destinations: { ...draft.destinations, sub_path_pattern },
                       })
                     }
-                    placeholder="{year}/Broll  →  e.g. …/Videos/2026/Broll"
+                    placeholder="{year}/Broll — type $ for tokens"
+                    tokens={getTokenDefinitions("folder", allParameters)}
                     value={draft.destinations.sub_path_pattern ?? ""}
                   />
                   {(draft.destinations.sub_path_pattern ?? "").trim() ? (
@@ -576,7 +639,26 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
             <div className="grid gap-2">
               <section className="overflow-hidden rounded-2xl border border-mist bg-white">
                 <SectionHeader
-                  help="This pattern creates the root project folder name. The Preview line under the field shows the resolved example."
+                  action={
+                    <div className="flex items-center gap-1.5">
+                      {namingSaveStatus ? (
+                        <span className="max-w-[180px] truncate text-[11px] font-semibold text-emerald-600">{namingSaveStatus}</span>
+                      ) : null}
+                      <button
+                        className="inline-flex h-7 items-center gap-1 rounded-lg border border-mist bg-white px-2 text-xs font-semibold text-graphite transition hover:bg-porcelain"
+                        onClick={() => {
+                          setNamingSaveName(draft.name);
+                          setNamingSaveOpen(true);
+                        }}
+                        title="Save this folder-name pattern as a naming preset, usable from the Naming tab and the ingest Name wizard."
+                        type="button"
+                      >
+                        <Plus size={13} />
+                        New naming preset
+                      </button>
+                    </div>
+                  }
+                  help="This pattern creates the root project folder name. The Preview line under the field shows the resolved example. Type $ in the field to search tokens."
                   title="Project Folder Name"
                 />
                 <div className="p-2">
@@ -665,6 +747,65 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
           />
         </div>
       </div>
+
+      {namingSaveOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/30 p-4 backdrop-blur-sm" onClick={() => setNamingSaveOpen(false)}>
+          <section
+            className="w-full max-w-sm rounded-[24px] border border-mist bg-paper p-4 shadow-panel"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h3 className="text-base font-semibold">New naming preset</h3>
+            <p className="mt-0.5 text-xs text-graphite">
+              Saves this pattern to the Naming tab so it can be applied to other presets or picked in the ingest Name
+              wizard.
+            </p>
+            <div className="mt-2 rounded-lg bg-porcelain px-2 py-1.5 font-mono text-xs text-ink">{draft.root_folder_pattern}</div>
+            <label className="mt-3 block">
+              <div className="mb-1 text-xs font-semibold text-graphite">Name</div>
+              <input
+                autoFocus
+                className="h-8 w-full rounded-lg border border-mist bg-white px-2 text-sm outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+                onChange={(event) => setNamingSaveName(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    void saveAsNamingPreset();
+                  }
+                }}
+                value={namingSaveName}
+              />
+            </label>
+            <label className="mt-2 block">
+              <div className="mb-1 text-xs font-semibold text-graphite">Group</div>
+              <SelectMenu
+                onChange={(value) => setNamingSaveGroup(value as NamingDeliverable["group"])}
+                options={[
+                  { label: "Video Capture", value: "Video Capture" },
+                  { label: "Delivered Video", value: "Delivered Video" },
+                ]}
+                size="sm"
+                value={namingSaveGroup}
+              />
+            </label>
+            <div className="mt-3 flex justify-end gap-2">
+              <button
+                className="inline-flex h-8 items-center rounded-lg border border-mist bg-white px-3 text-xs font-semibold text-graphite transition hover:bg-porcelain"
+                onClick={() => setNamingSaveOpen(false)}
+                type="button"
+              >
+                Cancel
+              </button>
+              <button
+                className="inline-flex h-8 items-center rounded-lg bg-signal px-3 text-xs font-semibold text-paper transition hover:bg-black disabled:opacity-40"
+                disabled={!namingSaveName.trim()}
+                onClick={() => void saveAsNamingPreset()}
+                type="button"
+              >
+                Create
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
 
       {isMetadataManagerOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/30 p-4 backdrop-blur-sm">

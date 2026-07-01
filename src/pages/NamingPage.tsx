@@ -12,9 +12,23 @@ import {
   type NamingDeliverable,
   type NamingField,
 } from "../lib/namingCatalog";
+import { TokenSuggestInput } from "../components/TokenSuggest";
 import { slugifyToken } from "../lib/parameters";
 import { getNamingCatalog, savePreset, saveNamingCatalog } from "../lib/tauri";
+import type { TokenDefinition } from "../lib/tokens";
 import type { Preset } from "../lib/types";
+
+// Tokens available in a template's pattern fields: the date parts plus the
+// template's own fields.
+function templateTokens(deliverable: NamingDeliverable): TokenDefinition[] {
+  return [
+    { id: "year", label: "Year", scope: "global" },
+    { id: "month", label: "Month", scope: "global" },
+    { id: "day", label: "Day", scope: "global" },
+    { id: "date", label: "Date", scope: "global" },
+    ...deliverable.fields.map((field) => ({ id: field.id, label: field.label, scope: "variable" as const })),
+  ];
+}
 
 // Naming templates, laid out like the Metadata tab: the deliverable templates are
 // the list on the left, everything to edit one is on the right. The shared option
@@ -452,20 +466,22 @@ function TemplateEditor({
             <LabeledInput label="Hint" onChange={(hint) => onChange({ hint })} value={deliverable.hint} />
             <div className="sm:col-span-2">
               <LabeledInput
-                help="The project folder name. Tokens: {year} {month} {day}, plus any field id below (e.g. {last_name})."
+                help="The project folder name. Type $ to search tokens: {year} {month} {day}, plus any field id below (e.g. {last_name})."
                 label="Name pattern"
                 mono
                 onChange={(rootPattern) => onChange({ rootPattern })}
+                tokens={templateTokens(deliverable)}
                 value={deliverable.rootPattern}
               />
             </div>
             <div className="sm:col-span-2">
               <LabeledInput
-                help="Optional pre-folders created inside the destination BEFORE the project folder, e.g. {year}/Broll."
+                help="Optional pre-folders created inside the destination BEFORE the project folder, e.g. {year}/Broll. Type $ to search tokens."
                 label="Pre-folder path"
                 mono
                 onChange={(subPath) => onChange({ subPath })}
-                placeholder="{year}/Broll"
+                placeholder="{year}/Broll — type $ for tokens"
+                tokens={templateTokens(deliverable)}
                 value={deliverable.subPath ?? ""}
               />
             </div>
@@ -661,6 +677,7 @@ function LabeledInput({
   mono,
   onChange,
   placeholder,
+  tokens,
   value,
 }: {
   help?: string;
@@ -668,20 +685,27 @@ function LabeledInput({
   mono?: boolean;
   onChange: (value: string) => void;
   placeholder?: string;
+  // When provided, typing $ in the field opens the token autocomplete.
+  tokens?: TokenDefinition[];
   value: string;
 }) {
+  const inputClass = `h-8 w-full min-w-0 rounded-lg border border-mist bg-white px-2 text-xs outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30 ${mono ? "font-mono" : ""}`;
   return (
     <label className="block">
       <div className="mb-1 flex items-center gap-1 text-[11px] font-semibold text-graphite">
         {label}
         {help ? <FloatingHelp label={`${label} help`}>{help}</FloatingHelp> : null}
       </div>
-      <input
-        className={`h-8 w-full min-w-0 rounded-lg border border-mist bg-white px-2 text-xs outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30 ${mono ? "font-mono" : ""}`}
-        onChange={(event) => onChange(event.target.value)}
-        placeholder={placeholder}
-        value={value}
-      />
+      {tokens ? (
+        <TokenSuggestInput ariaLabel={label} className={inputClass} onChange={onChange} placeholder={placeholder} tokens={tokens} value={value} />
+      ) : (
+        <input
+          className={inputClass}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder={placeholder}
+          value={value}
+        />
+      )}
     </label>
   );
 }

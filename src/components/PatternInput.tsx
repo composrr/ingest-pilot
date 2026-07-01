@@ -1,8 +1,9 @@
 import { Plus } from "lucide-react";
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { filterTokens, TokenSuggestMenu } from "./TokenSuggest";
 import { previewPattern } from "../lib/tauri";
 import { getTokenDefinitions, parsePattern } from "../lib/tokens";
-import type { TokenScope } from "../lib/tokens";
+import type { TokenDefinition, TokenScope } from "../lib/tokens";
 import type { PresetVariable, TokenContext } from "../lib/types";
 
 type PatternInputProps = {
@@ -68,17 +69,44 @@ function clearSelectedPills(el: HTMLElement) {
   el.querySelectorAll(".token-pill.is-selected").forEach((pill) => pill.classList.remove("is-selected"));
 }
 
+// Where the caret sits inside a text node of the field, if it follows a `$query`
+// token trigger. Returns the node/offset so the trigger text can be replaced.
+function caretTokenTrigger(el: HTMLElement): { node: Text; offset: number; query: string } | null {
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0 || !selection.isCollapsed) {
+    return null;
+  }
+  const range = selection.getRangeAt(0);
+  const node = range.startContainer;
+  if (node.nodeType !== Node.TEXT_NODE || !el.contains(node)) {
+    return null;
+  }
+  const text = (node.textContent ?? "").slice(0, range.startOffset);
+  const match = text.match(/\$([A-Za-z0-9_#]*)$/);
+  if (!match) {
+    return null;
+  }
+  return { node: node as Text, offset: range.startOffset, query: match[1] };
+}
+
 // A single-line, contenteditable pattern field where tokens are atomic pills: click a
 // pill to select it and press Delete/Backspace to remove it, or use the X that appears
-// on hover. Typing edits the literal text between tokens.
+// on hover. Typing edits the literal text between tokens; typing `$` opens the token
+// autocomplete at the caret ($year → Year, Enter inserts the pill).
 const TokenPatternField = forwardRef<TokenFieldHandle, {
   value: string;
   onChange: (value: string) => void;
   ariaLabel: string;
   placeholder?: string;
   dense?: boolean;
-}>(function TokenPatternField({ value, onChange, ariaLabel, placeholder, dense }, ref) {
+  tokens?: TokenDefinition[];
+}>(function TokenPatternField({ value, onChange, ariaLabel, placeholder, dense, tokens = [] }, ref) {
   const fieldRef = useRef<HTMLDivElement>(null);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const [suggest, setSuggest] = useState<{ query: string; left: number; top: number } | null>(null);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const matches = useMemo(() => (suggest ? filterTokens(tokens, suggest.query) : []), [suggest, tokens]);
+  const menuOpen = suggest !== null && matches.length > 0;
 
   // Rebuild the DOM only when the value diverges from what's already shown, so typing
   // and pill edits keep their caret (our own edits set value === serialized DOM).
@@ -96,79 +124,164 @@ const TokenPatternField = forwardRef<TokenFieldHandle, {
     }
   }
 
+  function insertTokenAtCaret(tokenId: string) {
+    const el = fieldRef.current;
+    if (!el) {
+      return;
+    }
+    el.focus();
+    const selection = window.getSelection();
+    const pill = makePill(tokenId);
+    if (selection && selection.rangeCount > 0 && el.contains(selection.anchorNode)) {
+      const range = selection.getRangeAt(0);
+      range.deleteContents();
+      range.insertNode(pill);
+      range.setStartAfter(pill);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    } else {
+      el.appendChild(pill);
+    }
+    emit();
+  }
+
+  // Refresh the $-trigger state from the caret; anchors the menu to the caret rect.
+  function refreshSuggest() {
+    const el = fieldRef.current;
+    const wrapper = wrapperRef.current;
+    if (!el || !wrapper) {
+      return;
+    }
+    const trigger = caretTokenTrigger(el);
+    if (!trigger) {
+      setSuggest(null);
+      return;
+    }
+    const selection = window.getSelection();
+    const caretRect = selection && selection.rangeCount > 0 ? selection.getRangeAt(0).getBoundingClientRect() : null;
+    const wrapperRect = wrapper.getBoundingClientRect();
+    setSuggest({
+      query: trigger.query,
+      left: caretRect ? Math.max(0, caretRect.left - wrapperRect.left) : 0,
+      top: caretRect ? caretRect.bottom - wrapperRect.top + 4 : wrapperRect.height + 4,
+    });
+    setActiveIndex(0);
+  }
+
+  // Replace the typed `$query` with the chosen token pill.
+  function pickToken(tokenId: string) {
+    const el = fieldRef.current;
+    if (!el) {
+      return;
+    }
+    const trigger = caretTokenTrigger(el);
+    if (trigger) {
+      const range = document.createRange();
+      range.setStart(trigger.node, trigger.offset - trigger.query.length - 1);
+      range.setEnd(trigger.node, trigger.offset);
+      range.deleteContents();
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    }
+    setSuggest(null);
+    insertTokenAtCaret(tokenId);
+  }
+
   useImperativeHandle(ref, () => ({
     insertToken(tokenId: string) {
-      const el = fieldRef.current;
-      if (!el) {
-        return;
-      }
-      el.focus();
-      const selection = window.getSelection();
-      const pill = makePill(tokenId);
-      if (selection && selection.rangeCount > 0 && el.contains(selection.anchorNode)) {
-        const range = selection.getRangeAt(0);
-        range.deleteContents();
-        range.insertNode(pill);
-        range.setStartAfter(pill);
-        range.collapse(true);
-        selection.removeAllRanges();
-        selection.addRange(range);
-      } else {
-        el.appendChild(pill);
-      }
-      emit();
+      insertTokenAtCaret(tokenId);
     },
   }));
 
   return (
-    <div
-      ref={fieldRef}
-      aria-label={ariaLabel}
-      className={`token-field w-full overflow-x-auto whitespace-nowrap rounded-xl border border-mist bg-white outline-none transition focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30 ${
-        dense ? "min-h-8 px-2 py-1 text-xs" : "min-h-9 px-3 py-1.5 text-sm"
-      } font-medium`}
-      contentEditable
-      suppressContentEditableWarning
-      data-placeholder={placeholder ?? ""}
-      onBlur={() => clearSelectedPills(fieldRef.current!)}
-      onClick={(event) => {
-        const el = fieldRef.current;
-        if (!el) {
-          return;
-        }
-        const pill = (event.target as HTMLElement).closest<HTMLElement>(".token-pill");
-        clearSelectedPills(el);
-        if (pill && !(event.target as HTMLElement).dataset.remove) {
-          pill.classList.add("is-selected");
-          const range = document.createRange();
-          range.selectNode(pill);
-          const selection = window.getSelection();
-          selection?.removeAllRanges();
-          selection?.addRange(range);
-        }
-      }}
-      onInput={emit}
-      onKeyDown={(event) => {
-        if (event.key === "Enter") {
-          event.preventDefault();
-        }
-      }}
-      onMouseDown={(event) => {
-        const target = event.target as HTMLElement;
-        if (target.dataset.remove) {
-          // Delete the whole pill without disturbing focus/caret.
-          event.preventDefault();
-          target.closest(".token-pill")?.remove();
+    <div className="relative min-w-0" ref={wrapperRef}>
+      <div
+        ref={fieldRef}
+        aria-label={ariaLabel}
+        className={`token-field w-full overflow-x-auto whitespace-nowrap rounded-xl border border-mist bg-white outline-none transition focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30 ${
+          dense ? "min-h-8 px-2 py-1 text-xs" : "min-h-9 px-3 py-1.5 text-sm"
+        } font-medium`}
+        contentEditable
+        suppressContentEditableWarning
+        data-placeholder={placeholder ?? ""}
+        onBlur={() => {
+          clearSelectedPills(fieldRef.current!);
+          setSuggest(null);
+        }}
+        onClick={(event) => {
+          const el = fieldRef.current;
+          if (!el) {
+            return;
+          }
+          const pill = (event.target as HTMLElement).closest<HTMLElement>(".token-pill");
+          clearSelectedPills(el);
+          if (pill && !(event.target as HTMLElement).dataset.remove) {
+            pill.classList.add("is-selected");
+            const range = document.createRange();
+            range.selectNode(pill);
+            const selection = window.getSelection();
+            selection?.removeAllRanges();
+            selection?.addRange(range);
+          }
+        }}
+        onInput={() => {
           emit();
-        }
-      }}
-      onPaste={(event) => {
-        event.preventDefault();
-        const text = event.clipboardData.getData("text/plain").replace(/\r?\n/g, " ");
-        // execCommand is deprecated but still the simplest caret-preserving insert.
-        document.execCommand("insertText", false, text);
-      }}
-    />
+          refreshSuggest();
+        }}
+        onKeyDown={(event) => {
+          if (menuOpen) {
+            if (event.key === "ArrowDown") {
+              event.preventDefault();
+              setActiveIndex((index) => (index + 1) % matches.length);
+              return;
+            }
+            if (event.key === "ArrowUp") {
+              event.preventDefault();
+              setActiveIndex((index) => (index - 1 + matches.length) % matches.length);
+              return;
+            }
+            if (event.key === "Enter" || event.key === "Tab") {
+              event.preventDefault();
+              pickToken(matches[activeIndex].id);
+              return;
+            }
+            if (event.key === "Escape") {
+              event.preventDefault();
+              setSuggest(null);
+              return;
+            }
+          }
+          if (event.key === "Enter") {
+            event.preventDefault();
+          }
+        }}
+        onMouseDown={(event) => {
+          const target = event.target as HTMLElement;
+          if (target.dataset.remove) {
+            // Delete the whole pill without disturbing focus/caret.
+            event.preventDefault();
+            target.closest(".token-pill")?.remove();
+            emit();
+          }
+        }}
+        onPaste={(event) => {
+          event.preventDefault();
+          const text = event.clipboardData.getData("text/plain").replace(/\r?\n/g, " ");
+          // execCommand is deprecated but still the simplest caret-preserving insert.
+          document.execCommand("insertText", false, text);
+        }}
+      />
+      {menuOpen ? (
+        <TokenSuggestMenu
+          activeIndex={activeIndex}
+          onPick={(token) => pickToken(token.id)}
+          style={{ left: Math.min(suggest.left, 200), top: suggest.top }}
+          tokens={matches}
+        />
+      ) : null}
+    </div>
   );
 });
 
@@ -225,7 +338,7 @@ export function PatternInput({
   if (density === "compact") {
     return (
       <div>
-        <TokenPatternField ariaLabel={label} dense onChange={onChange} placeholder="Pattern" ref={fieldRef} value={value} />
+        <TokenPatternField ariaLabel={label} dense onChange={onChange} placeholder="Pattern ($ for tokens)" ref={fieldRef} tokens={tokens} value={value} />
         <div className="mt-1 grid grid-cols-[44px_1fr] gap-1 text-[11px]">
           <span className="font-semibold text-graphite">Preview</span>
           <span className="min-w-0 truncate font-medium text-ink">{preview}</span>
@@ -243,7 +356,7 @@ export function PatternInput({
           {preview}
         </div>
       </div>
-      <TokenPatternField ariaLabel={label} onChange={onChange} placeholder="Type text and insert tokens…" ref={fieldRef} value={value} />
+      <TokenPatternField ariaLabel={label} onChange={onChange} placeholder="Type text — $ for tokens…" ref={fieldRef} tokens={tokens} value={value} />
       {tokenButtons}
     </div>
   );
