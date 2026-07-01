@@ -2,7 +2,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { Check, ChevronDown, FolderOpen, Image, Layers, List, Plus, RefreshCw, Search, X } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, FolderOpen, Image, Layers, List, Plus, RefreshCw, Search, X } from "lucide-react";
 import { type Dispatch, type SetStateAction, useEffect, useMemo, useRef, useState } from "react";
 import {
   defaultsForParameters,
@@ -2721,6 +2721,42 @@ function MultiSelectParameter({
   );
 }
 
+const FILE_KIND_FILTERS: { kind: ScanFileKind; label: string }[] = [
+  { kind: "footage", label: "Footage" },
+  { kind: "photo", label: "Photos" },
+  { kind: "audio", label: "Audio" },
+  { kind: "document", label: "Docs" },
+];
+
+// A clickable column header for the file list — file-explorer style: click to sort
+// by that column, click again to flip direction; the active column shows an arrow.
+function SortHeaderButton({
+  label,
+  active,
+  direction,
+  onClick,
+  align,
+}: {
+  label: string;
+  active: boolean;
+  direction: FilePickerSortDirection;
+  onClick: () => void;
+  align?: "right";
+}) {
+  return (
+    <button
+      className={`inline-flex items-center gap-1 ${align === "right" ? "justify-self-end" : ""} ${
+        active ? "text-ink" : "text-graphite hover:text-ink"
+      }`}
+      onClick={onClick}
+      type="button"
+    >
+      {label}
+      {active ? direction === "asc" ? <ChevronUp size={12} /> : <ChevronDown size={12} /> : null}
+    </button>
+  );
+}
+
 function FileSelectionDialog({
   availableCount,
   defaultThumbnailSize,
@@ -2754,9 +2790,50 @@ function FileSelectionDialog({
   const [thumbnailSize, setThumbnailSize] = useState(defaultThumbnailSize);
   const [sortMode, setSortMode] = useState<FilePickerSortMode>("date");
   const [sortDirection, setSortDirection] = useState<FilePickerSortDirection>("desc");
-  const sourceGroups = useMemo(() => groupManifestFiles(files, sortMode, sortDirection), [files, sortDirection, sortMode]);
+  const [search, setSearch] = useState("");
+  const [kindFilter, setKindFilter] = useState<Set<ScanFileKind>>(new Set());
+  const filteredFiles = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    return files.filter((file) => {
+      if (needle && !file.file_name.toLowerCase().includes(needle)) {
+        return false;
+      }
+      // Sidecars ride along with their parent media, so the kind filter ignores them.
+      if (kindFilter.size > 0 && file.kind !== "sidecar" && !kindFilter.has(file.kind)) {
+        return false;
+      }
+      return true;
+    });
+  }, [files, kindFilter, search]);
+  const sourceGroups = useMemo(
+    () => groupManifestFiles(filteredFiles, sortMode, sortDirection),
+    [filteredFiles, sortDirection, sortMode],
+  );
   const selectableFileKeys = useMemo(() => flattenSelectableFileKeys(sourceGroups), [sourceGroups]);
   const highlightedCount = highlightedFileKeys.size;
+  const filteredOut = files.length - filteredFiles.length;
+
+  function handleSort(mode: FilePickerSortMode) {
+    if (mode === sortMode) {
+      setSortDirection((current) => (current === "asc" ? "desc" : "asc"));
+    } else {
+      setSortMode(mode);
+      // Sensible default direction per column: newest/largest first, names A→Z.
+      setSortDirection(mode === "date" || mode === "size" ? "desc" : "asc");
+    }
+  }
+
+  function toggleKindFilter(kind: ScanFileKind) {
+    setKindFilter((current) => {
+      const next = new Set(current);
+      if (next.has(kind)) {
+        next.delete(kind);
+      } else {
+        next.add(kind);
+      }
+      return next;
+    });
+  }
 
   useEffect(() => {
     setHighlightedFileKeys((current) => new Set([...current].filter((key) => selectableFileKeys.includes(key))));
@@ -2812,26 +2889,30 @@ function FileSelectionDialog({
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <div className="w-36">
-              <SelectMenu
-                onChange={(value) => setSortMode(value as FilePickerSortMode)}
-                options={[
-                  { label: "Date", value: "date" },
-                  { label: "Name", value: "name" },
-                  { label: "Type", value: "type" },
-                  { label: "Size", value: "size" },
-                ]}
-                size="sm"
-                value={sortMode}
-              />
-            </div>
-            <button
-              className="h-8 rounded-lg border border-mist bg-white px-2 text-xs font-semibold text-graphite transition hover:bg-porcelain"
-              onClick={() => setSortDirection((current) => (current === "asc" ? "desc" : "asc"))}
-              type="button"
-            >
-              {sortDirectionLabel(sortMode, sortDirection)}
-            </button>
+            {viewMode === "thumbs" ? (
+              <>
+                <div className="w-36">
+                  <SelectMenu
+                    onChange={(value) => setSortMode(value as FilePickerSortMode)}
+                    options={[
+                      { label: "Date", value: "date" },
+                      { label: "Name", value: "name" },
+                      { label: "Type", value: "type" },
+                      { label: "Size", value: "size" },
+                    ]}
+                    size="sm"
+                    value={sortMode}
+                  />
+                </div>
+                <button
+                  className="h-8 rounded-lg border border-mist bg-white px-2 text-xs font-semibold text-graphite transition hover:bg-porcelain"
+                  onClick={() => setSortDirection((current) => (current === "asc" ? "desc" : "asc"))}
+                  type="button"
+                >
+                  {sortDirectionLabel(sortMode, sortDirection)}
+                </button>
+              </>
+            ) : null}
             <div className="flex overflow-hidden rounded-lg border border-mist bg-white">
               <button
                 className={`inline-flex h-8 items-center gap-1 px-2 text-xs font-semibold transition ${
@@ -2892,6 +2973,59 @@ function FileSelectionDialog({
             </button>
           </div>
         </div>
+
+        <div className="flex flex-wrap items-center gap-2 border-b border-mist bg-porcelain/30 px-4 py-2">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-graphite/60" size={13} />
+            <input
+              className="h-8 w-52 rounded-lg border border-mist bg-white pl-7 pr-2 text-xs outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Filter by name…"
+              value={search}
+            />
+          </div>
+          <div className="flex items-center gap-1">
+            {FILE_KIND_FILTERS.map(({ kind, label }) => (
+              <button
+                key={kind}
+                className={`h-8 rounded-lg border px-2 text-xs font-semibold transition ${
+                  kindFilter.has(kind)
+                    ? "border-signal bg-signal text-paper"
+                    : "border-mist bg-white text-graphite hover:bg-porcelain"
+                }`}
+                onClick={() => toggleKindFilter(kind)}
+                type="button"
+              >
+                {label}
+              </button>
+            ))}
+            {kindFilter.size > 0 || search.trim() ? (
+              <button
+                className="h-8 rounded-lg px-2 text-xs font-semibold text-graphite underline-offset-2 hover:underline"
+                onClick={() => {
+                  setSearch("");
+                  setKindFilter(new Set());
+                }}
+                type="button"
+              >
+                Clear
+              </button>
+            ) : null}
+          </div>
+          {filteredOut > 0 ? (
+            <span className="text-[11px] font-medium text-graphite/70">{filteredOut} hidden by filters</span>
+          ) : null}
+        </div>
+
+        {viewMode === "list" ? (
+          <div className="grid grid-cols-[26px_82px_1fr_128px_96px] items-center gap-2 border-b border-mist bg-white px-4 py-1.5 text-[11px] font-semibold">
+            <span />
+            <SortHeaderButton active={sortMode === "type"} direction={sortDirection} label="Type" onClick={() => handleSort("type")} />
+            <SortHeaderButton active={sortMode === "name"} direction={sortDirection} label="Name" onClick={() => handleSort("name")} />
+            <SortHeaderButton active={sortMode === "date"} direction={sortDirection} label="Date" onClick={() => handleSort("date")} />
+            <SortHeaderButton active={sortMode === "size"} align="right" direction={sortDirection} label="Size" onClick={() => handleSort("size")} />
+          </div>
+        ) : null}
 
         <div className="min-h-0 flex-1 overflow-auto bg-white">
           {sourceGroups.map((sourceGroup) => (
@@ -3701,16 +3835,12 @@ function groupManifestFiles(
 
   return Array.from(sourceMap.entries()).map(([sourcePath, sourceFiles]) => {
     const sortedFiles = sortManifestFiles(sourceFiles, sortMode, sortDirection);
-    const days = [
-      {
-        dayKey: "sorted",
-        fileCount: sortedFiles.filter((file) => !file.disabled).length,
-        files: sortedFiles,
-        label: `${sortModeLabel(sortMode)} / ${sortDirectionLabel(sortMode, sortDirection)}`,
-        selectableKeys: sortedFiles.filter((file) => !file.disabled).map((file) => file.sourceKey),
-        sizeBytes: sortedFiles.reduce((sum, file) => sum + (file.disabled ? 0 : file.size_bytes), 0),
-      },
-    ];
+    // When sorting by date, break the list into calendar-day groups (Today /
+    // Yesterday / weekday / date); otherwise keep one group for the whole source.
+    const days =
+      sortMode === "date"
+        ? buildDayGroups(sortedFiles)
+        : [makeDayGroup("sorted", `${sortModeLabel(sortMode)} / ${sortDirectionLabel(sortMode, sortDirection)}`, sortedFiles)];
 
     return {
       days,
@@ -3721,6 +3851,65 @@ function groupManifestFiles(
       sourcePath,
     };
   });
+}
+
+function makeDayGroup(dayKey: string, label: string, files: ManifestFile[]): ManifestDayGroup {
+  const selectable = files.filter((file) => !file.disabled);
+  return {
+    dayKey,
+    label,
+    files,
+    fileCount: selectable.length,
+    selectableKeys: selectable.map((file) => file.sourceKey),
+    sizeBytes: files.reduce((sum, file) => sum + (file.disabled ? 0 : file.size_bytes), 0),
+  };
+}
+
+// Buckets an already-sorted file list by shot/modified calendar day, preserving the
+// incoming order so day groups appear newest→oldest (or oldest→newest) to match sort.
+function buildDayGroups(sortedFiles: ManifestFile[]): ManifestDayGroup[] {
+  const order: string[] = [];
+  const buckets = new Map<string, ManifestFile[]>();
+  for (const file of sortedFiles) {
+    const date = dateFromTimestamp(file.modified_at);
+    const key = date ? dayKeyForDate(date) : "unknown";
+    if (!buckets.has(key)) {
+      buckets.set(key, []);
+      order.push(key);
+    }
+    buckets.get(key)!.push(file);
+  }
+  return order.map((key) => {
+    const dayFiles = buckets.get(key)!;
+    const sample = dayFiles.find((file) => dateFromTimestamp(file.modified_at));
+    return makeDayGroup(key, key === "unknown" ? "Unknown date" : dayLabelForDate(sample?.modified_at), dayFiles);
+  });
+}
+
+function dayKeyForDate(date: Date) {
+  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+}
+
+// "Today" / "Yesterday" for the last 48h, weekday within the past week, else a date.
+function dayLabelForDate(value?: string | null) {
+  const date = dateFromTimestamp(value);
+  if (!date) {
+    return "Unknown date";
+  }
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const diffDays = Math.round((startOfToday.getTime() - startOfDate.getTime()) / 86_400_000);
+  if (diffDays === 0) {
+    return "Today";
+  }
+  if (diffDays === 1) {
+    return "Yesterday";
+  }
+  if (diffDays > 1 && diffDays < 7) {
+    return date.toLocaleDateString(undefined, { weekday: "long" });
+  }
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
 function flattenSelectableFileKeys(sourceGroups: ManifestSourceGroup[]) {
