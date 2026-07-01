@@ -26,6 +26,21 @@ export function NamingPage() {
   const [dirty, setDirty] = useState(false);
   const [saved, setSaved] = useState(false);
   const [sharedOpen, setSharedOpen] = useState(false);
+  // Right-click context menu on a template row: { screen position, template id }.
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; id: string } | null>(null);
+
+  useEffect(() => {
+    if (!contextMenu) {
+      return;
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setContextMenu(null);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [contextMenu]);
 
   useEffect(() => {
     let cancelled = false;
@@ -117,7 +132,9 @@ export function NamingPage() {
   }
 
   return (
-    <div className="tool-density flex min-h-full w-full min-w-0 flex-col rounded-[28px] border border-mist bg-paper p-2 shadow-panel xl:p-3">
+    // Height is pinned to the viewport (minus the app frame's padding) so the page
+    // itself never scrolls — the template list and the editor pane scroll internally.
+    <div className="tool-density flex h-[calc(100vh-1rem)] max-h-[calc(100vh-1rem)] w-full min-w-0 flex-col rounded-[28px] border border-mist bg-paper p-2 shadow-panel xl:h-[calc(100vh-1.5rem)] xl:max-h-[calc(100vh-1.5rem)] xl:p-3 2xl:h-[calc(100vh-2rem)] 2xl:max-h-[calc(100vh-2rem)]">
       <header className="mb-2 flex items-start justify-between gap-3">
         <div>
           <p className="mb-0.5 text-[11px] font-semibold text-graphite/70">Naming</p>
@@ -174,6 +191,15 @@ export function NamingPage() {
                       : "text-graphite hover:bg-porcelain"
                   }`}
                   onClick={() => setSelectedId(deliverable.id)}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    setSelectedId(deliverable.id);
+                    setContextMenu({
+                      x: Math.min(event.clientX, window.innerWidth - 180),
+                      y: Math.min(event.clientY, window.innerHeight - 96),
+                      id: deliverable.id,
+                    });
+                  }}
                   type="button"
                 >
                   <div className="truncate">{deliverable.label}</div>
@@ -202,6 +228,36 @@ export function NamingPage() {
       )}
 
       {sharedOpen ? <SharedListsModal catalog={catalog} onChange={update} onClose={() => setSharedOpen(false)} /> : null}
+
+      {contextMenu ? (
+        <>
+          {/* Click-catcher: any click or right-click outside the menu closes it. */}
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => setContextMenu(null)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setContextMenu(null);
+            }}
+          />
+          <div
+            className="fixed z-50 min-w-[160px] overflow-hidden rounded-xl border border-mist bg-white py-1 shadow-panel"
+            style={{ left: contextMenu.x, top: contextMenu.y }}
+          >
+            <button
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs font-semibold text-red-700 transition hover:bg-red-50"
+              onClick={() => {
+                const id = contextMenu.id;
+                setContextMenu(null);
+                removeTemplate(id);
+              }}
+              type="button"
+            >
+              <Trash2 size={13} /> Delete template
+            </button>
+          </div>
+        </>
+      ) : null}
     </div>
   );
 }
