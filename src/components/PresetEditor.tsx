@@ -38,6 +38,7 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
     initialPreset.variables.map(() => createRowKey()),
   );
   const [globalParameters, setGlobalParameters] = useState<PresetVariable[]>([]);
+  const [customFileKinds, setCustomFileKinds] = useState<Record<string, string>>({});
   const [metadataSummaries, setMetadataSummaries] = useState<MetadataPresetSummary[]>([]);
   const [isMetadataManagerOpen, setIsMetadataManagerOpen] = useState(false);
 
@@ -56,7 +57,10 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
 
   useEffect(() => {
     getSettings()
-      .then((settings) => setGlobalParameters(settings.global_parameters))
+      .then((settings) => {
+        setGlobalParameters(settings.global_parameters);
+        setCustomFileKinds(settings.custom_file_kinds ?? {});
+      })
       .catch(() => setGlobalParameters([]));
   }, []);
 
@@ -410,6 +414,7 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
             onChange={(folder_tree) => updateDraft({ folder_tree })}
             routingOverrides={draft.file_type_routing_overrides}
             onRoutingChange={(file_type_routing_overrides) => updateDraft({ file_type_routing_overrides })}
+            customFileKinds={customFileKinds}
             variables={allParameters}
           />
         </div>

@@ -2,6 +2,25 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{OnceLock, RwLock};
+
+/// User-defined extension -> kind overrides, set from app settings. Lets the team
+/// permanently classify extra file types into a role (e.g. add ".foo" to Audio) so
+/// they route to that role's folder everywhere. Read on every classification.
+fn custom_kinds() -> &'static RwLock<BTreeMap<String, ScanFileKind>> {
+    static CELL: OnceLock<RwLock<BTreeMap<String, ScanFileKind>>> = OnceLock::new();
+    CELL.get_or_init(|| RwLock::new(BTreeMap::new()))
+}
+
+pub fn set_custom_kinds(entries: BTreeMap<String, ScanFileKind>) {
+    if let Ok(mut guard) = custom_kinds().write() {
+        *guard = entries;
+    }
+}
+
+fn custom_kind_for(extension: &str) -> Option<ScanFileKind> {
+    custom_kinds().read().ok().and_then(|guard| guard.get(extension).copied())
+}
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct SourceScan {
@@ -461,6 +480,11 @@ fn classify_file(path: &Path, extension: &str) -> ScanFileKind {
 
     if is_ignored_file(file_name) {
         return ScanFileKind::Ignored;
+    }
+
+    // A user-configured extension override wins over the built-in classification.
+    if let Some(kind) = custom_kind_for(extension) {
+        return kind;
     }
 
     match extension {

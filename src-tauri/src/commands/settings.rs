@@ -20,6 +20,10 @@ pub struct AppSettings {
     /// Operator name printed on offload integrity proofs.
     #[serde(default)]
     pub operator_name: String,
+    /// User-defined extension -> role/kind classification (e.g. ".foo" -> "audio").
+    /// Applied globally so those types route to the matching role's folder.
+    #[serde(default)]
+    pub custom_file_kinds: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -119,7 +123,10 @@ pub fn get_settings(app: AppHandle) -> Result<AppSettings, String> {
     }
 
     let json = fs::read_to_string(&path).map_err(|error| error.to_string())?;
-    serde_json::from_str(&json).map_err(|error| format!("{}: {error}", path.display()))
+    let settings: AppSettings =
+        serde_json::from_str(&json).map_err(|error| format!("{}: {error}", path.display()))?;
+    apply_custom_file_kinds(&settings);
+    Ok(settings)
 }
 
 #[tauri::command]
@@ -132,8 +139,36 @@ pub fn save_settings(app: AppHandle, settings: AppSettings) -> Result<AppSetting
 
     let json = serde_json::to_string_pretty(&settings).map_err(|error| error.to_string())?;
     fs::write(path, json).map_err(|error| error.to_string())?;
+    apply_custom_file_kinds(&settings);
 
     Ok(settings)
+}
+
+/// Pushes the user's extension->kind overrides into the scanner so scans and ingests
+/// classify them into the chosen role. Called whenever settings are read or written.
+fn apply_custom_file_kinds(settings: &AppSettings) {
+    use crate::ingest::scanner::ScanFileKind;
+    let parsed = settings
+        .custom_file_kinds
+        .iter()
+        .filter_map(|(extension, kind)| {
+            let extension = extension.trim().to_lowercase();
+            let extension = if extension.starts_with('.') {
+                extension
+            } else {
+                format!(".{extension}")
+            };
+            let kind = match kind.trim().to_lowercase().as_str() {
+                "footage" => ScanFileKind::Footage,
+                "photo" | "photos" => ScanFileKind::Photo,
+                "audio" => ScanFileKind::Audio,
+                "document" | "documents" => ScanFileKind::Document,
+                _ => return None,
+            };
+            Some((extension, kind))
+        })
+        .collect();
+    crate::ingest::scanner::set_custom_kinds(parsed);
 }
 
 fn validate_settings(settings: &AppSettings) -> Result<(), String> {

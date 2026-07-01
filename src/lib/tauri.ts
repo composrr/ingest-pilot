@@ -38,6 +38,7 @@ export const defaultAppSettings: AppSettings = {
     group_by_date: true,
   },
   operator_name: "",
+  custom_file_kinds: {},
 };
 
 export type DroppedTemplateItems = {

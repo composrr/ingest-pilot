@@ -1,4 +1,4 @@
-import { Plus, Save, Trash2 } from "lucide-react";
+import { Plus, Save, Trash2, X } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import { FloatingHelp } from "../components/FloatingHelp";
 import { OptionsTextField } from "../components/OptionsTextField";
@@ -199,6 +199,16 @@ export function SettingsPage() {
                 updateSettings({ file_selector: { ...settings.file_selector, thumbnail_size } })
               }
               value={settings.file_selector.thumbnail_size}
+            />
+          </SettingsSection>
+
+          <SettingsSection
+            help="Permanently classify extra file extensions into a media role. Anything you add here is treated as that role everywhere — scans, routing to the role's folder, and reports. Save to apply."
+            title="Custom File Types"
+          >
+            <CustomFileKindsEditor
+              onChange={(custom_file_kinds) => updateSettings({ custom_file_kinds })}
+              value={settings.custom_file_kinds}
             />
           </SettingsSection>
 
@@ -561,4 +571,103 @@ function defaultForVariableType(type: VariableType) {
 function dateDefaultInputValue(value: PresetVariable["default"]) {
   const defaultValue = typeof value === "string" ? value.trim() : "";
   return !defaultValue || defaultValue.toLowerCase() === "today" ? currentLocalDate() : defaultValue;
+}
+
+const CUSTOM_KIND_ROWS: { kind: string; label: string }[] = [
+  { kind: "footage", label: "Footage" },
+  { kind: "audio", label: "Audio" },
+  { kind: "photo", label: "Photos" },
+  { kind: "document", label: "Docs" },
+];
+
+function normalizeExtension(value: string): string | null {
+  const trimmed = value.trim().toLowerCase().replace(/\s+/g, "");
+  if (!trimmed) {
+    return null;
+  }
+  const withDot = trimmed.startsWith(".") ? trimmed : `.${trimmed}`;
+  return /^\.[a-z0-9]+$/.test(withDot) ? withDot : null;
+}
+
+// Lets the user permanently map extra extensions into a media role (footage/audio/
+// photos/docs). Stored in settings.custom_file_kinds (ext -> kind) and applied globally.
+function CustomFileKindsEditor({
+  value,
+  onChange,
+}: {
+  value: Record<string, string>;
+  onChange: (next: Record<string, string>) => void;
+}) {
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+
+  function addExtension(kind: string) {
+    const extension = normalizeExtension(drafts[kind] ?? "");
+    setDrafts((current) => ({ ...current, [kind]: "" }));
+    if (extension) {
+      onChange({ ...value, [extension]: kind });
+    }
+  }
+
+  function removeExtension(extension: string) {
+    const next = { ...value };
+    delete next[extension];
+    onChange(next);
+  }
+
+  return (
+    <div className="space-y-2 px-3 py-2">
+      {CUSTOM_KIND_ROWS.map(({ kind, label }) => {
+        const extensions = Object.entries(value)
+          .filter(([, mappedKind]) => mappedKind === kind || (kind === "photo" && mappedKind === "photos") || (kind === "document" && mappedKind === "documents"))
+          .map(([extension]) => extension)
+          .sort();
+        return (
+          <div key={kind} className="rounded-lg border border-mist bg-white p-2">
+            <div className="mb-1 text-xs font-semibold text-graphite">{label}</div>
+            <div className="flex flex-wrap items-center gap-1">
+              {extensions.map((extension) => (
+                <span
+                  key={extension}
+                  className="inline-flex items-center gap-1 rounded-md bg-porcelain py-0.5 pl-2 pr-1 text-[11px] font-semibold text-ink"
+                >
+                  {extension}
+                  <button
+                    aria-label={`Remove ${extension}`}
+                    className="rounded p-0.5 text-graphite/60 transition hover:text-red-700"
+                    onClick={() => removeExtension(extension)}
+                    type="button"
+                  >
+                    <X size={11} />
+                  </button>
+                </span>
+              ))}
+              {extensions.length === 0 ? <span className="text-[11px] text-graphite/50">No custom types.</span> : null}
+            </div>
+            <div className="mt-1.5 flex items-center gap-1.5">
+              <input
+                className="h-7 w-24 rounded-lg border border-mist bg-white px-2 text-xs outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+                onChange={(event) => setDrafts((current) => ({ ...current, [kind]: event.target.value }))}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    addExtension(kind);
+                  }
+                }}
+                placeholder=".ext"
+                value={drafts[kind] ?? ""}
+              />
+              <button
+                className="inline-flex h-7 items-center gap-1 rounded-lg border border-mist bg-white px-2 text-xs font-semibold text-graphite transition hover:bg-porcelain"
+                onClick={() => addExtension(kind)}
+                type="button"
+              >
+                <Plus size={12} />
+                Add
+              </button>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
 }

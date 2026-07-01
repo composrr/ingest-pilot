@@ -46,6 +46,7 @@ type FolderTreeEditorProps = {
   onChange: (folders: FolderNode[]) => void;
   routingOverrides: Record<string, string>;
   onRoutingChange: (overrides: Record<string, string>) => void;
+  customFileKinds: Record<string, string>;
   variables: PresetVariable[];
 };
 
@@ -84,6 +85,7 @@ export function FolderTreeEditor({
   onChange,
   routingOverrides,
   onRoutingChange,
+  customFileKinds,
   variables,
 }: FolderTreeEditorProps) {
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => collectFolderIds(folders));
@@ -637,6 +639,7 @@ export function FolderTreeEditor({
             onUpdateTokenPreview={updateFolderTokenPreview}
             routingOverrides={routingOverrides}
             onRoutingChange={onRoutingChange}
+            customFileKinds={customFileKinds}
             tokenPreviewValues={selectedFolder ? tokenPreviewValues[selectedFolder.id] ?? {} : {}}
             variables={variables}
           />
@@ -891,21 +894,33 @@ function FolderRoutingSection({
   folder,
   routingOverrides,
   onRoutingChange,
+  customFileKinds,
 }: {
   folder: FolderNode;
   routingOverrides: Record<string, string>;
   onRoutingChange: (overrides: Record<string, string>) => void;
+  customFileKinds: Record<string, string>;
 }) {
   const [draftExtension, setDraftExtension] = useState("");
 
-  // Extensions this folder receives by role (and footage target), excluding any that a
-  // custom rule points at a different folder.
+  // Extensions this folder receives by role (built-in + user-defined custom kinds and
+  // the footage target), excluding any that a custom folder rule points elsewhere.
   const roleKindExtensions = new Set<string>();
-  if (folder.role && KIND_EXTENSIONS[folder.role]) {
-    KIND_EXTENSIONS[folder.role].forEach((extension) => roleKindExtensions.add(extension));
+  const addRoleExtensions = (roleKey: string) => {
+    (KIND_EXTENSIONS[roleKey] ?? []).forEach((extension) => roleKindExtensions.add(extension));
+    // custom_file_kinds uses singular "photo"/"document"; folder roles use plural.
+    const kindAliases = roleKey === "photos" ? ["photo", "photos"] : roleKey === "documents" ? ["document", "documents"] : [roleKey];
+    for (const [extension, kind] of Object.entries(customFileKinds)) {
+      if (kindAliases.includes(kind)) {
+        roleKindExtensions.add(extension);
+      }
+    }
+  };
+  if (folder.role) {
+    addRoleExtensions(folder.role);
   }
   if (folder.is_footage_destination) {
-    KIND_EXTENSIONS.footage.forEach((extension) => roleKindExtensions.add(extension));
+    addRoleExtensions("footage");
   }
   const defaultExtensions = [...roleKindExtensions]
     .filter((extension) => {
@@ -1025,6 +1040,7 @@ function FolderInspector({
   onUpdateTokenPreview,
   routingOverrides,
   onRoutingChange,
+  customFileKinds,
   tokenPreviewValues,
   variables,
 }: {
@@ -1035,6 +1051,7 @@ function FolderInspector({
   onUpdateTokenPreview: (folderId: string, variableId: string, value: string) => void;
   routingOverrides: Record<string, string>;
   onRoutingChange: (overrides: Record<string, string>) => void;
+  customFileKinds: Record<string, string>;
   tokenPreviewValues: Record<string, string>;
   variables: PresetVariable[];
 }) {
@@ -1185,6 +1202,7 @@ function FolderInspector({
         </div>
 
         <FolderRoutingSection
+          customFileKinds={customFileKinds}
           folder={folder}
           onRoutingChange={onRoutingChange}
           routingOverrides={routingOverrides}

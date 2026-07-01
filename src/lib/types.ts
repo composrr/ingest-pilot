@@ -133,6 +133,7 @@ export type AppSettings = {
     group_by_date: boolean;
   };
   operator_name: string;
+  custom_file_kinds: Record<string, string>;
 };
 
 export type TokenContext = {
