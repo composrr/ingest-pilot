@@ -867,17 +867,26 @@ function TreeGuides({ row }: { row: FolderTreeRow }) {
   );
 }
 
-const ROLE_ROUTING_LABELS: Record<string, string> = {
-  footage: "All footage",
-  audio: "All audio files",
-  photos: "All photo files",
-  documents: "All document files",
-  other: "Uncategorized files",
+// Default extensions per media kind, mirroring the Rust scanner's classify_file so the
+// preset editor can show exactly what will route to a folder for its role.
+const KIND_EXTENSIONS: Record<string, string[]> = {
+  footage: [".mp4", ".mov", ".mxf", ".avi", ".m4v", ".mts", ".m2ts", ".braw", ".r3d", ".crm", ".cine"],
+  photos: [".jpg", ".jpeg", ".png", ".heic", ".tif", ".tiff", ".cr2", ".nef", ".arw", ".dng", ".raw", ".orf", ".rw2"],
+  audio: [".wav", ".mp3", ".aif", ".aiff", ".m4a", ".flac"],
+  documents: [".pdf", ".txt", ".doc", ".docx", ".csv", ".xlsx", ".xls", ".rtf"],
 };
 
-// Shows what file types land in a folder (its role default + any custom extensions)
-// and lets the user add/remove custom extensions. Writes preset.file_type_routing_overrides
-// (ext -> folder id), which the copy engine's route_folder honors.
+const ROLE_LABELS: Record<string, string> = {
+  footage: "footage",
+  photos: "photo",
+  audio: "audio",
+  documents: "document",
+  other: "other",
+};
+
+// Shows every file type that will land in a folder — the extensions for its role (plus
+// footage if it's the footage target), minus any that a custom rule sends elsewhere —
+// and lets the user add/remove custom types. Updates dynamically with the role dropdown.
 function FolderRoutingSection({
   folder,
   routingOverrides,
@@ -888,15 +897,28 @@ function FolderRoutingSection({
   onRoutingChange: (overrides: Record<string, string>) => void;
 }) {
   const [draftExtension, setDraftExtension] = useState("");
+
+  // Extensions this folder receives by role (and footage target), excluding any that a
+  // custom rule points at a different folder.
+  const roleKindExtensions = new Set<string>();
+  if (folder.role && KIND_EXTENSIONS[folder.role]) {
+    KIND_EXTENSIONS[folder.role].forEach((extension) => roleKindExtensions.add(extension));
+  }
+  if (folder.is_footage_destination) {
+    KIND_EXTENSIONS.footage.forEach((extension) => roleKindExtensions.add(extension));
+  }
+  const defaultExtensions = [...roleKindExtensions]
+    .filter((extension) => {
+      const override = routingOverrides[extension];
+      return override === undefined || override === folder.id;
+    })
+    .sort();
   const customExtensions = Object.entries(routingOverrides)
-    .filter(([, folderId]) => folderId === folder.id)
+    .filter(([extension, folderId]) => folderId === folder.id && !roleKindExtensions.has(extension))
     .map(([extension]) => extension)
     .sort();
-  const roleLabel = folder.is_footage_destination
-    ? "Video footage (default target)"
-    : folder.role
-      ? ROLE_ROUTING_LABELS[folder.role]
-      : null;
+
+  const roleDescriptor = folder.role ? ROLE_LABELS[folder.role] : null;
 
   function normalizeExtension(value: string): string | null {
     const trimmed = value.trim().toLowerCase().replace(/\s+/g, "");
@@ -926,16 +948,28 @@ function FolderRoutingSection({
       <div className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-graphite">
         Files routed here
         <FloatingHelp label="Routing help">
-          Media routes to this folder by its role above, plus any custom file types you add here. A custom type always
-          lands in this folder, overriding the role defaults.
+          These are the file types that land in this folder — the ones for its role above, plus any custom types you
+          add. A custom type always wins over the role defaults.
         </FloatingHelp>
       </div>
+
+      {defaultExtensions.length > 0 ? (
+        <div className="mb-1.5">
+          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-graphite/50">
+            {roleDescriptor ? `All ${roleDescriptor} files` : "By role"}
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {defaultExtensions.map((extension) => (
+              <span key={extension} className="rounded-md bg-porcelain px-1.5 py-0.5 text-[11px] font-semibold text-graphite">
+                {extension}
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-graphite/50">Custom types</div>
       <div className="flex flex-wrap items-center gap-1">
-        {roleLabel ? (
-          <span className="rounded-md bg-white px-2 py-0.5 text-[11px] font-semibold text-graphite ring-1 ring-mist">
-            {roleLabel}
-          </span>
-        ) : null}
         {customExtensions.map((extension) => (
           <span
             key={extension}
@@ -952,10 +986,11 @@ function FolderRoutingSection({
             </button>
           </span>
         ))}
-        {!roleLabel && customExtensions.length === 0 ? (
-          <span className="text-[11px] text-graphite/60">No file types yet — set a role above or add one below.</span>
+        {customExtensions.length === 0 ? (
+          <span className="text-[11px] text-graphite/60">None yet.</span>
         ) : null}
       </div>
+
       <div className="mt-1.5 flex items-center gap-1.5">
         <input
           className="h-7 w-24 rounded-lg border border-mist bg-white px-2 text-xs outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"

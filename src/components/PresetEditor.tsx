@@ -3,6 +3,7 @@ import { ArrowDown, ArrowUp, FolderOpen, Minus, Plus, Save, Trash2, X } from "lu
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { FloatingHelp } from "./FloatingHelp";
 import { FolderTreeEditor } from "./FolderTreeEditor";
+import { MetadataPresetsManager } from "./MetadataPresetsManager";
 import { OptionsTextField } from "./OptionsTextField";
 import { PatternInput } from "./PatternInput";
 import { SelectMenu } from "./SelectMenu";
@@ -38,9 +39,14 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
   );
   const [globalParameters, setGlobalParameters] = useState<PresetVariable[]>([]);
   const [metadataSummaries, setMetadataSummaries] = useState<MetadataPresetSummary[]>([]);
+  const [isMetadataManagerOpen, setIsMetadataManagerOpen] = useState(false);
+
+  function refreshMetadataSummaries() {
+    void listMetadataPresets().then(setMetadataSummaries).catch(() => undefined);
+  }
 
   useEffect(() => {
-    void listMetadataPresets().then(setMetadataSummaries).catch(() => undefined);
+    refreshMetadataSummaries();
   }, []);
   const allParameters = useMemo(
     () => mergeGlobalAndPresetParameters(globalParameters, draft.variables),
@@ -298,13 +304,22 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
                       pre-selected and written to the iconik CSV. Manage schemas in the Metadata tab.
                     </FloatingHelp>
                   </div>
-                  <SelectMenu
-                    onChange={(value) => updateDraft({ metadata_preset_id: value || null })}
-                    options={[{ label: "None", value: "" }, ...metadataSummaries.map((item) => ({ label: item.name, value: item.id }))]}
-                    placeholder="No metadata"
-                    size="sm"
-                    value={draft.metadata_preset_id ?? ""}
-                  />
+                  <div className="grid grid-cols-[1fr_auto] gap-1.5">
+                    <SelectMenu
+                      onChange={(value) => updateDraft({ metadata_preset_id: value || null })}
+                      options={[{ label: "None", value: "" }, ...metadataSummaries.map((item) => ({ label: item.name, value: item.id }))]}
+                      placeholder="No metadata"
+                      size="sm"
+                      value={draft.metadata_preset_id ?? ""}
+                    />
+                    <button
+                      className="inline-flex h-8 items-center gap-1 rounded-lg border border-mist bg-white px-2 text-xs font-semibold text-graphite transition hover:bg-porcelain"
+                      onClick={() => setIsMetadataManagerOpen(true)}
+                      type="button"
+                    >
+                      Manage
+                    </button>
+                  </div>
                 </div>
               </div>
             </section>
@@ -399,6 +414,34 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
           />
         </div>
       </div>
+
+      {isMetadataManagerOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/30 p-4 backdrop-blur-sm">
+          <section className="flex h-[86vh] w-full max-w-5xl flex-col overflow-hidden rounded-[24px] border border-mist bg-paper p-3 shadow-panel">
+            <div className="mb-2 flex items-center justify-between">
+              <div>
+                <h2 className="text-base font-semibold">Metadata presets</h2>
+                <p className="text-xs text-graphite">Create or edit metadata schemas and their field options. Selecting one attaches it to this preset.</p>
+              </div>
+              <button
+                className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-signal px-3 text-sm font-semibold text-paper transition hover:bg-black"
+                onClick={() => {
+                  setIsMetadataManagerOpen(false);
+                  refreshMetadataSummaries();
+                }}
+                type="button"
+              >
+                Done
+              </button>
+            </div>
+            <MetadataPresetsManager
+              onChange={refreshMetadataSummaries}
+              onSelect={(id) => updateDraft({ metadata_preset_id: id })}
+              selectedId={draft.metadata_preset_id}
+            />
+          </section>
+        </div>
+      ) : null}
     </div>
   );
 }
