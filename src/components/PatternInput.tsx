@@ -219,6 +219,29 @@ export function PatternInput({
           />
         ) : null}
 
+        {showTokenPills && parts.some((part) => part.type === "token") ? (
+          <div className="mt-1.5 flex flex-wrap items-center gap-1 rounded-lg bg-porcelain/70 p-1">
+            {parts.map((part, index) =>
+              part.type === "token" ? (
+                <button
+                  key={`${part.value}-${index}`}
+                  className="inline-flex items-center gap-1 rounded-md bg-white px-1.5 py-0.5 text-[11px] font-semibold text-ink ring-1 ring-mist transition hover:bg-red-50 hover:text-red-800 hover:ring-red-200"
+                  onClick={() => removePart(part.start, part.end)}
+                  title={`Remove ${part.value}`}
+                  type="button"
+                >
+                  {part.value}
+                  <X size={10} />
+                </button>
+              ) : part.value.trim() ? (
+                <span key={`${part.value}-${index}`} className="px-0.5 text-[11px] font-medium text-graphite">
+                  {part.value}
+                </span>
+              ) : null,
+            )}
+          </div>
+        ) : null}
+
         {showTokenButtons ? (
           <div className="mt-2 flex max-h-20 flex-wrap gap-1 overflow-auto rounded-lg bg-porcelain/70 p-1">
             {tokens.map((token) => (

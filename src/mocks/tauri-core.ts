@@ -32,9 +32,15 @@ function summary(preset: Preset): PresetSummary {
   };
 }
 
+// Mirrors the Rust token resolver's separator collapsing so the design-mode preview
+// matches: runs of _ / - fold to one and are trimmed from the ends.
+function collapseSeparators(value: string): string {
+  return value.replace(/([_-])[_-]+/g, "$1").replace(/^[_\- ]+|[_\- ]+$/g, "");
+}
+
 function resolvePattern(pattern: string, ctx?: TokenContext): string {
   const values = ctx?.variable_values ?? {};
-  return pattern.replace(/\{([^}]+)\}/g, (_match, raw: string) => {
+  const resolved = pattern.replace(/\{([^}]+)\}/g, (_match, raw: string) => {
     const key = raw.trim();
     switch (key) {
       case "date":
@@ -66,6 +72,7 @@ function resolvePattern(pattern: string, ctx?: TokenContext): string {
         return values[key] ?? `{${key}}`;
     }
   });
+  return collapseSeparators(resolved);
 }
 
 function scannedFile(
