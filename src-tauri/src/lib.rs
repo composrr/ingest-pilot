@@ -41,6 +41,8 @@ pub fn run() {
             commands::metadata_presets::get_metadata_preset,
             commands::metadata_presets::save_metadata_preset,
             commands::metadata_presets::delete_metadata_preset,
+            commands::naming_catalog::get_naming_catalog,
+            commands::naming_catalog::save_naming_catalog,
             commands::ingest::scaffold_project,
             commands::ingest::run_ingest,
             commands::ingest::retry_failed_copies,

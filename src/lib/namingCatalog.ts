@@ -52,6 +52,9 @@ export type NamingDeliverable = {
   presetId: string;
   presetName: string;
   rootPattern: string;
+  // Optional year-aware sub-path created inside the destination before the project
+  // folder (e.g. "{year}/Broll"), so the preset points at a stable parent forever.
+  subPath?: string;
   fields: NamingField[];
 };
 
@@ -126,6 +129,7 @@ export const NAMING_DELIVERABLES: NamingDeliverable[] = [
     presetId: "naming_video_capture",
     presetName: "Capture — Event / B-Roll",
     rootPattern: `${DATE}_{event_name}_{signifier}`,
+    subPath: "{year}/Broll",
     fields: [
       { id: "event_name", label: "Event name", type: "short_text", required: true, placeholder: "MiddleSchoolCamp" },
       { id: "signifier", label: "Signifier (optional)", type: "dropdown", required: false, options: VIDEO_SIGNIFIERS },
@@ -143,6 +147,49 @@ export const NAMING_DELIVERABLES: NamingDeliverable[] = [
     fields: [{ id: "campus", label: "Campus", type: "dropdown", required: true, options: NAMING_CAMPUSES }],
   },
 ];
+
+// The full, editable naming catalog — persisted as one JSON file in the Documents
+// library so the team can add options from the naming sheet and sync across machines.
+export type NamingMinistry = { code: string; label: string };
+
+export type NamingCatalog = {
+  schema_version: number;
+  ministries: NamingMinistry[];
+  campuses: string[];
+  signifiers: string[];
+  deliverables: NamingDeliverable[];
+};
+
+// The shipped defaults (seeded on first run); everything here is editable in the
+// Naming tab, which is where the full naming sheet gets folded in over time.
+export function defaultNamingCatalog(): NamingCatalog {
+  return {
+    schema_version: 1,
+    ministries: NAMING_MINISTRIES.map((ministry) => ({ ...ministry })),
+    campuses: [...NAMING_CAMPUSES],
+    signifiers: [...VIDEO_SIGNIFIERS],
+    deliverables: NAMING_DELIVERABLES.map((deliverable) => ({
+      ...deliverable,
+      fields: deliverable.fields.map((field) => ({ ...field, options: field.options ? [...field.options] : undefined })),
+    })),
+  };
+}
+
+// Merges a persisted (possibly partial/older) catalog over the shipped defaults so
+// new default deliverables appear even in an existing library, while user edits win.
+export function mergeNamingCatalog(persisted: Partial<NamingCatalog> | null | undefined): NamingCatalog {
+  const base = defaultNamingCatalog();
+  if (!persisted) {
+    return base;
+  }
+  return {
+    schema_version: persisted.schema_version ?? base.schema_version,
+    ministries: persisted.ministries?.length ? persisted.ministries : base.ministries,
+    campuses: persisted.campuses?.length ? persisted.campuses : base.campuses,
+    signifiers: persisted.signifiers?.length ? persisted.signifiers : base.signifiers,
+    deliverables: persisted.deliverables?.length ? persisted.deliverables : base.deliverables,
+  };
+}
 
 export function deliverableById(id: string): NamingDeliverable | undefined {
   return NAMING_DELIVERABLES.find((deliverable) => deliverable.id === id);
@@ -172,7 +219,7 @@ export function buildNamingPreset(deliverable: NamingDeliverable, nowIso: string
     file_rename_pattern: "{camera}_{clip#}",
     clip_number_padding: 3,
     per_folder_rename_overrides: {},
-    destinations: { primary: "", secondaries: [] },
+    destinations: { primary: "", secondaries: [], sub_path_pattern: deliverable.subPath ?? "" },
     file_type_routing_overrides: { ".wav": "folder_audio", ".mp3": "folder_audio" },
     preserve_xml_sidecars: true,
     rename_files_default: true,

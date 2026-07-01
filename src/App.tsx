@@ -10,6 +10,7 @@ import {
   Settings,
   Sparkles,
   Tags,
+  Wand2,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { UpdateModal } from "./components/UpdateModal";
@@ -19,6 +20,7 @@ import { HelpPage } from "./pages/HelpPage";
 import { HistoryPage } from "./pages/HistoryPage";
 import { IngestPage } from "./pages/IngestPage";
 import { MetadataPage } from "./pages/MetadataPage";
+import { NamingPage } from "./pages/NamingPage";
 import { PresetsPage } from "./pages/PresetsPage";
 import { ScaffoldPage } from "./pages/ScaffoldPage";
 import { SettingsPage } from "./pages/SettingsPage";
@@ -31,6 +33,7 @@ const navItems = [
   { icon: FolderTree, label: "Create Folders", view: "scaffold" },
   { icon: HardDriveDownload, label: "Ingest Media", view: "ingest" },
   { icon: Tags, label: "Metadata", view: "metadata" },
+  { icon: Wand2, label: "Naming", view: "naming" },
   { icon: Archive, label: "History", view: "history" },
   { icon: Settings, label: "Settings", view: "settings" },
 ] as const;
@@ -192,6 +195,10 @@ function renderView(activeView: AppView, selectView: (view: AppView) => void) {
 
   if (activeView === "metadata") {
     return <MetadataPage />;
+  }
+
+  if (activeView === "naming") {
+    return <NamingPage />;
   }
 
   if (activeView === "scaffold") {

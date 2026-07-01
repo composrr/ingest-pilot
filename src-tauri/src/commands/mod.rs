@@ -1,6 +1,7 @@
 pub mod history;
 pub mod ingest;
 pub mod metadata_presets;
+pub mod naming_catalog;
 pub mod presets;
 pub mod scan;
 pub mod settings;

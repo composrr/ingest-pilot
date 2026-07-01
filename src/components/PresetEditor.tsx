@@ -7,8 +7,13 @@ import { MetadataPresetsManager } from "./MetadataPresetsManager";
 import { OptionsTextField } from "./OptionsTextField";
 import { PatternInput } from "./PatternInput";
 import { SelectMenu } from "./SelectMenu";
+import {
+  defaultNamingCatalog,
+  mergeNamingCatalog,
+  type NamingDeliverable,
+} from "../lib/namingCatalog";
 import { currentLocalDate, mergeGlobalAndPresetParameters, slugifyToken } from "../lib/parameters";
-import { getSettings, listMetadataPresets } from "../lib/tauri";
+import { getNamingCatalog, getSettings, listMetadataPresets } from "../lib/tauri";
 import type {
   FolderNode,
   MetadataPresetSummary,
@@ -32,6 +37,38 @@ const variableTypes: Array<{ value: VariableType; label: string }> = [
   { value: "date", label: "Date" },
 ];
 
+// Live preview of where the year-aware sub-path lands, mirroring the Rust resolver
+// (date tokens + variable defaults, blank segments dropped). The trailing "/…"
+// stands in for the project folder that gets created inside.
+function subPathPreview(preset: Preset): string {
+  const base = preset.destinations.primary?.trim() || "<destination>";
+  const now = new Date();
+  const year = String(now.getFullYear());
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  const varDefaults: Record<string, string> = {};
+  for (const variable of preset.variables) {
+    const fallback = typeof variable.default === "string" ? variable.default : "";
+    varDefaults[variable.id] = fallback || variable.options?.[0] || "";
+  }
+  const segments = (preset.destinations.sub_path_pattern ?? "")
+    .split(/[/\\]/)
+    .map((segment) =>
+      segment
+        .replace(/\{([^}]+)\}/g, (_match, token: string) => {
+          if (token === "year") return year;
+          if (token === "month") return month;
+          if (token === "day") return day;
+          if (token === "date") return `${year}${month}${day}`;
+          return varDefaults[token] ?? "";
+        })
+        .trim(),
+    )
+    .filter((segment) => segment.length > 0);
+  const tail = segments.length ? `${base}/${segments.join("/")}` : base;
+  return `${tail}/…`;
+}
+
 export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorProps) {
   const [draft, setDraft] = useState<Preset>(initialPreset);
   const [variableRowKeys, setVariableRowKeys] = useState(() =>
@@ -41,6 +78,7 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
   const [customFileKinds, setCustomFileKinds] = useState<Record<string, string>>({});
   const [metadataSummaries, setMetadataSummaries] = useState<MetadataPresetSummary[]>([]);
   const [isMetadataManagerOpen, setIsMetadataManagerOpen] = useState(false);
+  const [namingDeliverables, setNamingDeliverables] = useState<NamingDeliverable[]>([]);
 
   function refreshMetadataSummaries() {
     void listMetadataPresets().then(setMetadataSummaries).catch(() => undefined);
@@ -49,6 +87,47 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
   useEffect(() => {
     refreshMetadataSummaries();
   }, []);
+
+  useEffect(() => {
+    getNamingCatalog()
+      .then((persisted) => setNamingDeliverables(mergeNamingCatalog(persisted).deliverables))
+      .catch(() => setNamingDeliverables(defaultNamingCatalog().deliverables));
+  }, []);
+
+  // Applies a naming template: sets the SOP name pattern + year-aware sub-path and
+  // folds in any of the template's fields that aren't already variables, so the
+  // preset is named per the SOP without leaving the editor.
+  function applyNamingTemplate(id: string) {
+    const deliverable = namingDeliverables.find((item) => item.id === id);
+    if (!deliverable) {
+      return;
+    }
+    setDraft((current) => {
+      const existingIds = new Set(current.variables.map((variable) => variable.id));
+      const addedVariables: PresetVariable[] = deliverable.fields
+        .filter((field) => !existingIds.has(field.id))
+        .map((field) => ({
+          id: field.id,
+          name: field.label,
+          type: field.type,
+          required: field.required,
+          default: "",
+          options: field.options ?? [],
+        }));
+      if (addedVariables.length) {
+        setVariableRowKeys((keys) => [...keys, ...addedVariables.map(() => createRowKey())]);
+      }
+      return {
+        ...current,
+        root_folder_pattern: deliverable.rootPattern,
+        destinations: {
+          ...current.destinations,
+          sub_path_pattern: deliverable.subPath ?? current.destinations.sub_path_pattern ?? "",
+        },
+        variables: [...current.variables, ...addedVariables],
+      };
+    });
+  }
   const allParameters = useMemo(
     () => mergeGlobalAndPresetParameters(globalParameters, draft.variables),
     [draft.variables, globalParameters],
@@ -224,6 +303,27 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
                   onChange={(description) => updateDraft({ description })}
                   value={draft.description ?? ""}
                 />
+                {namingDeliverables.length ? (
+                  <div className="grid min-h-10 grid-cols-[110px_1fr] items-center gap-2 px-3 py-1.5">
+                    <div className="flex items-center gap-1 text-xs font-semibold text-graphite">
+                      Naming SOP
+                      <FloatingHelp label="Naming template help">
+                        Apply a naming template to set this preset's folder name pattern (and its year-aware sub-path)
+                        per the team SOP, and pull in the fields it needs. Manage templates in the Naming tab.
+                      </FloatingHelp>
+                    </div>
+                    <SelectMenu
+                      onChange={(value) => value && applyNamingTemplate(value)}
+                      options={[
+                        { label: "Apply a template…", value: "" },
+                        ...namingDeliverables.map((item) => ({ label: item.label, value: item.id })),
+                      ]}
+                      placeholder="Apply a template…"
+                      size="sm"
+                      value=""
+                    />
+                  </div>
+                ) : null}
                 <ColorField
                   onChange={(color) => updateDraft({ color })}
                   value={draft.color ?? "#c9a7ff"}
@@ -247,6 +347,32 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
                     <FolderOpen size={13} />
                     Pick
                   </button>
+                </div>
+                <div className="px-3 py-2">
+                  <div className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-graphite">
+                    Sub-folder path
+                    <FloatingHelp label="Sub-folder path help">
+                      Optional. Folders created inside the destination each ingest, before the project folder. Use tokens
+                      like {"{year}"} so a preset can point at a stable parent (e.g. …/Videos) and always land in the
+                      current year's structure — for example {"{year}/Broll"}. If those folders already exist, the ingest
+                      goes into them; otherwise they're created. Leave blank to save straight into the destination.
+                    </FloatingHelp>
+                  </div>
+                  <input
+                    className="h-8 w-full min-w-0 rounded-lg border border-mist bg-white px-2 font-mono text-xs outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+                    onChange={(event) =>
+                      updateDraft({
+                        destinations: { ...draft.destinations, sub_path_pattern: event.target.value },
+                      })
+                    }
+                    placeholder="{year}/Broll"
+                    value={draft.destinations.sub_path_pattern ?? ""}
+                  />
+                  {(draft.destinations.sub_path_pattern ?? "").trim() ? (
+                    <div className="mt-1 truncate text-[11px] text-graphite/70" title={subPathPreview(draft)}>
+                      → {subPathPreview(draft)}
+                    </div>
+                  ) : null}
                 </div>
                 {(draft.destinations.secondaries ?? []).map((path, index) => (
                   <div
@@ -415,6 +541,7 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
             routingOverrides={draft.file_type_routing_overrides}
             onRoutingChange={(file_type_routing_overrides) => updateDraft({ file_type_routing_overrides })}
             customFileKinds={customFileKinds}
+            metadataSummaries={metadataSummaries}
             variables={allParameters}
           />
         </div>

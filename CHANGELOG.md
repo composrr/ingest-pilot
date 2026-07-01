@@ -10,6 +10,25 @@ and user-facing — this is what people read in the update popup.
 
 ## [Unreleased]
 
+### Added
+- **Year-aware destinations.** A preset can now point at a stable parent folder (e.g.
+  …/Videos) and auto-descend into a tokenized sub-path each ingest — for example
+  `{year}/Broll` lands in …/Videos/2026/Broll. If those folders already exist the
+  ingest joins them; otherwise they're created. Set it under a preset's
+  **Sub-folder path**. (Removes the yearly preset rework and lets a second campus
+  drop into an event already imported.)
+- **Naming tab.** The Naming Assistant now has its own left-sidebar tab. Pick a
+  deliverable, fill a field or two, and it builds the SOP-correct name and saves it
+  as its own preset file in Documents. The ministry codes, campuses, signifiers, and
+  templates live in an editable catalog (`Documents/Ingest Pilot/Naming/catalog.json`)
+  that syncs with your presets — this is where the naming sheet gets folded in.
+- **Naming in the preset editor.** Apply a naming template to a preset to set its
+  folder-name pattern and year-aware sub-path per the SOP in one click.
+- **Per-folder metadata.** Attach a metadata preset to a specific folder (e.g. a
+  campus folder) in the preset editor; clips that land there are tagged in the iconik
+  CSV with that folder's metadata — so multiple campuses in one root each carry their
+  own values in a single manifest.
+
 ## [0.1.4]
 
 ### Added

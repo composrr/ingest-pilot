@@ -250,6 +250,7 @@ fn folder_node_from_path(path: &Path, ids: &mut HashSet<String>) -> Result<Folde
         template_files: Vec::new(),
         condition: None,
         role: None,
+        metadata_preset_id: None,
     })
 }
 
