@@ -92,6 +92,7 @@ export function IngestPage() {
   const [detectedSources, setDetectedSources] = useState<CameraSource[]>([]);
   const [ingestResult, setIngestResult] = useState<IngestResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [scanWarning, setScanWarning] = useState<string | null>(null);
   const [isScanning, setIsScanning] = useState(false);
   const [isIngesting, setIsIngesting] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
@@ -521,6 +522,7 @@ export function IngestPage() {
 
     setIsScanning(true);
     setError(null);
+    setScanWarning(null);
     try {
       const nextScans = await Promise.all(
         paths.map(async (path) => ({
@@ -541,6 +543,12 @@ export function IngestPage() {
       setIngestResult(null);
       setShowFilteredItems(false);
       const totalFiles = nextScans.reduce((sum, entry) => sum + entry.scan.total_files, 0);
+      const unreadableCount = nextScans.reduce((sum, entry) => sum + entry.scan.unreadable_paths.length, 0);
+      setScanWarning(
+        unreadableCount > 0
+          ? `Skipped ${unreadableCount} item${unreadableCount === 1 ? "" : "s"} that couldn't be read (no access). The rest scanned fine.`
+          : null,
+      );
       setLastAction(`Scanned ${totalFiles} file${totalFiles === 1 ? "" : "s"} from ${nextScans.length} source${nextScans.length === 1 ? "" : "s"}`);
     } catch (caught) {
       setError(String(caught));
@@ -1438,6 +1446,20 @@ export function IngestPage() {
       {error ? (
         <div className="mb-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
           {error}
+        </div>
+      ) : null}
+
+      {scanWarning ? (
+        <div className="mb-3 flex items-start justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          <span>{scanWarning}</span>
+          <button
+            aria-label="Dismiss"
+            className="shrink-0 rounded p-0.5 text-amber-700 transition hover:bg-amber-100"
+            onClick={() => setScanWarning(null)}
+            type="button"
+          >
+            <X size={14} />
+          </button>
         </div>
       ) : null}
 
@@ -3534,6 +3556,7 @@ function aggregateSourceScans(sourceScans: SourceScanEntry[]): SourceScan | null
     extensions: Array.from(extensionMap.values()).sort((a, b) => a.extension.localeCompare(b.extension)),
     kinds: Array.from(kindMap.values()),
     files,
+    unreadable_paths: sourceScans.flatMap((entry) => entry.scan.unreadable_paths),
   };
 }
 

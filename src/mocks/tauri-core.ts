@@ -129,6 +129,7 @@ function sampleScan(rootPath: string): SourceScan {
       { kind: "document", count: 1, total_bytes: 244_180 },
     ],
     files,
+    unreadable_paths: [],
   };
 }
 

@@ -82,6 +82,7 @@ export type SourceScan = {
   extensions: ExtensionSummary[];
   kinds: KindSummary[];
   files: ScannedFile[];
+  unreadable_paths: string[];
 };
 
 export type CameraSource = {
