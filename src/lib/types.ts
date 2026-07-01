@@ -1,5 +1,39 @@
 export type VariableType = "short_text" | "long_text" | "dropdown" | "boolean" | "date";
 
+// Metadata presets (Lightroom-style): reusable shoot-level metadata schemas.
+export type MetadataFieldType = "text" | "long_text" | "dropdown" | "multi_select" | "boolean" | "date";
+
+export type MetadataField = {
+  id: string;
+  label: string;
+  field_type: MetadataFieldType;
+  options: string[];
+  default?: string | null;
+};
+
+export type MetadataCategory = {
+  id: string;
+  name: string;
+  fields: MetadataField[];
+};
+
+export type MetadataPreset = {
+  schema_version: number;
+  id: string;
+  name: string;
+  description?: string | null;
+  categories: MetadataCategory[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type MetadataPresetSummary = {
+  id: string;
+  name: string;
+  description?: string | null;
+  field_count: number;
+};
+
 export type PresetVariable = {
   id: string;
   name: string;

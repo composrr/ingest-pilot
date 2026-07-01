@@ -3,6 +3,7 @@
 // Lets the full real UI run in a plain browser / Claude Design with no Rust backend.
 // The real desktop build never imports this file.
 import { createShippedPresets } from "../lib/presetFactory";
+import { createDefaultMetadataPreset } from "../lib/metadataPresetFactory";
 import { designJobState } from "./designJobState";
 import type {
   CameraSource,
@@ -15,12 +16,21 @@ import type {
   ScannedFile,
   SourceScan,
 } from "../lib/tauri";
-import type { AppSettings, FolderNode, Preset, PresetSummary, TokenContext } from "../lib/types";
+import type {
+  AppSettings,
+  FolderNode,
+  MetadataPreset,
+  MetadataPresetSummary,
+  Preset,
+  PresetSummary,
+  TokenContext,
+} from "../lib/types";
 
 const SAMPLE_DATE = "20260628";
 
 // In-memory preset store so save/delete/duplicate feel real while designing.
 let presets: Preset[] = createShippedPresets();
+let metadataPresets: MetadataPreset[] = [createDefaultMetadataPreset("2026-06-30T00:00:00Z")];
 
 function summary(preset: Preset): PresetSummary {
   return {
@@ -240,6 +250,31 @@ export async function invoke<T = unknown>(command: string, args?: Record<string,
     case "delete_preset":
       presets = presets.filter((p) => p.id !== a.id);
       return undefined as T;
+
+    case "list_metadata_presets":
+      return metadataPresets.map(
+        (preset): MetadataPresetSummary => ({
+          id: preset.id,
+          name: preset.name,
+          description: preset.description ?? null,
+          field_count: preset.categories.reduce((sum, category) => sum + category.fields.length, 0),
+        }),
+      ) as T;
+    case "get_metadata_preset":
+      return (metadataPresets.find((p) => p.id === a.id) ?? null) as T;
+    case "save_metadata_preset": {
+      const preset = a.preset as MetadataPreset;
+      const idx = metadataPresets.findIndex((p) => p.id === preset.id);
+      const next = { ...preset, updated_at: new Date().toISOString() };
+      if (idx >= 0) metadataPresets[idx] = next;
+      else metadataPresets = [...metadataPresets, next];
+      return { id: next.id, name: next.name, description: next.description ?? null, field_count: 0 } as T;
+    }
+    case "delete_metadata_preset":
+      metadataPresets = metadataPresets.filter((p) => p.id !== a.id);
+      return undefined as T;
+    case "export_metadata_manifest":
+      return "E:/PROJECTS/2026-06-30_Project/2026-06-30_Project_Metadata.csv" as T;
     case "duplicate_preset": {
       const original = presets.find((p) => p.id === a.id);
       if (!original) throw new Error("Preset not found");

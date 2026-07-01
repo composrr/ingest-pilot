@@ -5,19 +5,19 @@ import {
   FolderTree,
   HardDriveDownload,
   Home,
-  LayoutDashboard,
   PanelLeftClose,
   PanelLeftOpen,
   Settings,
   Sparkles,
+  Tags,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Walkthrough } from "./components/Walkthrough";
 import { Dashboard } from "./pages/Dashboard";
 import { HelpPage } from "./pages/HelpPage";
 import { HistoryPage } from "./pages/HistoryPage";
-import { IngestConsolePreviewPage } from "./pages/IngestConsolePreviewPage";
 import { IngestPage } from "./pages/IngestPage";
+import { MetadataPage } from "./pages/MetadataPage";
 import { PresetsPage } from "./pages/PresetsPage";
 import { ScaffoldPage } from "./pages/ScaffoldPage";
 import { SettingsPage } from "./pages/SettingsPage";
@@ -28,7 +28,7 @@ const navItems = [
   { icon: ClipboardList, label: "Presets", view: "presets" },
   { icon: FolderTree, label: "Create Folders", view: "scaffold" },
   { icon: HardDriveDownload, label: "Ingest Media", view: "ingest" },
-  { icon: LayoutDashboard, label: "Console Preview", view: "ingestPreview" },
+  { icon: Tags, label: "Metadata", view: "metadata" },
   { icon: Archive, label: "History", view: "history" },
   { icon: Settings, label: "Settings", view: "settings" },
 ] as const;
@@ -166,8 +166,8 @@ function renderView(activeView: AppView, selectView: (view: AppView) => void) {
 
   // "ingest" is rendered persistently in App (kept mounted); never here.
 
-  if (activeView === "ingestPreview") {
-    return <IngestConsolePreviewPage />;
+  if (activeView === "metadata") {
+    return <MetadataPage />;
   }
 
   if (activeView === "scaffold") {

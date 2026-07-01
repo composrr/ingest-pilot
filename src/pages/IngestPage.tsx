@@ -23,9 +23,12 @@ import {
   previewPattern,
   cancelIngest,
   diskSpace,
+  exportMetadataManifest,
   exportReelIndex,
   filterDirectories,
   generateIngestReport,
+  getMetadataPreset,
+  listMetadataPresets,
   generateOffloadProof,
   runIngest,
   retryFailedCopies,
@@ -43,7 +46,15 @@ import {
   type ScannedFile,
   type SourceScan,
 } from "../lib/tauri";
-import type { AppSettings, FolderNode, Preset, PresetSummary, PresetVariable } from "../lib/types";
+import type {
+  AppSettings,
+  FolderNode,
+  MetadataPreset,
+  MetadataPresetSummary,
+  Preset,
+  PresetSummary,
+  PresetVariable,
+} from "../lib/types";
 import { useAppStore } from "../stores/appStore";
 
 // Queue mode: a sequential pipeline of source cards. Each card is scanned in the
@@ -132,6 +143,11 @@ export function IngestPage() {
   const [isSavingProof, setIsSavingProof] = useState(false);
   const [cameraAliases, setCameraAliases] = useState<Record<string, string>>({});
   const [currentSegment, setCurrentSegment] = useState<{ label: string; index: number; total: number } | null>(null);
+  const [metadataSummaries, setMetadataSummaries] = useState<MetadataPresetSummary[]>([]);
+  const [metadataPresetId, setMetadataPresetId] = useState("");
+  const [metadataPreset, setMetadataPreset] = useState<MetadataPreset | null>(null);
+  const [metadataValues, setMetadataValues] = useState<Record<string, string>>({});
+  const [isSavingManifest, setIsSavingManifest] = useState(false);
   const [queueMode, setQueueMode] = useState(false);
   const [queue, setQueue] = useState<QueueCard[]>([]);
   const [isQueueRunning, setIsQueueRunning] = useState(false);
@@ -302,6 +318,47 @@ export function IngestPage() {
     selectedPresetId && destinationTargets.length > 0 && queue.length > 0 && !isQueueRunning,
   );
 
+  // Metadata presets: load the list once, and the full preset (with defaults) when
+  // the picker changes, so the ingest fill panel can render its fields.
+  useEffect(() => {
+    void listMetadataPresets().then(setMetadataSummaries).catch(() => undefined);
+  }, []);
+  useEffect(() => {
+    if (!metadataPresetId) {
+      setMetadataPreset(null);
+      return;
+    }
+    let active = true;
+    void getMetadataPreset(metadataPresetId)
+      .then((preset) => {
+        if (!active) {
+          return;
+        }
+        setMetadataPreset(preset);
+        if (preset) {
+          setMetadataValues((current) => {
+            const next = { ...current };
+            for (const category of preset.categories) {
+              for (const field of category.fields) {
+                if (!(field.id in next)) {
+                  next[field.id] = field.default ?? "";
+                }
+              }
+            }
+            return next;
+          });
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [metadataPresetId]);
+  const hasMetadataValues = useMemo(
+    () => metadataPreset != null && Object.values(metadataValues).some((value) => value.trim().length > 0),
+    [metadataPreset, metadataValues],
+  );
+
   async function refreshPresets(preferredId = selectedPresetId) {
     setError(null);
     try {
@@ -413,6 +470,44 @@ export function IngestPage() {
       setLastAction("Reel index saved");
     } catch (caught) {
       setError(String(caught));
+    }
+  }
+
+  // Writes the metadata manifest CSV for the delivered ingest and opens it.
+  async function saveMetadataManifest() {
+    if (!ingestResult || !metadataPreset) {
+      return;
+    }
+    setIsSavingManifest(true);
+    setError(null);
+    try {
+      const path = await exportMetadataManifest(
+        ingestResult.root_path,
+        ingestResult.copied_files,
+        metadataPreset,
+        metadataValues,
+      );
+      await openPath(path);
+      setLastAction("Metadata manifest saved");
+    } catch (caught) {
+      setError(String(caught));
+    } finally {
+      setIsSavingManifest(false);
+    }
+  }
+
+  // Auto-writes the metadata manifest into every destination root after an ingest, so
+  // each drive carries the CSV for iconik. Non-fatal: a failure never breaks delivery.
+  async function autoWriteMetadataManifest(result: IngestResult, roots: string[]) {
+    if (!metadataPreset || !hasMetadataValues) {
+      return;
+    }
+    for (const root of roots) {
+      try {
+        await exportMetadataManifest(root, result.copied_files, metadataPreset, metadataValues);
+      } catch {
+        // best-effort per destination
+      }
     }
   }
 
@@ -742,6 +837,7 @@ export function IngestPage() {
       const { results } = await copySourcesToDestinations(jobId, activeSources);
       const result = mergeIngestResults(results);
       setIngestResult(result);
+      void autoWriteMetadataManifest(result, [...new Set(results.map((entry) => entry.root_path))]);
       setLastAction(
         `Ingest copied ${result.files_copied} file${result.files_copied === 1 ? "" : "s"} from ${sourceScans.length} source${sourceScans.length === 1 ? "" : "s"} to ${destinationTargets.length} destination${destinationTargets.length === 1 ? "" : "s"}`,
       );
@@ -1070,6 +1166,7 @@ export function IngestPage() {
 
       const result = mergeIngestResults(allResults);
       setIngestResult(result);
+      void autoWriteMetadataManifest(result, [...new Set(allResults.map((entry) => entry.root_path))]);
       setLastAction(
         `Queue copied ${result.files_copied} file${result.files_copied === 1 ? "" : "s"} from ${processedSourcePaths.length} card${processedSourcePaths.length === 1 ? "" : "s"} to ${destinationTargets.length} destination${destinationTargets.length === 1 ? "" : "s"}`,
       );
@@ -1447,6 +1544,16 @@ export function IngestPage() {
             >
               Reel index (CSV)
             </button>
+            {metadataPreset ? (
+              <button
+                className="text-xs font-semibold text-graphite underline-offset-2 hover:underline disabled:opacity-60"
+                disabled={isSavingManifest}
+                onClick={() => void saveMetadataManifest()}
+                type="button"
+              >
+                {isSavingManifest ? "Saving…" : "Metadata CSV"}
+              </button>
+            ) : null}
             <button
               className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-signal px-3 text-xs font-semibold text-paper transition hover:bg-black"
               onClick={() => {
@@ -1923,6 +2030,18 @@ export function IngestPage() {
             <OutputPreviewCard preview={outputPreview} />
           </div>
 
+          <MetadataFillPanel
+            summaries={metadataSummaries}
+            presetId={metadataPresetId}
+            preset={metadataPreset}
+            values={metadataValues}
+            onSelectPreset={(id) => {
+              setMetadataPresetId(id);
+              setIngestResult(null);
+            }}
+            onChange={(fieldId, value) => setMetadataValues((current) => ({ ...current, [fieldId]: value }))}
+          />
+
           {scan ? (
             <section className="overflow-hidden rounded-2xl border border-mist bg-white">
               <div className="flex h-9 items-center justify-between gap-3 border-b border-mist px-3">
@@ -2261,6 +2380,137 @@ function QueueCardsSummary({ cards }: { cards: QueueCard[] }) {
         })}
       </div>
     </div>
+  );
+}
+
+// Renders one metadata field input by type; values are stored as strings
+// (booleans as "true"/"false", multi-selects as comma-joined).
+function MetadataFieldInput({
+  field,
+  value,
+  onChange,
+}: {
+  field: MetadataPreset["categories"][number]["fields"][number];
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  if (field.field_type === "long_text") {
+    return (
+      <textarea
+        className="min-h-[52px] w-full rounded-lg border border-mist bg-white px-2 py-1.5 text-xs outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+        onChange={(event) => onChange(event.target.value)}
+        value={value}
+      />
+    );
+  }
+  if (field.field_type === "boolean") {
+    return (
+      <SelectMenu
+        onChange={onChange}
+        options={[
+          { label: "—", value: "" },
+          { label: "Yes", value: "true" },
+          { label: "No", value: "false" },
+        ]}
+        size="sm"
+        value={value}
+      />
+    );
+  }
+  if (field.field_type === "dropdown") {
+    return (
+      <SelectMenu
+        onChange={onChange}
+        options={[{ label: "—", value: "" }, ...field.options.map((option) => ({ label: option, value: option }))]}
+        size="sm"
+        value={value}
+      />
+    );
+  }
+  if (field.field_type === "date") {
+    return (
+      <input
+        className="h-8 w-full rounded-lg border border-mist bg-white px-2 text-xs outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+        onChange={(event) => onChange(event.target.value)}
+        type="date"
+        value={value}
+      />
+    );
+  }
+  // text and multi_select both edit as free text (multi-select is comma-separated).
+  return (
+    <input
+      className="h-8 w-full rounded-lg border border-mist bg-white px-2 text-xs outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+      onChange={(event) => onChange(event.target.value)}
+      placeholder={
+        field.field_type === "multi_select"
+          ? field.options.length > 0
+            ? `${field.options.slice(0, 3).join(", ")}…`
+            : "comma, separated"
+          : undefined
+      }
+      value={value}
+    />
+  );
+}
+
+function MetadataFillPanel({
+  summaries,
+  presetId,
+  preset,
+  values,
+  onSelectPreset,
+  onChange,
+}: {
+  summaries: MetadataPresetSummary[];
+  presetId: string;
+  preset: MetadataPreset | null;
+  values: Record<string, string>;
+  onSelectPreset: (id: string) => void;
+  onChange: (fieldId: string, value: string) => void;
+}) {
+  return (
+    <section className="overflow-hidden rounded-2xl border border-mist bg-white">
+      <div className="flex h-9 items-center justify-between gap-2 border-b border-mist px-3">
+        <SectionTitle
+          help="Optional shoot-level metadata tagged onto every clip and written as a CSV manifest for iconik. Manage schemas in the Metadata tab."
+          title="Metadata"
+        />
+        <div className="w-44">
+          <SelectMenu
+            onChange={onSelectPreset}
+            options={[{ label: "None", value: "" }, ...summaries.map((item) => ({ label: item.name, value: item.id }))]}
+            placeholder="No metadata"
+            size="sm"
+            value={presetId}
+          />
+        </div>
+      </div>
+      {preset ? (
+        <div className="max-h-[320px] space-y-2 overflow-auto p-2">
+          {preset.categories.map((category) => (
+            <div key={category.id} className="rounded-xl border border-mist bg-porcelain/30 p-2">
+              <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-graphite/60">{category.name}</div>
+              <div className="space-y-1.5">
+                {category.fields.map((field) => (
+                  <div key={field.id} className="grid grid-cols-[110px_1fr] items-center gap-2">
+                    <span className="truncate text-xs font-semibold text-graphite" title={field.label}>
+                      {field.label}
+                    </span>
+                    <MetadataFieldInput field={field} onChange={(value) => onChange(field.id, value)} value={values[field.id] ?? ""} />
+                  </div>
+                ))}
+                {category.fields.length === 0 ? <p className="text-[11px] text-graphite/60">No fields.</p> : null}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="px-3 py-2.5 text-xs text-graphite">
+          Pick a metadata preset to tag this import for iconik. Values apply to every clip.
+        </p>
+      )}
+    </section>
   );
 }
 
