@@ -425,6 +425,26 @@ fn detect_camera_source_at(root: &Path) -> Option<CameraSource> {
         return Some(camera_source(root, "PRIVATE/AVCHD folder"));
     }
 
+    // RED cards have no DCIM: media lives in a magazine folder named `*.RDM`
+    // containing per-clip `*.RDC` folders. Detect either at the drive root.
+    let has_red_structure = fs::read_dir(root)
+        .ok()?
+        .filter_map(Result::ok)
+        .any(|entry| {
+            entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false)
+                && entry
+                    .file_name()
+                    .to_str()
+                    .map(|name| {
+                        let lower = name.to_lowercase();
+                        lower.ends_with(".rdm") || lower.ends_with(".rdc")
+                    })
+                    .unwrap_or(false)
+        });
+    if has_red_structure {
+        return Some(camera_source(root, "RED RDM/RDC folder"));
+    }
+
     let has_media_at_root = fs::read_dir(root)
         .ok()?
         .filter_map(Result::ok)

@@ -402,6 +402,7 @@ export async function writeIngestReport(
   verificationFailed: number,
   bytesCopied: number,
   mhlPath: string,
+  durationMs?: number,
 ) {
   return invoke<string>("write_ingest_report", {
     presetName,
@@ -415,6 +416,7 @@ export async function writeIngestReport(
     verificationFailed,
     bytesCopied,
     mhlPath,
+    durationMs: durationMs ?? null,
   });
 }
 
@@ -432,6 +434,7 @@ export async function generateIngestReport(
   bytesCopied: number,
   mhlPath: string,
   jobId: string,
+  durationMs?: number,
 ) {
   return invoke<string>("generate_ingest_report", {
     presetName,
@@ -447,6 +450,7 @@ export async function generateIngestReport(
     bytesCopied,
     mhlPath,
     jobId,
+    durationMs: durationMs ?? null,
   });
 }
 

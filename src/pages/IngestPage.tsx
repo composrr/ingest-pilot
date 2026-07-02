@@ -2,7 +2,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { Check, ChevronDown, ChevronUp, FolderOpen, Image, Layers, List, Plus, RefreshCw, Search, Wand2, X } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, ChevronUp, FolderOpen, Image, Layers, List, Plus, RefreshCw, Search, Wand2, X } from "lucide-react";
 import { type Dispatch, type SetStateAction, useEffect, useMemo, useRef, useState } from "react";
 import {
   defaultsForParameters,
@@ -1325,6 +1325,7 @@ export function IngestPage() {
         result.bytes_copied,
         result.mhl_path,
         reportJobId,
+        Math.max(0, new Date(completedAt).getTime() - new Date(startedAt).getTime()),
       );
       setIngestResult((current) => (current ? { ...current, report_path: reportPath } : current));
       setReportBuild({ status: "ready", progress: null, path: reportPath });
@@ -2636,6 +2637,24 @@ function NamingAssistant({
   // Preserve catalog order while grouping.
   const groups = [...new Set(templates.map((item) => item.group))];
 
+  // Accordion state — collapsed by default, but keep the picked template's group open.
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    if (deliverable) {
+      setExpandedGroups((prev) => (prev.has(deliverable.group) ? prev : new Set(prev).add(deliverable.group)));
+    }
+  }, [deliverable]);
+  const toggleGroup = (group: string) =>
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(group)) {
+        next.delete(group);
+      } else {
+        next.add(group);
+      }
+      return next;
+    });
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/30 p-4 backdrop-blur-sm">
       <section className="flex max-h-[86vh] w-full max-w-3xl select-none flex-col overflow-hidden rounded-[24px] border border-mist bg-white shadow-panel">
@@ -2658,30 +2677,44 @@ function NamingAssistant({
 
         <div className="grid min-h-0 flex-1 grid-cols-[220px_minmax(0,1fr)]">
           <aside className="min-h-0 overflow-auto border-r border-mist bg-porcelain/25 p-2">
-            {groups.map((group) => (
-              <div key={group} className="mb-2">
-                <div className="mb-1 px-1 text-[11px] font-semibold uppercase tracking-wide text-graphite/60">{group}</div>
-                <div className="space-y-1">
-                  {templates.filter((item) => item.group === group).map((item) => (
-                    <button
-                      key={item.id}
-                      className={`w-full rounded-lg px-2 py-1.5 text-left text-sm transition ${
-                        deliverableId === item.id
-                          ? "bg-lavender/25 font-semibold text-ink ring-1 ring-lavender/60"
-                          : "text-graphite hover:bg-white"
-                      }`}
-                      onClick={() => {
-                        setDeliverableId(item.id);
-                        setValues({});
-                      }}
-                      type="button"
-                    >
-                      {item.label}
-                    </button>
-                  ))}
+            {groups.map((group) => {
+              const open = expandedGroups.has(group);
+              const items = templates.filter((item) => item.group === group);
+              return (
+                <div key={group} className="mb-1">
+                  <button
+                    className="flex w-full items-center gap-1.5 rounded-lg px-1.5 py-1.5 text-left text-[12px] font-semibold text-ink transition hover:bg-white"
+                    onClick={() => toggleGroup(group)}
+                    type="button"
+                  >
+                    {open ? <ChevronDown className="shrink-0 text-graphite" size={13} /> : <ChevronRight className="shrink-0 text-graphite" size={13} />}
+                    <span className="min-w-0 flex-1 truncate">{group}</span>
+                    <span className="shrink-0 text-[11px] font-normal text-graphite/60">{items.length}</span>
+                  </button>
+                  {open ? (
+                    <div className="space-y-1 pb-1 pl-3.5">
+                      {items.map((item) => (
+                        <button
+                          key={item.id}
+                          className={`w-full rounded-lg px-2 py-1.5 text-left text-sm transition ${
+                            deliverableId === item.id
+                              ? "bg-lavender/25 font-semibold text-ink ring-1 ring-lavender/60"
+                              : "text-graphite hover:bg-white"
+                          }`}
+                          onClick={() => {
+                            setDeliverableId(item.id);
+                            setValues({});
+                          }}
+                          type="button"
+                        >
+                          {item.label}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </aside>
 
           <div className="flex min-h-0 flex-col overflow-auto p-4">
@@ -3337,9 +3370,18 @@ function FileSelectionDialog({
   const [sortDirection, setSortDirection] = useState<FilePickerSortDirection>("desc");
   const [search, setSearch] = useState("");
   const [kindFilter, setKindFilter] = useState<Set<ScanFileKind>>(new Set());
+  // Collapse spanned camera clips (RED .RDC → one row) before filtering/sorting.
+  const displayFiles = useMemo(() => collapseClips(files), [files]);
+  const memberKeyMap = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const file of displayFiles) {
+      map.set(file.sourceKey, memberKeysOf(file));
+    }
+    return map;
+  }, [displayFiles]);
   const filteredFiles = useMemo(() => {
     const needle = search.trim().toLowerCase();
-    return files.filter((file) => {
+    return displayFiles.filter((file) => {
       if (needle && !file.file_name.toLowerCase().includes(needle)) {
         return false;
       }
@@ -3349,14 +3391,14 @@ function FileSelectionDialog({
       }
       return true;
     });
-  }, [files, kindFilter, search]);
+  }, [displayFiles, kindFilter, search]);
   const sourceGroups = useMemo(
     () => groupManifestFiles(filteredFiles, sortMode, sortDirection),
     [filteredFiles, sortDirection, sortMode],
   );
   const selectableFileKeys = useMemo(() => flattenSelectableFileKeys(sourceGroups), [sourceGroups]);
   const highlightedCount = highlightedFileKeys.size;
-  const filteredOut = files.length - filteredFiles.length;
+  const filteredOut = displayFiles.length - filteredFiles.length;
 
   function handleSort(mode: FilePickerSortMode) {
     if (mode === sortMode) {
@@ -3412,12 +3454,14 @@ function FileSelectionDialog({
       return;
     }
 
-    const keys =
+    const repKeys =
       highlightedFileKeys.has(file.sourceKey) && highlightedFileKeys.size > 0
         ? [...highlightedFileKeys].filter((key) => selectableFileKeys.includes(key))
         : [file.sourceKey];
+    // Expand each highlighted row to the real files it stands for (clip → segments).
+    const keys = repKeys.flatMap((key) => memberKeyMap.get(key) ?? [key]);
     selectFileKeys(keys, checked, setSelectedRelativePaths);
-    setHighlightedFileKeys(new Set(keys));
+    setHighlightedFileKeys(new Set(repKeys));
     setLastHighlightedFileKey(file.sourceKey);
   }
 
@@ -3599,14 +3643,14 @@ function FileSelectionDialog({
                     </div>
                     <button
                       className="rounded-lg border border-mist bg-white px-2 py-1 text-[11px] font-semibold text-graphite transition hover:bg-porcelain"
-                      onClick={() => selectFileKeys(dayGroup.selectableKeys, true, setSelectedRelativePaths)}
+                      onClick={() => selectFileKeys(dayGroup.files.flatMap(memberKeysOf), true, setSelectedRelativePaths)}
                       type="button"
                     >
                       Check all
                     </button>
                     <button
                       className="rounded-lg border border-mist bg-white px-2 py-1 text-[11px] font-semibold text-graphite transition hover:bg-porcelain"
-                      onClick={() => selectFileKeys(dayGroup.selectableKeys, false, setSelectedRelativePaths)}
+                      onClick={() => selectFileKeys(dayGroup.files.flatMap(memberKeysOf), false, setSelectedRelativePaths)}
                       type="button"
                     >
                       Uncheck all
@@ -3615,7 +3659,7 @@ function FileSelectionDialog({
 
                   {viewMode === "list" ? (
                     dayGroup.files.map((file) => {
-                      const selected = file.autoSelected || selectedRelativePaths.has(file.sourceKey);
+                      const selected = file.autoSelected || memberKeysOf(file).every((key) => selectedRelativePaths.has(key));
                       return (
                         <FileListRow
                           checked={selected}
@@ -3633,7 +3677,7 @@ function FileSelectionDialog({
                       style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${thumbnailSize}px, 1fr))` }}
                     >
                       {dayGroup.files.map((file) => {
-                        const selected = file.autoSelected || selectedRelativePaths.has(file.sourceKey);
+                        const selected = file.autoSelected || memberKeysOf(file).every((key) => selectedRelativePaths.has(key));
                         return (
                           <ThumbnailFileCard
                             checked={selected}
@@ -4195,7 +4239,67 @@ type ManifestFile = ScannedFile & {
   sourceKey: string;
   sourceLabel: string;
   sourcePath: string;
+  // For a collapsed camera clip (e.g. a RED .RDC folder of spanned .R3D segments):
+  // the sourceKeys of every underlying file the clip row represents.
+  clipMemberKeys?: string[];
+  clipSegmentCount?: number;
 };
+
+// The real file keys a row toggles — a clip's members, or just itself.
+function memberKeysOf(file: ManifestFile): string[] {
+  return file.clipMemberKeys && file.clipMemberKeys.length > 0 ? file.clipMemberKeys : [file.sourceKey];
+}
+
+// Path up to and including a RED clip folder (`*.RDC`) within a relative path, or
+// null if the file isn't inside one. RED records one clip as a .RDC folder full of
+// spanned _001/_002… .R3D segments, so we group by that folder.
+function clipFolderRelPath(relativePath: string): string | null {
+  const parts = relativePath.split(/[\\/]/);
+  const index = parts.findIndex((part) => part.toLowerCase().endsWith(".rdc"));
+  return index >= 0 ? parts.slice(0, index + 1).join("/") : null;
+}
+
+// Collapses spanned camera-clip segments into a single row per clip (name, total
+// size, segment count) so the Choose Files list is readable. Non-clip files pass
+// through untouched. Row order doesn't matter — the list is sorted afterward.
+function collapseClips(files: ManifestFile[]): ManifestFile[] {
+  const singles: ManifestFile[] = [];
+  const clips = new Map<string, ManifestFile[]>();
+  for (const file of files) {
+    const clipRel = clipFolderRelPath(file.relative_path);
+    if (!clipRel) {
+      singles.push(file);
+      continue;
+    }
+    const key = `${file.sourcePath} ${clipRel}`;
+    const bucket = clips.get(key);
+    if (bucket) {
+      bucket.push(file);
+    } else {
+      clips.set(key, [file]);
+    }
+  }
+  const clipRows = [...clips.values()].map((members) => {
+    const first = members[0];
+    const clipRel = clipFolderRelPath(first.relative_path) as string;
+    const clipName = (clipRel.split(/[\\/]/).pop() ?? clipRel).replace(/\.rdc$/i, "");
+    return {
+      ...first,
+      file_name: clipName,
+      relative_path: `${clipName}  ·  ${members.length} R3D`,
+      size_bytes: members.reduce((sum, member) => sum + member.size_bytes, 0),
+      modified_at: members.reduce<string | null>(
+        (latest, member) => (member.modified_at && (!latest || member.modified_at > latest) ? member.modified_at : latest),
+        first.modified_at ?? null,
+      ),
+      autoSelected: members.every((member) => member.autoSelected),
+      disabled: members.every((member) => member.disabled),
+      clipMemberKeys: members.map((member) => member.sourceKey),
+      clipSegmentCount: members.length,
+    } satisfies ManifestFile;
+  });
+  return [...singles, ...clipRows];
+}
 
 type ManifestDayGroup = {
   dayKey: string;

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Check, Copy, ListTree, Plus, Save, Sparkles, Trash2, X } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Copy, ListTree, Plus, Save, Sparkles, Trash2, X } from "lucide-react";
 import { FloatingHelp } from "../components/FloatingHelp";
 import { OptionsTextField } from "../components/OptionsTextField";
 import { SelectMenu } from "../components/SelectMenu";
@@ -42,6 +42,9 @@ export function NamingPage() {
   const [sharedOpen, setSharedOpen] = useState(false);
   // Right-click context menu on a template row: { screen position, template id }.
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; id: string } | null>(null);
+  // Accordion: which group sections are expanded. Collapsed by default so long
+  // catalogs stay tidy — you drill into a group to see its templates.
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     if (!contextMenu) {
@@ -88,6 +91,42 @@ export function NamingPage() {
     () => catalog.deliverables.find((item) => item.id === selectedId) ?? null,
     [catalog.deliverables, selectedId],
   );
+
+  // Group templates by their (free-form) group, preserving first-seen order.
+  const groupedDeliverables = useMemo(() => {
+    const map = new Map<string, NamingDeliverable[]>();
+    for (const deliverable of catalog.deliverables) {
+      const group = deliverable.group.trim() || "Ungrouped";
+      const list = map.get(group);
+      if (list) {
+        list.push(deliverable);
+      } else {
+        map.set(group, [deliverable]);
+      }
+    }
+    return [...map.entries()];
+  }, [catalog.deliverables]);
+
+  // Keep the selected template's group open so the highlighted row is visible.
+  useEffect(() => {
+    if (!selected) {
+      return;
+    }
+    const group = selected.group.trim() || "Ungrouped";
+    setExpandedGroups((prev) => (prev.has(group) ? prev : new Set(prev).add(group)));
+  }, [selected]);
+
+  function toggleGroup(group: string) {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(group)) {
+        next.delete(group);
+      } else {
+        next.add(group);
+      }
+      return next;
+    });
+  }
 
   function update(next: NamingCatalog) {
     setCatalog(next);
@@ -195,31 +234,50 @@ export function NamingPage() {
                 <Plus size={13} /> New
               </button>
             </div>
-            <div className="min-h-0 flex-1 space-y-1 overflow-auto p-2">
-              {catalog.deliverables.map((deliverable) => (
-                <button
-                  key={deliverable.id}
-                  className={`w-full rounded-lg px-2 py-1.5 text-left text-sm transition ${
-                    selectedId === deliverable.id
-                      ? "bg-lavender/25 font-semibold text-ink ring-1 ring-lavender/60"
-                      : "text-graphite hover:bg-porcelain"
-                  }`}
-                  onClick={() => setSelectedId(deliverable.id)}
-                  onContextMenu={(event) => {
-                    event.preventDefault();
-                    setSelectedId(deliverable.id);
-                    setContextMenu({
-                      x: Math.min(event.clientX, window.innerWidth - 180),
-                      y: Math.min(event.clientY, window.innerHeight - 96),
-                      id: deliverable.id,
-                    });
-                  }}
-                  type="button"
-                >
-                  <div className="truncate">{deliverable.label}</div>
-                  <div className="text-[11px] text-graphite/70">{deliverable.group}</div>
-                </button>
-              ))}
+            <div className="min-h-0 flex-1 space-y-0.5 overflow-auto p-2">
+              {groupedDeliverables.map(([group, items]) => {
+                const open = expandedGroups.has(group);
+                return (
+                  <div key={group}>
+                    <button
+                      className="flex w-full items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-[12px] font-semibold text-ink transition hover:bg-porcelain"
+                      onClick={() => toggleGroup(group)}
+                      type="button"
+                    >
+                      {open ? <ChevronDown className="shrink-0 text-graphite" size={13} /> : <ChevronRight className="shrink-0 text-graphite" size={13} />}
+                      <span className="min-w-0 flex-1 truncate">{group}</span>
+                      <span className="shrink-0 text-[11px] font-normal text-graphite/60">{items.length}</span>
+                    </button>
+                    {open ? (
+                      <div className="space-y-0.5 pb-1 pl-3.5">
+                        {items.map((deliverable) => (
+                          <button
+                            key={deliverable.id}
+                            className={`w-full truncate rounded-lg px-2 py-1.5 text-left text-[13px] transition ${
+                              selectedId === deliverable.id
+                                ? "bg-lavender/25 font-semibold text-ink ring-1 ring-lavender/60"
+                                : "text-graphite hover:bg-porcelain"
+                            }`}
+                            onClick={() => setSelectedId(deliverable.id)}
+                            onContextMenu={(event) => {
+                              event.preventDefault();
+                              setSelectedId(deliverable.id);
+                              setContextMenu({
+                                x: Math.min(event.clientX, window.innerWidth - 180),
+                                y: Math.min(event.clientY, window.innerHeight - 96),
+                                id: deliverable.id,
+                              });
+                            }}
+                            type="button"
+                          >
+                            {deliverable.label}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
               {catalog.deliverables.length === 0 ? (
                 <p className="px-2 py-3 text-xs text-graphite">No templates yet — add one.</p>
               ) : null}

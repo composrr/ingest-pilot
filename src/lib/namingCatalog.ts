@@ -56,7 +56,9 @@ export type NamingField = {
 export type NamingDeliverable = {
   id: string;
   label: string;
-  group: "Video Capture" | "Delivered Video";
+  // Free-form group name for accordion sections (e.g. "Video Capture", "Weekends",
+  // "Home"). The shipped defaults use "Video Capture" / "Delivered Video".
+  group: string;
   hint: string;
   presetId: string;
   presetName: string;

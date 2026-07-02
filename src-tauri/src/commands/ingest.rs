@@ -233,6 +233,7 @@ pub fn write_ingest_report(
     verification_failed: usize,
     bytes_copied: u64,
     mhl_path: String,
+    duration_ms: Option<u64>,
 ) -> Result<String, String> {
     let report_path = write_html_report(
         &PathBuf::from(&root_path),
@@ -249,6 +250,7 @@ pub fn write_ingest_report(
             verification_failed,
             bytes_copied,
             mhl_path: &mhl_path,
+            duration_ms,
         },
     )?;
 
@@ -271,6 +273,7 @@ pub async fn generate_ingest_report(
     bytes_copied: u64,
     mhl_path: String,
     job_id: Option<String>,
+    duration_ms: Option<u64>,
 ) -> Result<String, String> {
     let app_for_progress = app.clone();
     let emit_job_id = job_id.unwrap_or_default();
@@ -306,6 +309,7 @@ pub async fn generate_ingest_report(
                 verification_failed,
                 bytes_copied,
                 mhl_path: &mhl_path,
+                duration_ms,
             },
         )?;
 

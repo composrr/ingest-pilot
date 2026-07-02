@@ -118,6 +118,11 @@ function sampleScan(rootPath: string): SourceScan {
     scannedFile("PRIVATE/M4ROOT/CLIP/FX3_6713M01.XML", "sidecar", 12_044, {
       sidecar_for: "PRIVATE/M4ROOT/CLIP/FX3_6713.MP4",
     }),
+    // A RED clip: spanned .R3D segments inside a .RDC folder (collapse into one row).
+    scannedFile("A009_0629G2.RDM/A009_C011_0701HB.RDC/A009_C011_0701HB_001.R3D", "footage", 2_018_000_000),
+    scannedFile("A009_0629G2.RDM/A009_C011_0701HB.RDC/A009_C011_0701HB_002.R3D", "footage", 2_018_000_000),
+    scannedFile("A009_0629G2.RDM/A009_C011_0701HB.RDC/A009_C011_0701HB_003.R3D", "footage", 2_018_000_000),
+    scannedFile("A009_0629G2.RDM/A009_C011_0701HB.RDC/A009_C011_0701HB_004.R3D", "footage", 524_100_000),
     scannedFile("AUDIO/ZOOM0007.WAV", "audio", 188_220_004),
     scannedFile("AUDIO/ZOOM0008.WAV", "audio", 142_553_120),
     scannedFile("DCIM/100MSDCF/DSC00412.JPG", "photo", 9_220_114),

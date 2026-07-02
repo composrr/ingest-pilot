@@ -776,15 +776,18 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
             </label>
             <label className="mt-2 block">
               <div className="mb-1 text-xs font-semibold text-graphite">Group</div>
-              <SelectMenu
-                onChange={(value) => setNamingSaveGroup(value as NamingDeliverable["group"])}
-                options={[
-                  { label: "Video Capture", value: "Video Capture" },
-                  { label: "Delivered Video", value: "Delivered Video" },
-                ]}
-                size="sm"
+              <input
+                className="h-8 w-full rounded-lg border border-mist bg-white px-2 text-sm outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+                list="naming-group-suggestions"
+                onChange={(event) => setNamingSaveGroup(event.target.value)}
+                placeholder="e.g. Video Capture, Weekends, Home"
                 value={namingSaveGroup}
               />
+              <datalist id="naming-group-suggestions">
+                {[...new Set(namingDeliverables.map((item) => item.group))].map((group) => (
+                  <option key={group} value={group} />
+                ))}
+              </datalist>
             </label>
             <div className="mt-3 flex justify-end gap-2">
               <button
