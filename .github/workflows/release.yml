@@ -32,6 +32,10 @@ jobs:
     name: Build ${{ matrix.label }}
     strategy:
       fail-fast: false
+      # Run one platform at a time: each job merges its platform into the shared
+      # latest.json on the release. Parallel jobs race on that file and can drop a
+      # platform (a Windows entry went missing in v0.1.6). Serializing avoids it.
+      max-parallel: 1
       matrix:
         include:
           - os: macos-latest
