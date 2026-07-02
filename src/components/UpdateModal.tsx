@@ -43,8 +43,8 @@ export function UpdateModal({ update, onDismiss }: UpdateModalProps) {
 
   return (
     <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-ink/35 p-4 backdrop-blur-sm">
-      <section className="w-full max-w-lg overflow-hidden rounded-2xl border border-mist bg-paper shadow-panel">
-        <div className="flex items-center justify-between border-b border-mist bg-white px-4 py-3">
+      <section className="flex max-h-[88vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-mist bg-paper shadow-panel">
+        <div className="flex shrink-0 items-center justify-between border-b border-mist bg-white px-4 py-3">
           <div className="flex items-center gap-2">
             <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-signal text-paper">
               <Sparkles size={17} />
@@ -65,7 +65,7 @@ export function UpdateModal({ update, onDismiss }: UpdateModalProps) {
           </button>
         </div>
 
-        <div className="px-4 py-4">
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
           <div className="mb-3 flex items-center gap-2 text-sm text-graphite">
             <span className="rounded-md bg-porcelain px-2 py-0.5 font-mono text-xs text-ink">
               v{update.currentVersion}
@@ -79,7 +79,7 @@ export function UpdateModal({ update, onDismiss }: UpdateModalProps) {
           <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-graphite/70">
             What's new
           </div>
-          <div className="max-h-64 overflow-y-auto rounded-xl border border-mist bg-white p-3 text-sm leading-6 text-ink">
+          <div className="min-h-[260px] rounded-xl border border-mist bg-white p-3 text-sm leading-6 text-ink">
             {renderNotes(update.body)}
           </div>
 
@@ -117,7 +117,7 @@ export function UpdateModal({ update, onDismiss }: UpdateModalProps) {
           ) : null}
         </div>
 
-        <div className="flex items-center justify-end gap-2 border-t border-mist bg-white px-4 py-3">
+        <div className="flex shrink-0 items-center justify-end gap-2 border-t border-mist bg-white px-4 py-3">
           <button
             className="h-9 rounded-lg border border-mist bg-white px-3 text-sm font-semibold text-graphite transition hover:bg-porcelain disabled:opacity-40"
             disabled={busy}
@@ -212,8 +212,25 @@ function renderNotes(body?: string) {
 }
 
 function stripInlineMd(value: string): string {
-  return value
+  return repairMojibake(value)
     .replace(/\*\*(.*?)\*\*/g, "$1")
     .replace(/`([^`]+)`/g, "$1")
     .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
+}
+
+// Defensive: if UTF-8 punctuation (em dash, ellipsis, smart quotes) was mis-decoded
+// as Latin-1 somewhere upstream, restore it so the notes don't show "â€"" garbage.
+function repairMojibake(value: string): string {
+  if (!value.includes("â€") && !value.includes("Â")) {
+    return value;
+  }
+  return value
+    .replace(/â€"/g, "—")
+    .replace(/â€"/g, "–")
+    .replace(/â€¦/g, "…")
+    .replace(/â€™/g, "’")
+    .replace(/â€˜/g, "‘")
+    .replace(/â€œ/g, "“")
+    .replace(/â€/g, "”")
+    .replace(/Â /g, " ");
 }
