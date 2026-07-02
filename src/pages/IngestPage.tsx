@@ -2,7 +2,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { Check, ChevronDown, ChevronRight, ChevronUp, FolderOpen, Image, Layers, List, Plus, RefreshCw, Search, Wand2, X } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, FolderOpen, Image, Layers, List, Plus, RefreshCw, Search, Wand2, X } from "lucide-react";
 import { type Dispatch, type SetStateAction, useEffect, useMemo, useRef, useState } from "react";
 import {
   defaultsForParameters,
@@ -2676,42 +2676,50 @@ function NamingAssistant({
         </div>
 
         <div className="grid min-h-0 flex-1 grid-cols-[220px_minmax(0,1fr)]">
-          <aside className="min-h-0 overflow-auto border-r border-mist bg-porcelain/25 p-2">
+          {/* Same "hairline editorial" (design 1c) accordion as the Naming tab. */}
+          <aside className="min-h-0 overflow-auto border-r border-mist bg-porcelain/25 px-3">
             {groups.map((group) => {
               const open = expandedGroups.has(group);
               const items = templates.filter((item) => item.group === group);
               return (
-                <div key={group} className="mb-1">
+                <div key={group} className="border-t border-mist/70 first:border-t-0">
                   <button
-                    className="flex w-full items-center gap-1.5 rounded-lg px-1.5 py-1.5 text-left text-[12px] font-semibold text-ink transition hover:bg-white"
+                    className="flex w-full items-center gap-2 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.09em] text-ink transition hover:text-black"
                     onClick={() => toggleGroup(group)}
                     type="button"
                   >
-                    {open ? <ChevronDown className="shrink-0 text-graphite" size={13} /> : <ChevronRight className="shrink-0 text-graphite" size={13} />}
                     <span className="min-w-0 flex-1 truncate">{group}</span>
-                    <span className="shrink-0 text-[11px] font-normal text-graphite/60">{items.length}</span>
+                    <span className="shrink-0 font-normal normal-case tracking-normal tabular-nums text-graphite/70">{items.length}</span>
+                    <Plus className={`shrink-0 text-graphite transition-transform duration-300 ${open ? "rotate-45" : ""}`} size={13} />
                   </button>
-                  {open ? (
-                    <div className="space-y-1 pb-1 pl-3.5">
-                      {items.map((item) => (
-                        <button
-                          key={item.id}
-                          className={`w-full rounded-lg px-2 py-1.5 text-left text-sm transition ${
-                            deliverableId === item.id
-                              ? "bg-lavender/25 font-semibold text-ink ring-1 ring-lavender/60"
-                              : "text-graphite hover:bg-white"
-                          }`}
-                          onClick={() => {
-                            setDeliverableId(item.id);
-                            setValues({});
-                          }}
-                          type="button"
-                        >
-                          {item.label}
-                        </button>
-                      ))}
+                  <div
+                    className="grid transition-[grid-template-rows] duration-300 ease-out"
+                    style={{ gridTemplateRows: open ? "1fr" : "0fr" }}
+                  >
+                    <div className="min-h-0 overflow-hidden">
+                      <div className={`pb-2 transition-transform duration-300 ease-out ${open ? "translate-y-0" : "-translate-y-2"}`}>
+                        {items.map((item) => {
+                          const selected = deliverableId === item.id;
+                          return (
+                            <button
+                              key={item.id}
+                              className={`flex w-full items-center gap-2 py-1.5 text-left text-[13px] transition ${
+                                selected ? "font-semibold text-ink" : "text-graphite hover:text-ink"
+                              }`}
+                              onClick={() => {
+                                setDeliverableId(item.id);
+                                setValues({});
+                              }}
+                              type="button"
+                            >
+                              <span className={`h-1.5 w-1.5 shrink-0 rounded-full bg-signal transition-opacity ${selected ? "opacity-100" : "opacity-0"}`} />
+                              <span className="min-w-0 truncate">{item.label}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
-                  ) : null}
+                  </div>
                 </div>
               );
             })}
