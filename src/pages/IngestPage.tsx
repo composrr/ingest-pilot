@@ -1514,14 +1514,25 @@ export function IngestPage() {
           return;
         }
         setDetectedSources(sources);
-        if (!sourcePath.trim() && sources[0]) {
-          setSourcePaths([sources[0].path]);
+        // Pre-load connected memory cards automatically: if nothing is set up yet and
+        // a card (or cards) are plugged in, drop them straight into "Copy From" and
+        // scan so the ingest screen is ready without any clicks.
+        if (!sourcePath.trim() && sources.length > 0) {
+          const paths = uniquePaths(sources.map((source) => source.path));
+          setSourcePaths(paths);
           setSourceScans([]);
           setSelectedRelativePaths(new Set());
           setIngestProgress(null);
           setIsFileSelectorOpen(false);
           setIngestResult(null);
-          setLastAction(`Camera source detected: ${sources[0].label}`);
+          setLastAction(
+            paths.length === 1
+              ? `Memory card detected: ${pathDisplayName(paths[0])}`
+              : `${paths.length} memory cards detected`,
+          );
+          if (appSettings.ingest_defaults.auto_scan_sources) {
+            void scanPaths(paths);
+          }
         }
       } catch {
         if (!cancelled) {
