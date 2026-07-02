@@ -10,6 +10,18 @@ and user-facing  -  this is what people read in the update popup.
 
 ## [Unreleased]
 
+## [0.1.7]
+
+### Fixed
+- **Windows auto-update.** The updater manifest was missing the Windows entry, so
+  Windows couldn't self-update. Fixed, and the release now builds one platform at a
+  time so the manifest always includes every platform.
+- **Update notes no longer show garbled characters** (dashes and ellipses render
+  correctly in the "What's new" popup).
+
+### Changed
+- The "What's new" update popup is larger, with a taller, scrollable notes area.
+
 ## [0.1.6]
 
 ### Added
