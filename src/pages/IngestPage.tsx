@@ -2629,7 +2629,9 @@ function NamingAssistant({
     };
   }, []);
 
-  const deliverable = templates.find((item) => item.id === deliverableId) ?? templates[0];
+  // No default selection: the accordion starts fully collapsed until a template is
+  // picked (its group then expands via the effect below).
+  const deliverable = templates.find((item) => item.id === deliverableId) ?? null;
   const preview = deliverable ? previewNamingResult(deliverable, values) : "";
   const missingRequired = deliverable
     ? deliverable.fields.some((field) => field.required && !(values[field.id] ?? "").trim())
@@ -2657,7 +2659,7 @@ function NamingAssistant({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/30 p-4 backdrop-blur-sm">
-      <section className="flex max-h-[86vh] w-full max-w-3xl select-none flex-col overflow-hidden rounded-[24px] border border-mist bg-white shadow-panel">
+      <section className="flex h-[88vh] w-full max-w-4xl select-none flex-col overflow-hidden rounded-[24px] border border-mist bg-white shadow-panel">
         <div className="flex items-center justify-between border-b border-mist px-4 py-3">
           <div>
             <h2 className="flex items-center gap-2 text-base font-semibold">
@@ -2785,7 +2787,11 @@ function NamingAssistant({
                   </button>
                 </div>
               </>
-            ) : null}
+            ) : (
+              <div className="flex h-full items-center justify-center px-6 text-center text-sm text-graphite">
+                Pick a naming template on the left to build this ingest's project name.
+              </div>
+            )}
           </div>
         </div>
       </section>
