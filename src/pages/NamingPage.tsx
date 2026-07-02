@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Check, ChevronDown, ChevronRight, Copy, ListTree, Plus, Save, Sparkles, Trash2, X } from "lucide-react";
+import { Check, Copy, ListTree, Plus, Save, Sparkles, Trash2, X } from "lucide-react";
 import { FloatingHelp } from "../components/FloatingHelp";
 import { OptionsTextField } from "../components/OptionsTextField";
 import { SelectMenu } from "../components/SelectMenu";
@@ -234,47 +234,60 @@ export function NamingPage() {
                 <Plus size={13} /> New
               </button>
             </div>
-            <div className="min-h-0 flex-1 space-y-0.5 overflow-auto p-2">
+            {/* Accordion — "hairline editorial" style: thin dividers, uppercase group
+                headers with a count and a + that rotates to ×, and a curtain-reveal
+                (grid-rows expand + items slide down) on open. */}
+            <div className="min-h-0 flex-1 overflow-auto px-3">
               {groupedDeliverables.map(([group, items]) => {
                 const open = expandedGroups.has(group);
                 return (
-                  <div key={group}>
+                  <div key={group} className="border-t border-mist/70 first:border-t-0">
                     <button
-                      className="flex w-full items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-[12px] font-semibold text-ink transition hover:bg-porcelain"
+                      className="flex w-full items-center gap-2 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.09em] text-ink transition hover:text-black"
                       onClick={() => toggleGroup(group)}
                       type="button"
                     >
-                      {open ? <ChevronDown className="shrink-0 text-graphite" size={13} /> : <ChevronRight className="shrink-0 text-graphite" size={13} />}
                       <span className="min-w-0 flex-1 truncate">{group}</span>
-                      <span className="shrink-0 text-[11px] font-normal text-graphite/60">{items.length}</span>
+                      <span className="shrink-0 font-normal normal-case tracking-normal tabular-nums text-graphite/70">{items.length}</span>
+                      <Plus
+                        className={`shrink-0 text-graphite transition-transform duration-300 ${open ? "rotate-45" : ""}`}
+                        size={13}
+                      />
                     </button>
-                    {open ? (
-                      <div className="space-y-0.5 pb-1 pl-3.5">
-                        {items.map((deliverable) => (
-                          <button
-                            key={deliverable.id}
-                            className={`w-full truncate rounded-lg px-2 py-1.5 text-left text-[13px] transition ${
-                              selectedId === deliverable.id
-                                ? "bg-lavender/25 font-semibold text-ink ring-1 ring-lavender/60"
-                                : "text-graphite hover:bg-porcelain"
-                            }`}
-                            onClick={() => setSelectedId(deliverable.id)}
-                            onContextMenu={(event) => {
-                              event.preventDefault();
-                              setSelectedId(deliverable.id);
-                              setContextMenu({
-                                x: Math.min(event.clientX, window.innerWidth - 180),
-                                y: Math.min(event.clientY, window.innerHeight - 96),
-                                id: deliverable.id,
-                              });
-                            }}
-                            type="button"
-                          >
-                            {deliverable.label}
-                          </button>
-                        ))}
+                    <div
+                      className="grid transition-[grid-template-rows] duration-300 ease-out"
+                      style={{ gridTemplateRows: open ? "1fr" : "0fr" }}
+                    >
+                      <div className="min-h-0 overflow-hidden">
+                        <div className={`pb-2 transition-transform duration-300 ease-out ${open ? "translate-y-0" : "-translate-y-2"}`}>
+                          {items.map((deliverable) => {
+                            const selected = selectedId === deliverable.id;
+                            return (
+                              <button
+                                key={deliverable.id}
+                                className={`flex w-full items-center gap-2 py-1.5 text-left text-[13px] transition ${
+                                  selected ? "font-semibold text-ink" : "text-graphite hover:text-ink"
+                                }`}
+                                onClick={() => setSelectedId(deliverable.id)}
+                                onContextMenu={(event) => {
+                                  event.preventDefault();
+                                  setSelectedId(deliverable.id);
+                                  setContextMenu({
+                                    x: Math.min(event.clientX, window.innerWidth - 180),
+                                    y: Math.min(event.clientY, window.innerHeight - 96),
+                                    id: deliverable.id,
+                                  });
+                                }}
+                                type="button"
+                              >
+                                <span className={`h-1.5 w-1.5 shrink-0 rounded-full bg-signal transition-opacity ${selected ? "opacity-100" : "opacity-0"}`} />
+                                <span className="min-w-0 truncate">{deliverable.label}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
                       </div>
-                    ) : null}
+                    </div>
                   </div>
                 );
               })}
