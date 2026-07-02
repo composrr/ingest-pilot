@@ -183,6 +183,8 @@ function renderView(activeView: AppView, selectView: (view: AppView) => void) {
         onOpenHelp={() => selectView("help")}
         onOpenPresets={() => selectView("presets")}
         onStartIngest={() => selectView("ingest")}
+        onOpenScaffold={() => selectView("scaffold")}
+        onOpenHistory={() => selectView("history")}
       />
     );
   }
@@ -229,6 +231,8 @@ function renderView(activeView: AppView, selectView: (view: AppView) => void) {
       onOpenHelp={() => selectView("help")}
       onOpenPresets={() => selectView("presets")}
       onStartIngest={() => selectView("ingest")}
+      onOpenScaffold={() => selectView("scaffold")}
+      onOpenHistory={() => selectView("history")}
     />
   );
 }

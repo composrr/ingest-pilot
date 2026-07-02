@@ -7,15 +7,20 @@ import { MetadataPresetsManager } from "./MetadataPresetsManager";
 import { OptionsTextField } from "./OptionsTextField";
 import { PatternInput } from "./PatternInput";
 import { SelectMenu } from "./SelectMenu";
+import { TokenSuggestInput } from "./TokenSuggest";
 import {
   defaultNamingCatalog,
   mergeNamingCatalog,
   type NamingDeliverable,
+  type NamingField,
 } from "../lib/namingCatalog";
 import { currentLocalDate, mergeGlobalAndPresetParameters, slugifyToken } from "../lib/parameters";
-import { getNamingCatalog, getSettings, listMetadataPresets } from "../lib/tauri";
+import { getMetadataPreset, getNamingCatalog, getSettings, listMetadataPresets, saveNamingCatalog } from "../lib/tauri";
+import { getTokenDefinitions, parsePattern } from "../lib/tokens";
 import type {
   FolderNode,
+  MetadataField,
+  MetadataPreset,
   MetadataPresetSummary,
   Preset,
   PresetVariable,
@@ -69,6 +74,61 @@ function subPathPreview(preset: Preset): string {
   return `${tail}/…`;
 }
 
+// Value picker for a preset's chosen metadata tags. Dropdowns for list fields,
+// yes/no for booleans, a date field for dates, free text otherwise.
+function PresetMetadataValueInput({
+  field,
+  onChange,
+  value,
+}: {
+  field: MetadataField;
+  onChange: (value: string) => void;
+  value: string;
+}) {
+  const inputClass =
+    "h-8 w-full min-w-0 rounded-lg border border-mist bg-white px-2 text-xs outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30";
+  if (field.field_type === "dropdown") {
+    return (
+      <SelectMenu
+        onChange={onChange}
+        options={[{ label: "—", value: "" }, ...field.options.map((option) => ({ label: option, value: option }))]}
+        placeholder="Any / choose"
+        size="sm"
+        value={value}
+      />
+    );
+  }
+  if (field.field_type === "boolean") {
+    return (
+      <SelectMenu
+        onChange={onChange}
+        options={[
+          { label: "—", value: "" },
+          { label: "Yes", value: "true" },
+          { label: "No", value: "false" },
+        ]}
+        size="sm"
+        value={value}
+      />
+    );
+  }
+  if (field.field_type === "date") {
+    return <input className={inputClass} onChange={(event) => onChange(event.target.value)} type="date" value={value} />;
+  }
+  return (
+    <input
+      className={inputClass}
+      onChange={(event) => onChange(event.target.value)}
+      placeholder={
+        field.field_type === "multi_select" && field.options.length
+          ? `${field.options.slice(0, 3).join(", ")}…`
+          : "Leave blank to fill at ingest"
+      }
+      value={value}
+    />
+  );
+}
+
 export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorProps) {
   const [draft, setDraft] = useState<Preset>(initialPreset);
   const [variableRowKeys, setVariableRowKeys] = useState(() =>
@@ -78,6 +138,7 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
   const [customFileKinds, setCustomFileKinds] = useState<Record<string, string>>({});
   const [metadataSummaries, setMetadataSummaries] = useState<MetadataPresetSummary[]>([]);
   const [isMetadataManagerOpen, setIsMetadataManagerOpen] = useState(false);
+  const [attachedMetadata, setAttachedMetadata] = useState<MetadataPreset | null>(null);
   const [namingDeliverables, setNamingDeliverables] = useState<NamingDeliverable[]>([]);
 
   function refreshMetadataSummaries() {
@@ -93,6 +154,93 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
       .then((persisted) => setNamingDeliverables(mergeNamingCatalog(persisted).deliverables))
       .catch(() => setNamingDeliverables(defaultNamingCatalog().deliverables));
   }, []);
+
+  // Load the attached metadata preset's schema so its fields can be shown as tag
+  // pickers (the operator chooses values for this preset, not schema edits).
+  useEffect(() => {
+    const id = draft.metadata_preset_id;
+    if (!id) {
+      setAttachedMetadata(null);
+      return;
+    }
+    let active = true;
+    getMetadataPreset(id)
+      .then((preset) => active && setAttachedMetadata(preset))
+      .catch(() => active && setAttachedMetadata(null));
+    return () => {
+      active = false;
+    };
+  }, [draft.metadata_preset_id]);
+
+  // "New naming preset": save this preset's current folder-name pattern (and
+  // pre-folder path) into the naming catalog so it's reusable from the Naming tab
+  // and the ingest Name wizard. Fields are derived from the pattern's non-date
+  // tokens, using the preset's variables for labels/options.
+  const [namingSaveOpen, setNamingSaveOpen] = useState(false);
+  const [namingSaveName, setNamingSaveName] = useState("");
+  const [namingSaveGroup, setNamingSaveGroup] = useState<NamingDeliverable["group"]>("Video Capture");
+  const [namingSaveStatus, setNamingSaveStatus] = useState<string | null>(null);
+
+  async function saveAsNamingPreset() {
+    const label = namingSaveName.trim();
+    if (!label) {
+      return;
+    }
+    const globalIds = new Set(["date", "year", "month", "day", "preset_name"]);
+    const tokenIds = [
+      ...new Set(
+        parsePattern(draft.root_folder_pattern)
+          .filter((part) => part.type === "token")
+          .map((part) => part.value)
+          .filter((id) => !globalIds.has(id)),
+      ),
+    ];
+    const fields = tokenIds.map((id) => {
+      const variable = allParameters.find((item) => item.id === id);
+      return {
+        id,
+        label: variable?.name ?? id,
+        type: (variable?.type === "dropdown" ? "dropdown" : "short_text") as NamingField["type"],
+        required: variable?.required ?? true,
+        options: variable?.options?.length ? [...variable.options] : undefined,
+      };
+    });
+    const deliverableId = `deliverable_${Date.now()}`;
+    const deliverable: NamingDeliverable = {
+      id: deliverableId,
+      label,
+      group: namingSaveGroup,
+      hint: draft.root_folder_pattern.replace("{year}-{month}-{day}", "YYYY-MM-DD").replace("{date}", "YYYYMMDD"),
+      presetId: deliverableId,
+      presetName: label,
+      rootPattern: draft.root_folder_pattern,
+      subPath: draft.destinations.sub_path_pattern?.trim() || undefined,
+      fields,
+    };
+    try {
+      const catalog = mergeNamingCatalog(await getNamingCatalog());
+      const next = { ...catalog, deliverables: [...catalog.deliverables, deliverable] };
+      await saveNamingCatalog(next);
+      setNamingDeliverables(next.deliverables);
+      setNamingSaveOpen(false);
+      setNamingSaveStatus(`Saved “${label}” to Naming`);
+      window.setTimeout(() => setNamingSaveStatus(null), 2200);
+    } catch (error) {
+      setNamingSaveStatus(`Couldn't save: ${String(error)}`);
+    }
+  }
+
+  function setMetadataValue(fieldId: string, value: string) {
+    setDraft((current) => {
+      const nextValues = { ...(current.metadata_values ?? {}) };
+      if (value) {
+        nextValues[fieldId] = value;
+      } else {
+        delete nextValues[fieldId];
+      }
+      return { ...current, metadata_values: nextValues };
+    });
+  }
 
   // Applies a naming template: sets the SOP name pattern + year-aware sub-path and
   // folds in any of the template's fields that aren't already variables, so the
@@ -306,19 +454,19 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
                 {namingDeliverables.length ? (
                   <div className="grid min-h-10 grid-cols-[110px_1fr] items-center gap-2 px-3 py-1.5">
                     <div className="flex items-center gap-1 text-xs font-semibold text-graphite">
-                      Naming SOP
-                      <FloatingHelp label="Naming template help">
-                        Apply a naming template to set this preset's folder name pattern (and its year-aware sub-path)
-                        per the team SOP, and pull in the fields it needs. Manage templates in the Naming tab.
+                      Naming preset
+                      <FloatingHelp label="Naming preset help">
+                        Apply a naming preset to set this preset's folder name pattern (and its year-aware pre-folder
+                        path) per the team SOP, and pull in the fields it needs. Manage naming presets in the Naming tab.
                       </FloatingHelp>
                     </div>
                     <SelectMenu
                       onChange={(value) => value && applyNamingTemplate(value)}
                       options={[
-                        { label: "Apply a template…", value: "" },
+                        { label: "Apply a naming preset…", value: "" },
                         ...namingDeliverables.map((item) => ({ label: item.label, value: item.id })),
                       ]}
-                      placeholder="Apply a template…"
+                      placeholder="Apply a naming preset…"
                       size="sm"
                       value=""
                     />
@@ -350,27 +498,31 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
                 </div>
                 <div className="px-3 py-2">
                   <div className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-graphite">
-                    Sub-folder path
-                    <FloatingHelp label="Sub-folder path help">
-                      Optional. Folders created inside the destination each ingest, before the project folder. Use tokens
-                      like {"{year}"} so a preset can point at a stable parent (e.g. …/Videos) and always land in the
-                      current year's structure — for example {"{year}/Broll"}. If those folders already exist, the ingest
-                      goes into them; otherwise they're created. Leave blank to save straight into the destination.
+                    Pre-folder path (optional)
+                    <FloatingHelp label="Pre-folder path help">
+                      Folders placed BEFORE the project folder, inside “Default Save To”, resolved fresh each ingest.
+                      The point: leave “Default Save To” pointed at a folder that never changes (e.g. …/Videos) and put the
+                      parts that DO change here as tokens. {"{year}"} becomes the current year, so {" {year}/Broll"} always
+                      lands in this year's Broll folder — no editing the preset in January. If the folders already exist the
+                      ingest drops into them; otherwise it makes them. Leave blank to save straight into “Default Save To”.
                     </FloatingHelp>
                   </div>
-                  <input
+                  <TokenSuggestInput
+                    ariaLabel="Pre-folder path"
                     className="h-8 w-full min-w-0 rounded-lg border border-mist bg-white px-2 font-mono text-xs outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
-                    onChange={(event) =>
+                    onChange={(sub_path_pattern) =>
                       updateDraft({
-                        destinations: { ...draft.destinations, sub_path_pattern: event.target.value },
+                        destinations: { ...draft.destinations, sub_path_pattern },
                       })
                     }
-                    placeholder="{year}/Broll"
+                    placeholder="{year}/Broll — type $ for tokens"
+                    tokens={getTokenDefinitions("folder", allParameters)}
                     value={draft.destinations.sub_path_pattern ?? ""}
                   />
                   {(draft.destinations.sub_path_pattern ?? "").trim() ? (
-                    <div className="mt-1 truncate text-[11px] text-graphite/70" title={subPathPreview(draft)}>
-                      → {subPathPreview(draft)}
+                    <div className="mt-1 rounded-md bg-porcelain px-2 py-1 text-[11px] text-graphite/80">
+                      <span className="font-semibold text-graphite/60">This ingest saves to: </span>
+                      <span className="break-all font-mono">{subPathPreview(draft)}</span>
                     </div>
                   ) : null}
                 </div>
@@ -430,8 +582,9 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
                   <div className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-graphite">
                     Metadata preset
                     <FloatingHelp label="Metadata preset help">
-                      Optionally attach a metadata preset. When this preset is chosen at ingest, its metadata fields are
-                      pre-selected and written to the iconik CSV. Manage schemas in the Metadata tab.
+                      Attach a metadata schema, then choose the tag values below that every import made with this preset
+                      should carry (e.g. Content Type = Story). Those values pre-fill at ingest (still editable per
+                      import) and are written to the iconik CSV. Edit the schema itself in the Metadata tab.
                     </FloatingHelp>
                   </div>
                   <div className="grid grid-cols-[1fr_auto] gap-1.5">
@@ -450,6 +603,35 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
                       Manage
                     </button>
                   </div>
+
+                  {attachedMetadata && attachedMetadata.categories.some((category) => category.fields.length) ? (
+                    <div className="mt-2 space-y-2">
+                      <div className="text-[11px] text-graphite/70">Tags applied to every import with this preset:</div>
+                      {attachedMetadata.categories
+                        .filter((category) => category.fields.length)
+                        .map((category) => (
+                          <div key={category.id} className="rounded-lg border border-mist bg-porcelain/40 p-2">
+                            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-graphite/60">
+                              {category.name}
+                            </div>
+                            <div className="space-y-1.5">
+                              {category.fields.map((field) => (
+                                <div key={field.id} className="grid grid-cols-[100px_1fr] items-center gap-2">
+                                  <span className="truncate text-[11px] font-semibold text-graphite" title={field.label}>
+                                    {field.label}
+                                  </span>
+                                  <PresetMetadataValueInput
+                                    field={field}
+                                    onChange={(value) => setMetadataValue(field.id, value)}
+                                    value={draft.metadata_values?.[field.id] ?? ""}
+                                  />
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                    </div>
+                  ) : null}
                 </div>
               </div>
             </section>
@@ -457,7 +639,26 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
             <div className="grid gap-2">
               <section className="overflow-hidden rounded-2xl border border-mist bg-white">
                 <SectionHeader
-                  help="This pattern creates the root project folder name. The Preview line under the field shows the resolved example."
+                  action={
+                    <div className="flex items-center gap-1.5">
+                      {namingSaveStatus ? (
+                        <span className="max-w-[180px] truncate text-[11px] font-semibold text-emerald-600">{namingSaveStatus}</span>
+                      ) : null}
+                      <button
+                        className="inline-flex h-7 items-center gap-1 rounded-lg border border-mist bg-white px-2 text-xs font-semibold text-graphite transition hover:bg-porcelain"
+                        onClick={() => {
+                          setNamingSaveName(draft.name);
+                          setNamingSaveOpen(true);
+                        }}
+                        title="Save this folder-name pattern as a naming preset, usable from the Naming tab and the ingest Name wizard."
+                        type="button"
+                      >
+                        <Plus size={13} />
+                        New naming preset
+                      </button>
+                    </div>
+                  }
+                  help="This pattern creates the root project folder name. The Preview line under the field shows the resolved example. Type $ in the field to search tokens."
                   title="Project Folder Name"
                 />
                 <div className="p-2">
@@ -546,6 +747,68 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
           />
         </div>
       </div>
+
+      {namingSaveOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/30 p-4 backdrop-blur-sm" onClick={() => setNamingSaveOpen(false)}>
+          <section
+            className="w-full max-w-sm rounded-[24px] border border-mist bg-paper p-4 shadow-panel"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h3 className="text-base font-semibold">New naming preset</h3>
+            <p className="mt-0.5 text-xs text-graphite">
+              Saves this pattern to the Naming tab so it can be applied to other presets or picked in the ingest Name
+              wizard.
+            </p>
+            <div className="mt-2 rounded-lg bg-porcelain px-2 py-1.5 font-mono text-xs text-ink">{draft.root_folder_pattern}</div>
+            <label className="mt-3 block">
+              <div className="mb-1 text-xs font-semibold text-graphite">Name</div>
+              <input
+                autoFocus
+                className="h-8 w-full rounded-lg border border-mist bg-white px-2 text-sm outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+                onChange={(event) => setNamingSaveName(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    void saveAsNamingPreset();
+                  }
+                }}
+                value={namingSaveName}
+              />
+            </label>
+            <label className="mt-2 block">
+              <div className="mb-1 text-xs font-semibold text-graphite">Group</div>
+              <input
+                className="h-8 w-full rounded-lg border border-mist bg-white px-2 text-sm outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+                list="naming-group-suggestions"
+                onChange={(event) => setNamingSaveGroup(event.target.value)}
+                placeholder="e.g. Video Capture, Weekends, Home"
+                value={namingSaveGroup}
+              />
+              <datalist id="naming-group-suggestions">
+                {[...new Set(namingDeliverables.map((item) => item.group))].map((group) => (
+                  <option key={group} value={group} />
+                ))}
+              </datalist>
+            </label>
+            <div className="mt-3 flex justify-end gap-2">
+              <button
+                className="inline-flex h-8 items-center rounded-lg border border-mist bg-white px-3 text-xs font-semibold text-graphite transition hover:bg-porcelain"
+                onClick={() => setNamingSaveOpen(false)}
+                type="button"
+              >
+                Cancel
+              </button>
+              <button
+                className="inline-flex h-8 items-center rounded-lg bg-signal px-3 text-xs font-semibold text-paper transition hover:bg-black disabled:opacity-40"
+                disabled={!namingSaveName.trim()}
+                onClick={() => void saveAsNamingPreset()}
+                type="button"
+              >
+                Create
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
 
       {isMetadataManagerOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/30 p-4 backdrop-blur-sm">

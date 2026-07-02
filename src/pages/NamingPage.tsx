@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Check, Copy, Plus, Save, Sparkles, Trash2, Wand2 } from "lucide-react";
+import { Check, Copy, ListTree, Plus, Save, Sparkles, Trash2, X } from "lucide-react";
 import { FloatingHelp } from "../components/FloatingHelp";
 import { OptionsTextField } from "../components/OptionsTextField";
 import { SelectMenu } from "../components/SelectMenu";
@@ -12,16 +12,52 @@ import {
   type NamingDeliverable,
   type NamingField,
 } from "../lib/namingCatalog";
+import { TokenSuggestInput } from "../components/TokenSuggest";
 import { slugifyToken } from "../lib/parameters";
 import { getNamingCatalog, savePreset, saveNamingCatalog } from "../lib/tauri";
+import type { TokenDefinition } from "../lib/tokens";
 import type { Preset } from "../lib/types";
 
-type Tab = "assistant" | "catalog";
+// Tokens available in a template's pattern fields: the date parts plus the
+// template's own fields.
+function templateTokens(deliverable: NamingDeliverable): TokenDefinition[] {
+  return [
+    { id: "year", label: "Year", scope: "global" },
+    { id: "month", label: "Month", scope: "global" },
+    { id: "day", label: "Day", scope: "global" },
+    { id: "date", label: "Date", scope: "global" },
+    ...deliverable.fields.map((field) => ({ id: field.id, label: field.label, scope: "variable" as const })),
+  ];
+}
 
+// Naming templates, laid out like the Metadata tab: the deliverable templates are
+// the list on the left, everything to edit one is on the right. The shared option
+// lists (campuses, signifiers, ministry codes) live behind a "Shared lists" button.
 export function NamingPage() {
   const [catalog, setCatalog] = useState<NamingCatalog>(() => defaultNamingCatalog());
-  const [tab, setTab] = useState<Tab>("assistant");
+  const [selectedId, setSelectedId] = useState<string>("");
   const [loaded, setLoaded] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [sharedOpen, setSharedOpen] = useState(false);
+  // Right-click context menu on a template row: { screen position, template id }.
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; id: string } | null>(null);
+  // Accordion: which group sections are expanded. Collapsed by default so long
+  // catalogs stay tidy — you drill into a group to see its templates.
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!contextMenu) {
+      return;
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setContextMenu(null);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [contextMenu]);
 
   useEffect(() => {
     let cancelled = false;
@@ -31,9 +67,11 @@ export function NamingPage() {
         const merged = mergeNamingCatalog(persisted);
         if (!cancelled) {
           setCatalog(merged);
+          setSelectedId(merged.deliverables[0]?.id ?? "");
         }
-        // Seed the file on first run so it exists in Documents for syncing.
-        if (!persisted) {
+        // Persist on first run OR when the shipped catalog is newer than what's on
+        // disk (so the real SOP data replaces earlier placeholder defaults).
+        if (!persisted || (persisted.schema_version ?? 1) < merged.schema_version) {
           await saveNamingCatalog(merged);
         }
       } catch (error) {
@@ -49,238 +87,61 @@ export function NamingPage() {
     };
   }, []);
 
-  return (
-    <div className="tool-density flex min-h-full w-full min-w-0 flex-col rounded-[28px] border border-mist bg-paper p-2 shadow-panel xl:p-3">
-      <header className="mb-2 flex items-start justify-between gap-3">
-        <div>
-          <p className="mb-0.5 text-[11px] font-semibold text-graphite/70">Naming</p>
-          <h1 className="text-xl font-semibold tracking-normal">Naming Assistant</h1>
-          <p className="mt-0.5 max-w-2xl text-xs text-graphite">
-            Build SOP-correct project names without memorizing the sheet. Pick a deliverable, fill a couple of fields,
-            and turn it into a saved preset. The options live in an editable catalog synced with your presets.
-          </p>
-        </div>
-        <div className="flex shrink-0 rounded-xl border border-mist bg-white p-0.5 text-xs font-semibold">
-          <button
-            className={`rounded-lg px-3 py-1.5 transition ${tab === "assistant" ? "bg-porcelain text-ink" : "text-graphite"}`}
-            onClick={() => setTab("assistant")}
-            type="button"
-          >
-            Assistant
-          </button>
-          <button
-            className={`rounded-lg px-3 py-1.5 transition ${tab === "catalog" ? "bg-porcelain text-ink" : "text-graphite"}`}
-            onClick={() => setTab("catalog")}
-            type="button"
-          >
-            Templates &amp; Options
-          </button>
-        </div>
-      </header>
-
-      {!loaded ? (
-        <div className="flex flex-1 items-center justify-center text-xs text-graphite/60">Loading catalog…</div>
-      ) : tab === "assistant" ? (
-        <AssistantPanel catalog={catalog} />
-      ) : (
-        <CatalogEditor catalog={catalog} onChange={setCatalog} />
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Assistant: pick a deliverable, fill fields, generate the SOP name, save a preset.
-// ---------------------------------------------------------------------------
-
-function AssistantPanel({ catalog }: { catalog: NamingCatalog }) {
-  const deliverables = catalog.deliverables;
-  const [deliverableId, setDeliverableId] = useState<string>(() => deliverables[0]?.id ?? "");
-  const [values, setValues] = useState<Record<string, string>>({});
-  const [status, setStatus] = useState<{ kind: "ok" | "err"; message: string } | null>(null);
-  const [copied, setCopied] = useState(false);
-
-  const deliverable = useMemo(
-    () => deliverables.find((item) => item.id === deliverableId) ?? deliverables[0],
-    [deliverables, deliverableId],
+  const selected = useMemo(
+    () => catalog.deliverables.find((item) => item.id === selectedId) ?? null,
+    [catalog.deliverables, selectedId],
   );
 
-  // Fields that pull their options from the shared catalog lists (campus/signifier).
-  function optionsForField(field: NamingField): string[] {
-    if (field.options?.length) {
-      return field.options;
+  // Group templates by their (free-form) group, preserving first-seen order.
+  const groupedDeliverables = useMemo(() => {
+    const map = new Map<string, NamingDeliverable[]>();
+    for (const deliverable of catalog.deliverables) {
+      const group = deliverable.group.trim() || "Ungrouped";
+      const list = map.get(group);
+      if (list) {
+        list.push(deliverable);
+      } else {
+        map.set(group, [deliverable]);
+      }
     }
-    if (field.id === "campus") {
-      return catalog.campuses;
-    }
-    if (field.id === "signifier") {
-      return catalog.signifiers;
-    }
-    return [];
-  }
+    return [...map.entries()];
+  }, [catalog.deliverables]);
 
-  const preview = deliverable ? previewNamingResult(deliverable, values) : "";
-  const subPathPreview = deliverable?.subPath
-    ? deliverable.subPath.replace(/\{year\}/g, String(new Date().getFullYear()))
-    : "";
-
-  async function createPreset() {
-    if (!deliverable) {
+  // Keep the selected template's group open so the highlighted row is visible.
+  useEffect(() => {
+    if (!selected) {
       return;
     }
-    const missing = deliverable.fields.filter((field) => field.required && !(values[field.id] ?? "").trim());
-    if (missing.length) {
-      setStatus({ kind: "err", message: `Fill required field: ${missing.map((f) => f.label).join(", ")}` });
-      return;
-    }
-    const now = new Date().toISOString();
-    const base = buildNamingPreset(deliverable, now);
-    const resolvedName = preview || deliverable.presetName;
-    const preset: Preset = {
-      ...base,
-      // Each generated preset is its own file, named after the SOP result.
-      id: `preset_${slugifyToken(resolvedName) || slugifyToken(deliverable.presetName)}_${Date.now()}`,
-      name: resolvedName,
-      description: `Named via the Naming Assistant — ${deliverable.hint}`,
-      // Keep the tokens but bake the entered values in as defaults so the preset
-      // is ready to run and resolves to the same name.
-      variables: base.variables.map((variable) => ({ ...variable, default: values[variable.id] ?? "" })),
-    };
-    try {
-      await savePreset(preset);
-      setStatus({ kind: "ok", message: `Saved preset “${resolvedName}” to your Presets.` });
-    } catch (error) {
-      setStatus({ kind: "err", message: `Couldn't save preset: ${String(error)}` });
-    }
+    const group = selected.group.trim() || "Ungrouped";
+    setExpandedGroups((prev) => (prev.has(group) ? prev : new Set(prev).add(group)));
+  }, [selected]);
+
+  function toggleGroup(group: string) {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(group)) {
+        next.delete(group);
+      } else {
+        next.add(group);
+      }
+      return next;
+    });
   }
-
-  async function copyName() {
-    try {
-      await navigator.clipboard.writeText(preview);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1400);
-    } catch {
-      /* clipboard may be unavailable in some shells */
-    }
-  }
-
-  return (
-    <div className="grid min-h-0 flex-1 gap-2 overflow-auto xl:grid-cols-[minmax(0,1fr)_360px]">
-      <section className="overflow-hidden rounded-2xl border border-mist bg-white">
-        <div className="flex h-10 items-center gap-1.5 border-b border-mist px-3 text-xs font-semibold text-graphite">
-          <Wand2 size={14} /> Build a name
-        </div>
-        <div className="space-y-3 p-3">
-          <label className="block">
-            <div className="mb-1 text-xs font-semibold text-graphite">Deliverable</div>
-            <SelectMenu
-              onChange={(value) => {
-                setDeliverableId(value);
-                setValues({});
-                setStatus(null);
-              }}
-              options={deliverables.map((item) => ({ label: `${item.group} · ${item.label}`, value: item.id }))}
-              placeholder="Choose a deliverable"
-              value={deliverableId}
-            />
-          </label>
-
-          {deliverable?.fields.length ? (
-            <div className="space-y-2">
-              {deliverable.fields.map((field) => {
-                const options = optionsForField(field);
-                return (
-                  <label key={field.id} className="block">
-                    <div className="mb-1 text-xs font-semibold text-graphite">
-                      {field.label}
-                      {field.required ? <span className="text-signal"> *</span> : null}
-                    </div>
-                    {field.type === "dropdown" && options.length ? (
-                      <SelectMenu
-                        onChange={(value) => setValues((current) => ({ ...current, [field.id]: value }))}
-                        options={[{ label: "—", value: "" }, ...options.map((option) => ({ label: option, value: option }))]}
-                        placeholder={field.placeholder ?? "Choose"}
-                        value={values[field.id] ?? ""}
-                      />
-                    ) : (
-                      <input
-                        className="h-8 w-full min-w-0 rounded-lg border border-mist bg-white px-2 text-xs outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
-                        onChange={(event) => setValues((current) => ({ ...current, [field.id]: event.target.value }))}
-                        placeholder={field.placeholder ?? ""}
-                        value={values[field.id] ?? ""}
-                      />
-                    )}
-                  </label>
-                );
-              })}
-            </div>
-          ) : (
-            <p className="text-xs text-graphite/70">This deliverable needs no extra fields — the date fills itself.</p>
-          )}
-        </div>
-      </section>
-
-      <section className="flex flex-col gap-2">
-        <div className="overflow-hidden rounded-2xl border border-mist bg-white">
-          <div className="flex h-10 items-center gap-1.5 border-b border-mist px-3 text-xs font-semibold text-graphite">
-            <Sparkles size={14} /> Result
-          </div>
-          <div className="space-y-2 p-3">
-            <div className="rounded-lg border border-mist bg-porcelain px-2.5 py-2">
-              <div className="text-[10px] font-semibold uppercase tracking-wide text-graphite/60">Project name</div>
-              <div className="mt-0.5 break-all font-mono text-sm font-semibold text-ink">{preview || "—"}</div>
-            </div>
-            {subPathPreview ? (
-              <div className="rounded-lg border border-mist bg-porcelain px-2.5 py-2">
-                <div className="text-[10px] font-semibold uppercase tracking-wide text-graphite/60">Lands in</div>
-                <div className="mt-0.5 break-all font-mono text-xs text-graphite">…/{subPathPreview}/{preview || "…"}</div>
-              </div>
-            ) : null}
-            <div className="flex gap-1.5">
-              <button
-                className="inline-flex h-8 flex-1 items-center justify-center gap-1 rounded-lg bg-signal px-2 text-xs font-semibold text-paper transition hover:brightness-105"
-                onClick={() => void createPreset()}
-                type="button"
-              >
-                <Save size={13} /> Create preset
-              </button>
-              <button
-                className="inline-flex h-8 items-center justify-center gap-1 rounded-lg border border-mist px-2 text-xs font-semibold text-graphite transition hover:bg-porcelain"
-                onClick={() => void copyName()}
-                type="button"
-              >
-                {copied ? <Check size={13} /> : <Copy size={13} />}
-                {copied ? "Copied" : "Copy"}
-              </button>
-            </div>
-            {status ? (
-              <div className={`text-[11px] ${status.kind === "ok" ? "text-emerald-600" : "text-signal"}`}>{status.message}</div>
-            ) : null}
-          </div>
-        </div>
-      </section>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Catalog editor: the shared option lists + deliverable templates. This is where
-// the naming sheet is folded in over time. Explicit Save writes the synced file.
-// ---------------------------------------------------------------------------
-
-function CatalogEditor({ catalog, onChange }: { catalog: NamingCatalog; onChange: (next: NamingCatalog) => void }) {
-  const [dirty, setDirty] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
 
   function update(next: NamingCatalog) {
-    onChange(next);
+    setCatalog(next);
     setDirty(true);
     setSaved(false);
   }
 
+  function updateSelected(patch: Partial<NamingDeliverable>) {
+    update({
+      ...catalog,
+      deliverables: catalog.deliverables.map((item) => (item.id === selectedId ? { ...item, ...patch } : item)),
+    });
+  }
+
   async function save() {
-    setSaving(true);
     try {
       await saveNamingCatalog(catalog);
       setDirty(false);
@@ -288,37 +149,10 @@ function CatalogEditor({ catalog, onChange }: { catalog: NamingCatalog; onChange
       window.setTimeout(() => setSaved(false), 1600);
     } catch (error) {
       console.error("[naming] save failed:", error);
-    } finally {
-      setSaving(false);
     }
   }
 
-  function updateDeliverable(index: number, patch: Partial<NamingDeliverable>) {
-    const deliverables = catalog.deliverables.map((item, i) => (i === index ? { ...item, ...patch } : item));
-    update({ ...catalog, deliverables });
-  }
-
-  function updateField(deliverableIndex: number, fieldIndex: number, patch: Partial<NamingField>) {
-    const deliverable = catalog.deliverables[deliverableIndex];
-    const fields = deliverable.fields.map((field, i) => (i === fieldIndex ? { ...field, ...patch } : field));
-    updateDeliverable(deliverableIndex, { fields });
-  }
-
-  function addField(deliverableIndex: number) {
-    const deliverable = catalog.deliverables[deliverableIndex];
-    const fields = [
-      ...deliverable.fields,
-      { id: `field_${Date.now()}`, label: "New field", type: "short_text" as NamingField["type"], required: false },
-    ];
-    updateDeliverable(deliverableIndex, { fields });
-  }
-
-  function removeField(deliverableIndex: number, fieldIndex: number) {
-    const deliverable = catalog.deliverables[deliverableIndex];
-    updateDeliverable(deliverableIndex, { fields: deliverable.fields.filter((_, i) => i !== fieldIndex) });
-  }
-
-  function addDeliverable() {
+  function addTemplate() {
     const id = `deliverable_${Date.now()}`;
     update({
       ...catalog,
@@ -336,178 +170,549 @@ function CatalogEditor({ catalog, onChange }: { catalog: NamingCatalog; onChange
         },
       ],
     });
+    setSelectedId(id);
   }
 
-  function removeDeliverable(index: number) {
-    update({ ...catalog, deliverables: catalog.deliverables.filter((_, i) => i !== index) });
+  function removeTemplate(id: string) {
+    if (!window.confirm("Delete this naming template?")) {
+      return;
+    }
+    const remaining = catalog.deliverables.filter((item) => item.id !== id);
+    update({ ...catalog, deliverables: remaining });
+    if (selectedId === id) {
+      setSelectedId(remaining[0]?.id ?? "");
+    }
   }
 
   return (
-    <div className="min-h-0 flex-1 overflow-auto">
-      <div className="mb-2 flex items-center justify-between">
-        <p className="text-xs text-graphite/70">
-          Add the campuses, signifiers, and templates from your naming sheet. Everything here is saved to
-          <span className="font-mono"> Documents/Ingest Pilot/Naming/catalog.json</span> so it syncs across machines.
-        </p>
+    // Height is pinned to the viewport (minus the app frame's padding) so the page
+    // itself never scrolls — the template list and the editor pane scroll internally.
+    <div className="tool-density flex h-[calc(100vh-1rem)] max-h-[calc(100vh-1rem)] w-full min-w-0 flex-col rounded-[28px] border border-mist bg-paper p-2 shadow-panel xl:h-[calc(100vh-1.5rem)] xl:max-h-[calc(100vh-1.5rem)] xl:p-3 2xl:h-[calc(100vh-2rem)] 2xl:max-h-[calc(100vh-2rem)]">
+      <header className="mb-2 flex items-start justify-between gap-3">
+        <div>
+          <p className="mb-0.5 text-[11px] font-semibold text-graphite/70">Naming</p>
+          <h1 className="text-xl font-semibold tracking-normal">Naming Templates</h1>
+          <p className="mt-0.5 max-w-2xl text-xs text-graphite">
+            SOP-correct project names without memorizing the sheet. Pick a template, fill a field or two, and turn it
+            into a saved preset. Each template's fields and the shared option lists are editable and sync with your presets.
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <button
+            className="inline-flex h-8 items-center gap-1 rounded-lg border border-mist bg-white px-2.5 text-xs font-semibold text-graphite transition hover:bg-porcelain"
+            onClick={() => setSharedOpen(true)}
+            type="button"
+          >
+            <ListTree size={14} /> Shared lists
+          </button>
+          <button
+            className={`inline-flex h-8 items-center gap-1 rounded-lg px-3 text-xs font-semibold transition ${
+              dirty ? "bg-signal text-paper hover:brightness-105" : "border border-mist text-graphite"
+            }`}
+            disabled={!dirty}
+            onClick={() => void save()}
+            type="button"
+          >
+            {saved ? <Check size={14} /> : <Save size={14} />}
+            {saved ? "Saved" : dirty ? "Save" : "Saved"}
+          </button>
+        </div>
+      </header>
+
+      {!loaded ? (
+        <div className="flex flex-1 items-center justify-center text-xs text-graphite/60">Loading templates…</div>
+      ) : (
+        <div className="grid min-h-0 flex-1 gap-2 md:grid-cols-[240px_minmax(0,1fr)]">
+          <aside className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-mist bg-white">
+            <div className="flex items-center justify-between border-b border-mist px-2 py-1.5">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-graphite/60">Templates</span>
+              <button
+                className="inline-flex h-7 items-center gap-1 rounded-lg border border-mist bg-white px-2 text-xs font-semibold text-graphite transition hover:bg-porcelain"
+                onClick={addTemplate}
+                type="button"
+              >
+                <Plus size={13} /> New
+              </button>
+            </div>
+            {/* Accordion — "hairline editorial" style: thin dividers, uppercase group
+                headers with a count and a + that rotates to ×, and a curtain-reveal
+                (grid-rows expand + items slide down) on open. */}
+            <div className="min-h-0 flex-1 overflow-auto px-3">
+              {groupedDeliverables.map(([group, items]) => {
+                const open = expandedGroups.has(group);
+                return (
+                  <div key={group} className="border-t border-mist/70 first:border-t-0">
+                    <button
+                      className="flex w-full items-center gap-2 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.09em] text-ink transition hover:text-black"
+                      onClick={() => toggleGroup(group)}
+                      type="button"
+                    >
+                      <span className="min-w-0 flex-1 truncate">{group}</span>
+                      <span className="shrink-0 font-normal normal-case tracking-normal tabular-nums text-graphite/70">{items.length}</span>
+                      <Plus
+                        className={`shrink-0 text-graphite transition-transform duration-300 ${open ? "rotate-45" : ""}`}
+                        size={13}
+                      />
+                    </button>
+                    <div
+                      className="grid transition-[grid-template-rows] duration-300 ease-out"
+                      style={{ gridTemplateRows: open ? "1fr" : "0fr" }}
+                    >
+                      <div className="min-h-0 overflow-hidden">
+                        <div className={`pb-2 transition-transform duration-300 ease-out ${open ? "translate-y-0" : "-translate-y-2"}`}>
+                          {items.map((deliverable) => {
+                            const selected = selectedId === deliverable.id;
+                            return (
+                              <button
+                                key={deliverable.id}
+                                className={`flex w-full items-center gap-2 py-1.5 text-left text-[13px] transition ${
+                                  selected ? "font-semibold text-ink" : "text-graphite hover:text-ink"
+                                }`}
+                                onClick={() => setSelectedId(deliverable.id)}
+                                onContextMenu={(event) => {
+                                  event.preventDefault();
+                                  setSelectedId(deliverable.id);
+                                  setContextMenu({
+                                    x: Math.min(event.clientX, window.innerWidth - 180),
+                                    y: Math.min(event.clientY, window.innerHeight - 96),
+                                    id: deliverable.id,
+                                  });
+                                }}
+                                type="button"
+                              >
+                                <span className={`h-1.5 w-1.5 shrink-0 rounded-full bg-signal transition-opacity ${selected ? "opacity-100" : "opacity-0"}`} />
+                                <span className="min-w-0 truncate">{deliverable.label}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+              {catalog.deliverables.length === 0 ? (
+                <p className="px-2 py-3 text-xs text-graphite">No templates yet — add one.</p>
+              ) : null}
+            </div>
+          </aside>
+
+          {selected ? (
+            <TemplateEditor
+              catalog={catalog}
+              deliverable={selected}
+              onChange={updateSelected}
+              onRemove={() => removeTemplate(selected.id)}
+            />
+          ) : (
+            <section className="flex items-center justify-center rounded-2xl border border-mist bg-white p-8 text-sm text-graphite">
+              Select a template on the left, or create a new one.
+            </section>
+          )}
+        </div>
+      )}
+
+      {sharedOpen ? <SharedListsModal catalog={catalog} onChange={update} onClose={() => setSharedOpen(false)} /> : null}
+
+      {contextMenu ? (
+        <>
+          {/* Click-catcher: any click or right-click outside the menu closes it. */}
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => setContextMenu(null)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setContextMenu(null);
+            }}
+          />
+          <div
+            className="fixed z-50 min-w-[160px] overflow-hidden rounded-xl border border-mist bg-white py-1 shadow-panel"
+            style={{ left: contextMenu.x, top: contextMenu.y }}
+          >
+            <button
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs font-semibold text-red-700 transition hover:bg-red-50"
+              onClick={() => {
+                const id = contextMenu.id;
+                setContextMenu(null);
+                removeTemplate(id);
+              }}
+              type="button"
+            >
+              <Trash2 size={13} /> Delete template
+            </button>
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+// The right pane: use the template (fill → generate → create preset) up top, then
+// the editable definition (name pattern, sub-path, fields) below.
+function TemplateEditor({
+  catalog,
+  deliverable,
+  onChange,
+  onRemove,
+}: {
+  catalog: NamingCatalog;
+  deliverable: NamingDeliverable;
+  onChange: (patch: Partial<NamingDeliverable>) => void;
+  onRemove: () => void;
+}) {
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [status, setStatus] = useState<{ kind: "ok" | "err"; message: string } | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  // Reset the try-it inputs when switching templates.
+  useEffect(() => {
+    setValues({});
+    setStatus(null);
+  }, [deliverable.id]);
+
+  function optionsForField(field: NamingField): string[] {
+    if (field.options?.length) {
+      return field.options;
+    }
+    if (field.id === "campus") {
+      return catalog.campuses;
+    }
+    if (field.id === "signifier") {
+      return catalog.signifiers;
+    }
+    return [];
+  }
+
+  const preview = previewNamingResult(deliverable, values);
+  const subPathPreview = deliverable.subPath
+    ? deliverable.subPath.replace(/\{year\}/g, String(new Date().getFullYear()))
+    : "";
+
+  async function createPreset() {
+    const missing = deliverable.fields.filter((field) => field.required && !(values[field.id] ?? "").trim());
+    if (missing.length) {
+      setStatus({ kind: "err", message: `Fill required field: ${missing.map((f) => f.label).join(", ")}` });
+      return;
+    }
+    const now = new Date().toISOString();
+    const base = buildNamingPreset(deliverable, now);
+    const resolvedName = preview || deliverable.presetName;
+    const preset: Preset = {
+      ...base,
+      id: `preset_${slugifyToken(resolvedName) || slugifyToken(deliverable.presetName)}_${Date.now()}`,
+      name: resolvedName,
+      description: `Named via the Naming Assistant — ${deliverable.hint}`,
+      variables: base.variables.map((variable) => ({ ...variable, default: values[variable.id] ?? "" })),
+    };
+    try {
+      await savePreset(preset);
+      setStatus({ kind: "ok", message: `Saved preset “${resolvedName}” to your Presets.` });
+    } catch (error) {
+      setStatus({ kind: "err", message: `Couldn't save preset: ${String(error)}` });
+    }
+  }
+
+  async function copyName() {
+    try {
+      await navigator.clipboard.writeText(preview);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1400);
+    } catch {
+      /* clipboard may be unavailable */
+    }
+  }
+
+  function updateField(fieldIndex: number, patch: Partial<NamingField>) {
+    onChange({ fields: deliverable.fields.map((field, i) => (i === fieldIndex ? { ...field, ...patch } : field)) });
+  }
+
+  function addField() {
+    onChange({
+      fields: [
+        ...deliverable.fields,
+        { id: `field_${Date.now()}`, label: "New field", type: "short_text", required: false },
+      ],
+    });
+  }
+
+  function removeField(fieldIndex: number) {
+    onChange({ fields: deliverable.fields.filter((_, i) => i !== fieldIndex) });
+  }
+
+  return (
+    <section className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-mist bg-white">
+      <div className="flex items-center justify-between gap-2 border-b border-mist px-3 py-2">
+        <input
+          className="h-9 min-w-0 flex-1 rounded-xl border border-mist bg-white px-3 text-sm font-semibold outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+          onChange={(event) => onChange({ label: event.target.value, presetName: event.target.value })}
+          value={deliverable.label}
+        />
         <button
-          className={`inline-flex h-8 shrink-0 items-center gap-1 rounded-lg px-3 text-xs font-semibold transition ${
-            dirty ? "bg-signal text-paper hover:brightness-105" : "border border-mist text-graphite"
-          }`}
-          disabled={!dirty || saving}
-          onClick={() => void save()}
+          aria-label="Delete template"
+          className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-mist bg-white text-graphite transition hover:bg-red-50 hover:text-red-700"
+          onClick={onRemove}
           type="button"
         >
-          {saved ? <Check size={13} /> : <Save size={13} />}
-          {saved ? "Saved" : saving ? "Saving…" : dirty ? "Save catalog" : "Saved"}
+          <Trash2 size={15} />
         </button>
       </div>
 
-      <div className="grid gap-2 xl:grid-cols-3">
-        <ListCard
-          help="Shared campus list — used by any field whose id is “campus”."
-          onChange={(campuses) => update({ ...catalog, campuses })}
-          title="Campuses"
-          value={catalog.campuses}
-        />
-        <ListCard
-          help="Video signifiers appended to capture names (Recap, Story, Promo…)."
-          onChange={(signifiers) => update({ ...catalog, signifiers })}
-          title="Signifiers"
-          value={catalog.signifiers}
-        />
-        <div className="overflow-hidden rounded-2xl border border-mist bg-white">
-          <div className="flex h-10 items-center gap-1.5 border-b border-mist px-3 text-xs font-semibold text-graphite">
-            Ministry codes
-            <FloatingHelp label="Ministry codes help">
-              Codes from the naming sheet. Add rows as needed; the code is what appears in names.
-            </FloatingHelp>
+      <div className="min-h-0 flex-1 space-y-3 overflow-auto p-3">
+        {/* Use it */}
+        <div className="rounded-xl border border-mist bg-porcelain/40 p-2.5">
+          <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-graphite">
+            <Sparkles size={14} /> Build a name
           </div>
-          <div className="space-y-1.5 p-2">
-            {catalog.ministries.map((ministry, index) => (
-              <div key={index} className="grid grid-cols-[70px_1fr_auto] items-center gap-1.5">
-                <input
-                  className="h-7 min-w-0 rounded-lg border border-mist bg-white px-2 text-xs uppercase outline-none focus:border-graphite/40"
-                  onChange={(event) => {
-                    const ministries = catalog.ministries.map((item, i) =>
-                      i === index ? { ...item, code: event.target.value.toUpperCase() } : item,
-                    );
-                    update({ ...catalog, ministries });
-                  }}
-                  value={ministry.code}
-                />
-                <input
-                  className="h-7 min-w-0 rounded-lg border border-mist bg-white px-2 text-xs outline-none focus:border-graphite/40"
-                  onChange={(event) => {
-                    const ministries = catalog.ministries.map((item, i) =>
-                      i === index ? { ...item, label: event.target.value } : item,
-                    );
-                    update({ ...catalog, ministries });
-                  }}
-                  value={ministry.label}
-                />
-                <button
-                  aria-label="Remove ministry"
-                  className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-mist text-graphite hover:bg-porcelain"
-                  onClick={() => update({ ...catalog, ministries: catalog.ministries.filter((_, i) => i !== index) })}
-                  type="button"
-                >
-                  <Trash2 size={12} />
-                </button>
+          {deliverable.fields.length ? (
+            <div className="grid gap-2 sm:grid-cols-2">
+              {deliverable.fields.map((field) => {
+                const options = optionsForField(field);
+                return (
+                  <label key={field.id} className="block">
+                    <div className="mb-1 text-[11px] font-semibold text-graphite">
+                      {field.label}
+                      {field.required ? <span className="text-signal"> *</span> : null}
+                    </div>
+                    {field.type === "dropdown" && options.length ? (
+                      <SelectMenu
+                        onChange={(value) => setValues((current) => ({ ...current, [field.id]: value }))}
+                        options={[{ label: "—", value: "" }, ...options.map((option) => ({ label: option, value: option }))]}
+                        placeholder={field.placeholder ?? "Choose"}
+                        size="sm"
+                        value={values[field.id] ?? ""}
+                      />
+                    ) : (
+                      <input
+                        className="h-8 w-full min-w-0 rounded-lg border border-mist bg-white px-2 text-xs outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+                        onChange={(event) => setValues((current) => ({ ...current, [field.id]: event.target.value }))}
+                        placeholder={field.placeholder ?? ""}
+                        value={values[field.id] ?? ""}
+                      />
+                    )}
+                  </label>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="text-[11px] text-graphite/70">No fields — the date fills itself.</p>
+          )}
+          <div className="mt-2 rounded-lg border border-mist bg-white px-2.5 py-2">
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-graphite/60">Result</div>
+            <div className="mt-0.5 break-all font-mono text-sm font-semibold text-ink">{preview || "—"}</div>
+            {subPathPreview ? (
+              <div className="mt-1 break-all font-mono text-[11px] text-graphite/70">
+                lands in …/{subPathPreview}/{preview || "…"}
               </div>
-            ))}
+            ) : null}
+          </div>
+          <div className="mt-2 flex items-center gap-1.5">
             <button
-              className="inline-flex h-7 items-center gap-1 rounded-lg border border-dashed border-mist px-2 text-xs font-semibold text-graphite hover:bg-porcelain"
-              onClick={() => update({ ...catalog, ministries: [...catalog.ministries, { code: "NEW", label: "New ministry" }] })}
+              className="inline-flex h-8 flex-1 items-center justify-center gap-1 rounded-lg bg-signal px-2 text-xs font-semibold text-paper transition hover:brightness-105"
+              onClick={() => void createPreset()}
               type="button"
             >
-              <Plus size={12} /> Add code
+              <Save size={13} /> Create preset
             </button>
+            <button
+              className="inline-flex h-8 items-center justify-center gap-1 rounded-lg border border-mist px-2 text-xs font-semibold text-graphite transition hover:bg-porcelain"
+              onClick={() => void copyName()}
+              type="button"
+            >
+              {copied ? <Check size={13} /> : <Copy size={13} />}
+              {copied ? "Copied" : "Copy"}
+            </button>
+          </div>
+          {status ? (
+            <div className={`mt-1 text-[11px] ${status.kind === "ok" ? "text-emerald-600" : "text-signal"}`}>
+              {status.message}
+            </div>
+          ) : null}
+        </div>
+
+        {/* Define it */}
+        <div className="rounded-xl border border-mist p-2.5">
+          <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-graphite/60">Template definition</div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <LabeledInput label="Group" onChange={(group) => onChange({ group: group as NamingDeliverable["group"] })} value={deliverable.group} />
+            <LabeledInput label="Hint" onChange={(hint) => onChange({ hint })} value={deliverable.hint} />
+            <div className="sm:col-span-2">
+              <LabeledInput
+                help="The project folder name. Type $ to search tokens: {year} {month} {day}, plus any field id below (e.g. {last_name})."
+                label="Name pattern"
+                mono
+                onChange={(rootPattern) => onChange({ rootPattern })}
+                tokens={templateTokens(deliverable)}
+                value={deliverable.rootPattern}
+              />
+            </div>
+            <div className="sm:col-span-2">
+              <LabeledInput
+                help="Optional pre-folders created inside the destination BEFORE the project folder, e.g. {year}/Broll. Type $ to search tokens."
+                label="Pre-folder path"
+                mono
+                onChange={(subPath) => onChange({ subPath })}
+                placeholder="{year}/Broll — type $ for tokens"
+                tokens={templateTokens(deliverable)}
+                value={deliverable.subPath ?? ""}
+              />
+            </div>
+          </div>
+
+          <div className="mt-2">
+            <div className="mb-1 flex items-center justify-between">
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-graphite/60">Fields</div>
+              <button
+                className="inline-flex h-6 items-center gap-1 rounded-md border border-mist px-1.5 text-[11px] font-semibold text-graphite hover:bg-porcelain"
+                onClick={addField}
+                type="button"
+              >
+                <Plus size={11} /> Field
+              </button>
+            </div>
+            <div className="space-y-1.5">
+              {deliverable.fields.map((field, fieldIndex) => (
+                <div key={fieldIndex} className="grid grid-cols-[1fr_100px_minmax(0,1.4fr)_auto] items-center gap-1.5">
+                  <input
+                    className="h-7 min-w-0 rounded-lg border border-mist bg-white px-2 text-xs outline-none focus:border-graphite/40"
+                    onChange={(event) => updateField(fieldIndex, { label: event.target.value })}
+                    placeholder="Label"
+                    value={field.label}
+                  />
+                  <SelectMenu
+                    onChange={(value) => updateField(fieldIndex, { type: value as NamingField["type"] })}
+                    options={[
+                      { label: "Text", value: "short_text" },
+                      { label: "List", value: "dropdown" },
+                    ]}
+                    size="sm"
+                    value={field.type}
+                  />
+                  {field.type === "dropdown" ? (
+                    <OptionsTextField
+                      onChange={(options) => updateField(fieldIndex, { options })}
+                      placeholder="Options (blank = shared list)"
+                      value={field.options ?? []}
+                    />
+                  ) : (
+                    <span className="text-[11px] text-graphite/50">free text</span>
+                  )}
+                  <button
+                    aria-label="Remove field"
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-mist text-graphite hover:bg-porcelain"
+                    onClick={() => removeField(fieldIndex)}
+                    type="button"
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       </div>
+    </section>
+  );
+}
 
-      <div className="mt-3 flex items-center justify-between">
-        <h2 className="text-sm font-semibold">Deliverable templates</h2>
-        <button
-          className="inline-flex h-8 items-center gap-1 rounded-lg border border-mist px-2 text-xs font-semibold text-graphite hover:bg-porcelain"
-          onClick={addDeliverable}
-          type="button"
-        >
-          <Plus size={13} /> Add template
-        </button>
-      </div>
-      <div className="mt-2 space-y-2">
-        {catalog.deliverables.map((deliverable, index) => (
-          <div key={deliverable.id} className="overflow-hidden rounded-2xl border border-mist bg-white p-3">
-            <div className="grid gap-2 md:grid-cols-2">
-              <LabeledInput label="Name" onChange={(label) => updateDeliverable(index, { label, presetName: label })} value={deliverable.label} />
-              <LabeledInput label="Group" onChange={(group) => updateDeliverable(index, { group: group as NamingDeliverable["group"] })} value={deliverable.group} />
-              <LabeledInput label="Name pattern" mono onChange={(rootPattern) => updateDeliverable(index, { rootPattern })} value={deliverable.rootPattern} />
-              <LabeledInput label="Sub-path (optional)" mono onChange={(subPath) => updateDeliverable(index, { subPath })} placeholder="{year}/Broll" value={deliverable.subPath ?? ""} />
+// The "deeper" shared option lists, behind a button so templates stay the main view.
+function SharedListsModal({
+  catalog,
+  onChange,
+  onClose,
+}: {
+  catalog: NamingCatalog;
+  onChange: (next: NamingCatalog) => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4" onClick={onClose}>
+      <div
+        className="flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-mist bg-paper shadow-xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-mist px-4 py-2.5">
+          <div>
+            <h2 className="text-base font-semibold">Shared lists</h2>
+            <p className="text-[11px] text-graphite/70">
+              Reused by any field that pulls from them (campus, signifier). Saved with the catalog.
+            </p>
+          </div>
+          <button
+            aria-label="Close"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-mist text-graphite hover:bg-porcelain"
+            onClick={onClose}
+            type="button"
+          >
+            <X size={16} />
+          </button>
+        </div>
+        <div className="grid gap-2 overflow-auto p-3 md:grid-cols-2">
+          <ListCard
+            help="Shared campus list — used by any field whose id is “campus”."
+            onChange={(campuses) => onChange({ ...catalog, campuses })}
+            title="Campuses"
+            value={catalog.campuses}
+          />
+          <ListCard
+            help="Video signifiers appended to capture names (Recap, Story, Promo…)."
+            onChange={(signifiers) => onChange({ ...catalog, signifiers })}
+            title="Signifiers"
+            value={catalog.signifiers}
+          />
+          <div className="overflow-hidden rounded-2xl border border-mist bg-white md:col-span-2">
+            <div className="flex h-10 items-center gap-1.5 border-b border-mist px-3 text-xs font-semibold text-graphite">
+              Ministry codes
+              <FloatingHelp label="Ministry codes help">
+                Codes from the naming sheet. Add rows as needed; the code is what appears in names.
+              </FloatingHelp>
             </div>
-
-            <div className="mt-2">
-              <div className="mb-1 flex items-center justify-between">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-graphite/60">Fields</div>
-                <button
-                  className="inline-flex h-6 items-center gap-1 rounded-md border border-mist px-1.5 text-[11px] font-semibold text-graphite hover:bg-porcelain"
-                  onClick={() => addField(index)}
-                  type="button"
-                >
-                  <Plus size={11} /> Field
-                </button>
-              </div>
-              <div className="space-y-1.5">
-                {deliverable.fields.map((field, fieldIndex) => (
-                  <div key={fieldIndex} className="grid grid-cols-[1fr_110px_minmax(0,1.4fr)_auto] items-center gap-1.5">
-                    <input
-                      className="h-7 min-w-0 rounded-lg border border-mist bg-white px-2 text-xs outline-none focus:border-graphite/40"
-                      onChange={(event) => updateField(index, fieldIndex, { label: event.target.value })}
-                      placeholder="Label"
-                      value={field.label}
-                    />
-                    <SelectMenu
-                      onChange={(value) => updateField(index, fieldIndex, { type: value as NamingField["type"] })}
-                      options={[
-                        { label: "Text", value: "short_text" },
-                        { label: "List", value: "dropdown" },
-                      ]}
-                      size="sm"
-                      value={field.type}
-                    />
-                    {field.type === "dropdown" ? (
-                      <OptionsTextField
-                        onChange={(options) => updateField(index, fieldIndex, { options })}
-                        placeholder="Option A, Option B (blank = use shared list)"
-                        value={field.options ?? []}
-                      />
-                    ) : (
-                      <span className="text-[11px] text-graphite/50">free text</span>
-                    )}
-                    <button
-                      aria-label="Remove field"
-                      className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-mist text-graphite hover:bg-porcelain"
-                      onClick={() => removeField(index, fieldIndex)}
-                      type="button"
-                    >
-                      <Trash2 size={12} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="mt-2 flex justify-end">
+            <div className="grid gap-1.5 p-2 sm:grid-cols-2">
+              {catalog.ministries.map((ministry, index) => (
+                <div key={index} className="grid grid-cols-[70px_1fr_auto] items-center gap-1.5">
+                  <input
+                    className="h-7 min-w-0 rounded-lg border border-mist bg-white px-2 text-xs uppercase outline-none focus:border-graphite/40"
+                    onChange={(event) =>
+                      onChange({
+                        ...catalog,
+                        ministries: catalog.ministries.map((item, i) =>
+                          i === index ? { ...item, code: event.target.value.toUpperCase() } : item,
+                        ),
+                      })
+                    }
+                    value={ministry.code}
+                  />
+                  <input
+                    className="h-7 min-w-0 rounded-lg border border-mist bg-white px-2 text-xs outline-none focus:border-graphite/40"
+                    onChange={(event) =>
+                      onChange({
+                        ...catalog,
+                        ministries: catalog.ministries.map((item, i) =>
+                          i === index ? { ...item, label: event.target.value } : item,
+                        ),
+                      })
+                    }
+                    value={ministry.label}
+                  />
+                  <button
+                    aria-label="Remove ministry"
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-mist text-graphite hover:bg-porcelain"
+                    onClick={() => onChange({ ...catalog, ministries: catalog.ministries.filter((_, i) => i !== index) })}
+                    type="button"
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                </div>
+              ))}
               <button
-                className="inline-flex h-7 items-center gap-1 rounded-lg border border-mist px-2 text-[11px] font-semibold text-graphite hover:bg-porcelain"
-                onClick={() => removeDeliverable(index)}
+                className="inline-flex h-7 items-center gap-1 rounded-lg border border-dashed border-mist px-2 text-xs font-semibold text-graphite hover:bg-porcelain"
+                onClick={() => onChange({ ...catalog, ministries: [...catalog.ministries, { code: "NEW", label: "New ministry" }] })}
                 type="button"
               >
-                <Trash2 size={12} /> Remove template
+                <Plus size={12} /> Add code
               </button>
             </div>
           </div>
-        ))}
+        </div>
       </div>
     </div>
   );
@@ -538,27 +743,40 @@ function ListCard({
 }
 
 function LabeledInput({
+  help,
   label,
   mono,
   onChange,
   placeholder,
+  tokens,
   value,
 }: {
+  help?: string;
   label: string;
   mono?: boolean;
   onChange: (value: string) => void;
   placeholder?: string;
+  // When provided, typing $ in the field opens the token autocomplete.
+  tokens?: TokenDefinition[];
   value: string;
 }) {
+  const inputClass = `h-8 w-full min-w-0 rounded-lg border border-mist bg-white px-2 text-xs outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30 ${mono ? "font-mono" : ""}`;
   return (
     <label className="block">
-      <div className="mb-1 text-[11px] font-semibold text-graphite">{label}</div>
-      <input
-        className={`h-8 w-full min-w-0 rounded-lg border border-mist bg-white px-2 text-xs outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30 ${mono ? "font-mono" : ""}`}
-        onChange={(event) => onChange(event.target.value)}
-        placeholder={placeholder}
-        value={value}
-      />
+      <div className="mb-1 flex items-center gap-1 text-[11px] font-semibold text-graphite">
+        {label}
+        {help ? <FloatingHelp label={`${label} help`}>{help}</FloatingHelp> : null}
+      </div>
+      {tokens ? (
+        <TokenSuggestInput ariaLabel={label} className={inputClass} onChange={onChange} placeholder={placeholder} tokens={tokens} value={value} />
+      ) : (
+        <input
+          className={inputClass}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder={placeholder}
+          value={value}
+        />
+      )}
     </label>
   );
 }

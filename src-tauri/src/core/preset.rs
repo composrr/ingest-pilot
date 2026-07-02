@@ -32,6 +32,11 @@ pub struct Preset {
     /// Optional metadata preset applied by default when this preset is chosen at ingest.
     #[serde(default)]
     pub metadata_preset_id: Option<String>,
+    /// Preset-chosen metadata field values (field id -> value) pre-filled for imports
+    /// made with this preset — so a preset can carry its own tags (e.g. Content
+    /// Type=Story) without editing the shared metadata schema.
+    #[serde(default)]
+    pub metadata_values: BTreeMap<String, String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -254,6 +259,7 @@ mod tests {
             preserve_xml_sidecars: true,
             rename_files_default: true,
             metadata_preset_id: None,
+            metadata_values: BTreeMap::new(),
             created_at: "2026-04-24T00:00:00Z".to_string(),
             updated_at: "2026-04-24T00:00:00Z".to_string(),
         };

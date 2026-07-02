@@ -12,6 +12,7 @@ import type {
 } from "./types";
 
 const shippedPresetSeedKey = "ingest-pilot:shipped-presets-seeded";
+const namingPackCleanupKey = "ingest-pilot:naming-pack-removed";
 
 export const defaultAppSettings: AppSettings = {
   global_parameters: [],
@@ -175,15 +176,30 @@ export type IngestHistoryJob = {
 };
 
 export async function listPresets() {
-  const presets = await invoke<PresetSummary[]>("list_presets");
-  if (presets.length > 0 || localStorage.getItem(shippedPresetSeedKey) === "true") {
-    return presets;
+  let presets = await invoke<PresetSummary[]>("list_presets");
+
+  // First-run: seed the base shipped presets.
+  if (presets.length === 0 && localStorage.getItem(shippedPresetSeedKey) !== "true") {
+    const shippedPresets = createShippedPresets();
+    await Promise.all(shippedPresets.map((preset) => invoke<PresetSummary>("save_preset", { preset })));
+    localStorage.setItem(shippedPresetSeedKey, "true");
+    presets = await invoke<PresetSummary[]>("list_presets");
   }
 
-  const shippedPresets = createShippedPresets();
-  await Promise.all(shippedPresets.map((preset) => invoke<PresetSummary>("save_preset", { preset })));
-  localStorage.setItem(shippedPresetSeedKey, "true");
-  return invoke<PresetSummary[]>("list_presets");
+  // One-time cleanup: an earlier build wrongly seeded every naming template as a
+  // folder preset (ids `naming_*`). Naming templates live in the Naming tab, not the
+  // preset library, so remove those seeded files. User-created presets (including
+  // ones made via the Naming tab's "Create preset", ids `preset_*`) are untouched.
+  if (localStorage.getItem(namingPackCleanupKey) !== "true") {
+    const seeded = presets.filter((preset) => preset.id.startsWith("naming_"));
+    if (seeded.length > 0) {
+      await Promise.all(seeded.map((preset) => invoke<void>("delete_preset", { id: preset.id })));
+      presets = await invoke<PresetSummary[]>("list_presets");
+    }
+    localStorage.setItem(namingPackCleanupKey, "true");
+  }
+
+  return presets;
 }
 
 export async function getPreset(id: string) {
@@ -310,6 +326,7 @@ export async function runIngest(
   includedRelativePaths: string[],
   useExistingRoot: boolean,
   jobId: string,
+  rootNameOverride?: string,
 ) {
   return invoke<IngestResult>("run_ingest", {
     presetId,
@@ -322,6 +339,7 @@ export async function runIngest(
     includedRelativePaths,
     useExistingRoot,
     jobId,
+    rootNameOverride: rootNameOverride || null,
   });
 }
 
@@ -384,6 +402,7 @@ export async function writeIngestReport(
   verificationFailed: number,
   bytesCopied: number,
   mhlPath: string,
+  durationMs?: number,
 ) {
   return invoke<string>("write_ingest_report", {
     presetName,
@@ -397,6 +416,7 @@ export async function writeIngestReport(
     verificationFailed,
     bytesCopied,
     mhlPath,
+    durationMs: durationMs ?? null,
   });
 }
 
@@ -414,6 +434,7 @@ export async function generateIngestReport(
   bytesCopied: number,
   mhlPath: string,
   jobId: string,
+  durationMs?: number,
 ) {
   return invoke<string>("generate_ingest_report", {
     presetName,
@@ -429,6 +450,7 @@ export async function generateIngestReport(
     bytesCopied,
     mhlPath,
     jobId,
+    durationMs: durationMs ?? null,
   });
 }
 

@@ -10,6 +10,35 @@ and user-facing — this is what people read in the update popup.
 
 ## [Unreleased]
 
+## [0.1.6]
+
+### Added
+- **Full naming system (tabs 3 & 4).** The Naming tab now carries every video naming
+  template from the SOP — all the Capture folders (Weekends, Elevate, Growth Track,
+  BOTS, Super Series, camps, seasonal events…) and Delivered Video folders (Baptism
+  Stories, ONL, VAs, Promos / Impacts / Recaps / Title Packages). Grouped into a
+  collapsible accordion with your own custom group names.
+- **Name any ingest from a template.** In Ingest, the **Name** wizard lists every
+  naming template; pick one to set the project name for that import — your selected
+  preset (folders, routing, variables) stays exactly as chosen.
+- **Auto-load memory cards.** Connect a card (SD, CFexpress, or a RED `.RDM`/`.RDC`
+  card) and Ingest loads and scans it automatically — no clicks.
+- **RED clips grouped.** In Choose Files, a RED clip's spanned `.R3D` segments now
+  collapse into a single clip row you check or uncheck as one.
+- **Type `$` for tokens.** In any name pattern or pre-folder field, type `$` to search
+  and insert tokens (`$year` → `{year}`).
+- **Per-preset metadata tags.** A preset can pre-choose the metadata values it stamps
+  on its imports (e.g. Content Type = Story) without editing the schema.
+- **Copy time on the report.** The verification report now shows how long the copy
+  and verify took.
+- **New home screen** — quick actions and presets on the left, recent jobs on the right.
+
+### Changed
+- The Naming tab is a templates-first master/detail (like Metadata) with a hairline
+  accordion; naming templates no longer clutter the Presets list.
+- **Pre-folder path** (was "sub-folder path") now shows in the project-folder path
+  preview on Create Folders, e.g. `…/Videos/2026/Broll/Project`.
+
 ## [0.1.5]
 
 ### Added

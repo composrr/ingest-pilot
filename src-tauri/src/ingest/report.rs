@@ -20,6 +20,8 @@ pub struct ReportInput<'a> {
     pub verification_failed: usize,
     pub bytes_copied: u64,
     pub mhl_path: &'a str,
+    /// Wall-clock time the copy + verify took, in milliseconds (None if unknown).
+    pub duration_ms: Option<u64>,
 }
 
 pub fn write_html_report(root_path: &Path, input: ReportInput<'_>) -> Result<PathBuf, String> {
@@ -66,7 +68,7 @@ pub fn write_html_report(root_path: &Path, input: ReportInput<'_>) -> Result<Pat
     html.push_str("*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:12px;line-height:1.35}");
     html.push_str("main{max-width:1280px;margin:22px auto;border:1px solid var(--line);border-radius:18px;background:var(--panel);box-shadow:0 18px 70px rgba(26,22,16,.08);overflow:hidden}");
     html.push_str("header{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:18px;align-items:start;padding:18px 22px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,#fff,#fbfaf7)}h1{margin:0;font-size:24px;letter-spacing:0}.eyebrow{font-size:11px;font-weight:800;color:var(--graphite);text-transform:uppercase;letter-spacing:.04em}.sub{margin:5px 0 0;color:var(--graphite);font-weight:650}.status{display:inline-flex;align-items:center;gap:7px;border-radius:999px;padding:7px 11px;font-size:12px;font-weight:850}.status.ok{background:var(--ok-bg);color:#176b35}.status.bad{background:var(--bad-bg);color:#982626}.dot{width:8px;height:8px;border-radius:99px;background:currentColor}");
-    html.push_str(".summary{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;padding:12px;border-bottom:1px solid var(--line);background:#fff}.tile{border:1px solid var(--line);border-radius:10px;background:var(--soft);padding:9px 10px;min-width:0}.label{font-size:10px;font-weight:850;color:var(--graphite);text-transform:uppercase;letter-spacing:.035em}.value{margin-top:4px;font-size:18px;font-weight:850;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.value.small{font-size:13px}");
+    html.push_str(".summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;padding:12px;border-bottom:1px solid var(--line);background:#fff}.tile{border:1px solid var(--line);border-radius:10px;background:var(--soft);padding:9px 10px;min-width:0}.label{font-size:10px;font-weight:850;color:var(--graphite);text-transform:uppercase;letter-spacing:.035em}.value{margin-top:4px;font-size:18px;font-weight:850;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.value.small{font-size:13px}");
     html.push_str(".content{display:grid;grid-template-columns:320px minmax(0,1fr);min-height:620px}.side{border-right:1px solid var(--line);background:var(--soft)}section{padding:14px 16px;border-bottom:1px solid var(--line)}h2{margin:0 0 10px;font-size:13px}.kv{display:grid;grid-template-columns:84px minmax(0,1fr);gap:6px 8px}.k{color:var(--graphite);font-weight:800}.v{min-width:0;word-break:break-word;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px}.chip{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:999px;background:#fff;padding:3px 7px;margin:0 5px 5px 0;font-size:11px;font-weight:750}");
     html.push_str(".kind{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;border:1px solid var(--line);border-radius:10px;background:#fff;padding:8px;margin-bottom:7px}.bar{height:7px;border-radius:99px;background:#eee8df;overflow:hidden;margin-top:5px}.bar span{display:block;height:100%;background:var(--accent)}.main{min-width:0;background:#fff}.strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;padding:12px;border-bottom:1px solid var(--line)}.strip-card{border:1px solid var(--line);border-radius:10px;padding:10px;background:#fff}");
     html.push_str(".files{padding:12px}.file{display:grid;grid-template-columns:116px minmax(0,1fr) 150px;gap:12px;align-items:center;border:1px solid var(--line);border-radius:12px;background:#fff;margin-bottom:8px;padding:8px}.thumb{width:116px;height:66px;object-fit:cover;border-radius:8px;border:1px solid var(--line);background:#f1ede6}.empty-thumb{width:116px;height:66px;border:1px dashed #d8d0c4;border-radius:8px;background:var(--soft);display:flex;align-items:center;justify-content:center;color:var(--muted);font-weight:800;font-size:10px}.file-name{font-size:13px;font-weight:850;margin-bottom:2px}.file-path{font-size:11px;color:var(--graphite);word-break:break-all}.file-meta{text-align:right;display:grid;gap:4px}.ok-text{color:#176b35;font-weight:850}.bad-text{color:#982626;font-weight:850}.muted{color:var(--graphite)}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px;word-break:break-all}");
@@ -111,6 +113,9 @@ pub fn write_html_report(root_path: &Path, input: ReportInput<'_>) -> Result<Pat
     );
     tile(&mut html, "Sources", &source_count.to_string(), false);
     tile(&mut html, "Folders", &destination_count.to_string(), false);
+    if let Some(duration_ms) = input.duration_ms.filter(|value| *value > 0) {
+        tile(&mut html, "Copy Time", &format_duration(duration_ms), false);
+    }
     html.push_str("</div>");
 
     html.push_str("<div class=\"content\"><aside class=\"side\">");
@@ -424,6 +429,21 @@ fn escape_html(value: &str) -> String {
         .replace('\'', "&#39;")
 }
 
+// Compact elapsed-time label: "42s", "3m 20s", or "1h 04m".
+fn format_duration(duration_ms: u64) -> String {
+    let total_seconds = duration_ms / 1000;
+    let hours = total_seconds / 3600;
+    let minutes = (total_seconds % 3600) / 60;
+    let seconds = total_seconds % 60;
+    if hours > 0 {
+        format!("{hours}h {minutes:02}m")
+    } else if minutes > 0 {
+        format!("{minutes}m {seconds:02}s")
+    } else {
+        format!("{seconds}s")
+    }
+}
+
 fn format_bytes(bytes: u64) -> String {
     if bytes < 1024 {
         return format!("{bytes} B");
@@ -478,6 +498,7 @@ mod tests {
                 verification_failed: 0,
                 bytes_copied: 24,
                 mhl_path: "IngestPilot.mhl",
+                duration_ms: Some(83_000),
             },
         )
         .expect("report writes");
@@ -512,6 +533,7 @@ mod tests {
                 verification_failed: 0,
                 bytes_copied: 0,
                 mhl_path: "IngestPilot.mhl",
+                duration_ms: Some(42_000),
             },
         )
         .expect("report writes");
@@ -564,6 +586,7 @@ mod tests {
                 verification_failed: 0,
                 bytes_copied: 0,
                 mhl_path: "IngestPilot.mhl",
+                duration_ms: Some(42_000),
             },
         )
         .expect("report writes");

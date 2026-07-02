@@ -34,7 +34,7 @@ import {
   runIngest,
   retryFailedCopies,
   saveHistoryJob,
-  savePreset,
+  getNamingCatalog,
   scanSource,
   detectCameraSources,
   type CameraSource,
@@ -59,8 +59,8 @@ import type {
 } from "../lib/types";
 import { useAppStore } from "../stores/appStore";
 import {
-  buildNamingPreset,
-  NAMING_DELIVERABLES,
+  defaultNamingCatalog,
+  mergeNamingCatalog,
   previewNamingResult,
   type NamingDeliverable,
 } from "../lib/namingCatalog";
@@ -156,6 +156,9 @@ export function IngestPage() {
   const [metadataValues, setMetadataValues] = useState<Record<string, string>>({});
   const [isSavingManifest, setIsSavingManifest] = useState(false);
   const [isNamingOpen, setIsNamingOpen] = useState(false);
+  // Project name chosen via the Naming wizard for THIS ingest. Overrides the
+  // preset's root folder name at run time without touching the preset itself.
+  const [projectNameOverride, setProjectNameOverride] = useState("");
   const [queueMode, setQueueMode] = useState(false);
   const [queue, setQueue] = useState<QueueCard[]>([]);
   const [isQueueRunning, setIsQueueRunning] = useState(false);
@@ -602,25 +605,18 @@ export function IngestPage() {
     setLastAction(`Loaded recent ingest: ${job.preset_name}`);
   }
 
-  // Naming Assistant: turn an SOP deliverable + its fields into the correct project
-  // folder by saving/selecting the matching seeded preset and pre-filling its
-  // variables (the preset's root_folder_pattern then resolves to the SOP name).
-  async function applyNaming(deliverable: NamingDeliverable, values: Record<string, string>) {
-    const preset = buildNamingPreset(deliverable, new Date().toISOString());
-    try {
-      await savePreset(preset);
-      await refreshPresets(preset.id);
-    } catch (caught) {
-      setError(String(caught));
+  // Naming wizard: resolve the chosen template + its fields into the SOP-correct
+  // project name and apply it to THIS ingest only. The selected folder preset (its
+  // tree, routing, variables) stays exactly as chosen — only the name changes.
+  function applyNaming(deliverable: NamingDeliverable, values: Record<string, string>) {
+    const name = previewNamingResult(deliverable, values);
+    if (!name.trim()) {
       return;
     }
-    // Stash values so the preset-load defaults effect doesn't clobber them.
-    pendingReplayValuesRef.current = values;
-    setVariableValues((current) => ({ ...current, ...values }));
-    setSelectedPresetId(preset.id);
+    setProjectNameOverride(name);
     setIngestResult(null);
     setIsNamingOpen(false);
-    setLastAction(`Naming Assistant: ${deliverable.label}`);
+    setLastAction(`Named via wizard: ${name}`);
   }
 
   async function loadSelectedPreset(id: string) {
@@ -644,6 +640,9 @@ export function IngestPage() {
         if (nextPreset.metadata_preset_id) {
           setMetadataPresetId(nextPreset.metadata_preset_id);
         }
+        // Pre-fill the tags the preset chose (e.g. Content Type=Story), still editable
+        // per import. The metadata-load effect fills any remaining fields with defaults.
+        setMetadataValues({ ...(nextPreset.metadata_values ?? {}) });
       }
     } catch (caught) {
       setError(String(caught));
@@ -862,6 +861,7 @@ export function IngestPage() {
           entry.includedRelativePaths,
           destinationMode === "existing_root" || !isFirstForDestination,
           jobId,
+          projectNameOverride.trim() || undefined,
         );
         results.push(result);
         rootByDestination.set(destination, result.root_path);
@@ -1325,6 +1325,7 @@ export function IngestPage() {
         result.bytes_copied,
         result.mhl_path,
         reportJobId,
+        Math.max(0, new Date(completedAt).getTime() - new Date(startedAt).getTime()),
       );
       setIngestResult((current) => (current ? { ...current, report_path: reportPath } : current));
       setReportBuild({ status: "ready", progress: null, path: reportPath });
@@ -1444,6 +1445,7 @@ export function IngestPage() {
       destinationPath,
       destinationMode,
       preset,
+      projectNameOverride,
       renameFiles,
       scan,
       variableValues,
@@ -1468,7 +1470,7 @@ export function IngestPage() {
     return () => {
       isCurrent = false;
     };
-  }, [destinationMode, destinationPath, preset, renameFiles, scan, variableValues]);
+  }, [destinationMode, destinationPath, preset, projectNameOverride, renameFiles, scan, variableValues]);
 
   useEffect(() => {
     const paths = uniquePaths([...sourcePaths, ...destinationTargets]).filter((path) => path.trim().length > 0);
@@ -1513,14 +1515,25 @@ export function IngestPage() {
           return;
         }
         setDetectedSources(sources);
-        if (!sourcePath.trim() && sources[0]) {
-          setSourcePaths([sources[0].path]);
+        // Pre-load connected memory cards automatically: if nothing is set up yet and
+        // a card (or cards) are plugged in, drop them straight into "Copy From" and
+        // scan so the ingest screen is ready without any clicks.
+        if (!sourcePath.trim() && sources.length > 0) {
+          const paths = uniquePaths(sources.map((source) => source.path));
+          setSourcePaths(paths);
           setSourceScans([]);
           setSelectedRelativePaths(new Set());
           setIngestProgress(null);
           setIsFileSelectorOpen(false);
           setIngestResult(null);
-          setLastAction(`Camera source detected: ${sources[0].label}`);
+          setLastAction(
+            paths.length === 1
+              ? `Memory card detected: ${pathDisplayName(paths[0])}`
+              : `${paths.length} memory cards detected`,
+          );
+          if (appSettings.ingest_defaults.auto_scan_sources) {
+            void scanPaths(paths);
+          }
         }
       } catch {
         if (!cancelled) {
@@ -1732,11 +1745,30 @@ export function IngestPage() {
               help="This is the job setup: which preset rules to use, what media to copy, and where the project should land."
               title="1. Copy Job"
             />
-            <div className="flex items-center gap-1.5">
+            <div className="flex min-w-0 items-center gap-1.5">
+              {projectNameOverride ? (
+                <span
+                  className="inline-flex h-6 min-w-0 items-center gap-1 rounded-full border border-signal/40 bg-signal/10 px-2 text-[11px] font-semibold text-ink"
+                  title={`This ingest's project folder: ${projectNameOverride}`}
+                >
+                  <span className="max-w-[180px] truncate font-mono">{projectNameOverride}</span>
+                  <button
+                    aria-label="Clear project name"
+                    className="rounded-full text-graphite transition hover:text-ink"
+                    onClick={() => {
+                      setProjectNameOverride("");
+                      setIngestResult(null);
+                    }}
+                    type="button"
+                  >
+                    <X size={11} />
+                  </button>
+                </span>
+              ) : null}
               <button
                 className="inline-flex h-6 items-center gap-1.5 rounded-full border border-mist bg-white px-2 text-[11px] font-semibold text-graphite transition hover:bg-porcelain"
                 onClick={() => setIsNamingOpen(true)}
-                title="Naming Assistant: build the SOP-correct project name from a deliverable type."
+                title="Naming wizard: pick a naming template and apply the SOP-correct project name to this ingest. Your selected preset stays the same."
                 type="button"
               >
                 <Wand2 size={12} />
@@ -2210,7 +2242,7 @@ export function IngestPage() {
         />
       ) : null}
       {isNamingOpen ? (
-        <NamingAssistant onApply={(deliverable, values) => void applyNaming(deliverable, values)} onClose={() => setIsNamingOpen(false)} />
+        <NamingAssistant onApply={(deliverable, values) => applyNaming(deliverable, values)} onClose={() => setIsNamingOpen(false)} />
       ) : null}
     </div>
   );
@@ -2577,18 +2609,57 @@ function NamingAssistant({
   onApply: (deliverable: NamingDeliverable, values: Record<string, string>) => void;
   onClose: () => void;
 }) {
-  const [deliverableId, setDeliverableId] = useState(NAMING_DELIVERABLES[0]?.id ?? "");
+  // Templates come from the editable naming catalog (Naming tab), so anything the
+  // team adds or edits there is immediately available here.
+  const [templates, setTemplates] = useState<NamingDeliverable[]>(() => defaultNamingCatalog().deliverables);
+  const [deliverableId, setDeliverableId] = useState("");
   const [values, setValues] = useState<Record<string, string>>({});
-  const deliverable = NAMING_DELIVERABLES.find((item) => item.id === deliverableId) ?? NAMING_DELIVERABLES[0];
+
+  useEffect(() => {
+    let active = true;
+    getNamingCatalog()
+      .then((persisted) => {
+        if (active) {
+          setTemplates(mergeNamingCatalog(persisted).deliverables);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // No default selection: the accordion starts fully collapsed until a template is
+  // picked (its group then expands via the effect below).
+  const deliverable = templates.find((item) => item.id === deliverableId) ?? null;
   const preview = deliverable ? previewNamingResult(deliverable, values) : "";
   const missingRequired = deliverable
     ? deliverable.fields.some((field) => field.required && !(values[field.id] ?? "").trim())
     : true;
-  const groups: NamingDeliverable["group"][] = ["Delivered Video", "Video Capture", "Photo"];
+  // Preserve catalog order while grouping.
+  const groups = [...new Set(templates.map((item) => item.group))];
+
+  // Accordion state — collapsed by default, but keep the picked template's group open.
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    if (deliverable) {
+      setExpandedGroups((prev) => (prev.has(deliverable.group) ? prev : new Set(prev).add(deliverable.group)));
+    }
+  }, [deliverable]);
+  const toggleGroup = (group: string) =>
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(group)) {
+        next.delete(group);
+      } else {
+        next.add(group);
+      }
+      return next;
+    });
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/30 p-4 backdrop-blur-sm">
-      <section className="flex max-h-[86vh] w-full max-w-3xl select-none flex-col overflow-hidden rounded-[24px] border border-mist bg-white shadow-panel">
+      <section className="flex h-[88vh] w-full max-w-4xl select-none flex-col overflow-hidden rounded-[24px] border border-mist bg-white shadow-panel">
         <div className="flex items-center justify-between border-b border-mist px-4 py-3">
           <div>
             <h2 className="flex items-center gap-2 text-base font-semibold">
@@ -2607,31 +2678,53 @@ function NamingAssistant({
         </div>
 
         <div className="grid min-h-0 flex-1 grid-cols-[220px_minmax(0,1fr)]">
-          <aside className="min-h-0 overflow-auto border-r border-mist bg-porcelain/25 p-2">
-            {groups.map((group) => (
-              <div key={group} className="mb-2">
-                <div className="mb-1 px-1 text-[11px] font-semibold uppercase tracking-wide text-graphite/60">{group}</div>
-                <div className="space-y-1">
-                  {NAMING_DELIVERABLES.filter((item) => item.group === group).map((item) => (
-                    <button
-                      key={item.id}
-                      className={`w-full rounded-lg px-2 py-1.5 text-left text-sm transition ${
-                        deliverableId === item.id
-                          ? "bg-lavender/25 font-semibold text-ink ring-1 ring-lavender/60"
-                          : "text-graphite hover:bg-white"
-                      }`}
-                      onClick={() => {
-                        setDeliverableId(item.id);
-                        setValues({});
-                      }}
-                      type="button"
-                    >
-                      {item.label}
-                    </button>
-                  ))}
+          {/* Same "hairline editorial" (design 1c) accordion as the Naming tab. */}
+          <aside className="min-h-0 overflow-auto border-r border-mist bg-porcelain/25 px-3">
+            {groups.map((group) => {
+              const open = expandedGroups.has(group);
+              const items = templates.filter((item) => item.group === group);
+              return (
+                <div key={group} className="border-t border-mist/70 first:border-t-0">
+                  <button
+                    className="flex w-full items-center gap-2 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.09em] text-ink transition hover:text-black"
+                    onClick={() => toggleGroup(group)}
+                    type="button"
+                  >
+                    <span className="min-w-0 flex-1 truncate">{group}</span>
+                    <span className="shrink-0 font-normal normal-case tracking-normal tabular-nums text-graphite/70">{items.length}</span>
+                    <Plus className={`shrink-0 text-graphite transition-transform duration-300 ${open ? "rotate-45" : ""}`} size={13} />
+                  </button>
+                  <div
+                    className="grid transition-[grid-template-rows] duration-300 ease-out"
+                    style={{ gridTemplateRows: open ? "1fr" : "0fr" }}
+                  >
+                    <div className="min-h-0 overflow-hidden">
+                      <div className={`pb-2 transition-transform duration-300 ease-out ${open ? "translate-y-0" : "-translate-y-2"}`}>
+                        {items.map((item) => {
+                          const selected = deliverableId === item.id;
+                          return (
+                            <button
+                              key={item.id}
+                              className={`flex w-full items-center gap-2 py-1.5 text-left text-[13px] transition ${
+                                selected ? "font-semibold text-ink" : "text-graphite hover:text-ink"
+                              }`}
+                              onClick={() => {
+                                setDeliverableId(item.id);
+                                setValues({});
+                              }}
+                              type="button"
+                            >
+                              <span className={`h-1.5 w-1.5 shrink-0 rounded-full bg-signal transition-opacity ${selected ? "opacity-100" : "opacity-0"}`} />
+                              <span className="min-w-0 truncate">{item.label}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </aside>
 
           <div className="flex min-h-0 flex-col overflow-auto p-4">
@@ -2694,7 +2787,11 @@ function NamingAssistant({
                   </button>
                 </div>
               </>
-            ) : null}
+            ) : (
+              <div className="flex h-full items-center justify-center px-6 text-center text-sm text-graphite">
+                Pick a naming template on the left to build this ingest's project name.
+              </div>
+            )}
           </div>
         </div>
       </section>
@@ -3287,9 +3384,18 @@ function FileSelectionDialog({
   const [sortDirection, setSortDirection] = useState<FilePickerSortDirection>("desc");
   const [search, setSearch] = useState("");
   const [kindFilter, setKindFilter] = useState<Set<ScanFileKind>>(new Set());
+  // Collapse spanned camera clips (RED .RDC → one row) before filtering/sorting.
+  const displayFiles = useMemo(() => collapseClips(files), [files]);
+  const memberKeyMap = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const file of displayFiles) {
+      map.set(file.sourceKey, memberKeysOf(file));
+    }
+    return map;
+  }, [displayFiles]);
   const filteredFiles = useMemo(() => {
     const needle = search.trim().toLowerCase();
-    return files.filter((file) => {
+    return displayFiles.filter((file) => {
       if (needle && !file.file_name.toLowerCase().includes(needle)) {
         return false;
       }
@@ -3299,14 +3405,14 @@ function FileSelectionDialog({
       }
       return true;
     });
-  }, [files, kindFilter, search]);
+  }, [displayFiles, kindFilter, search]);
   const sourceGroups = useMemo(
     () => groupManifestFiles(filteredFiles, sortMode, sortDirection),
     [filteredFiles, sortDirection, sortMode],
   );
   const selectableFileKeys = useMemo(() => flattenSelectableFileKeys(sourceGroups), [sourceGroups]);
   const highlightedCount = highlightedFileKeys.size;
-  const filteredOut = files.length - filteredFiles.length;
+  const filteredOut = displayFiles.length - filteredFiles.length;
 
   function handleSort(mode: FilePickerSortMode) {
     if (mode === sortMode) {
@@ -3362,12 +3468,14 @@ function FileSelectionDialog({
       return;
     }
 
-    const keys =
+    const repKeys =
       highlightedFileKeys.has(file.sourceKey) && highlightedFileKeys.size > 0
         ? [...highlightedFileKeys].filter((key) => selectableFileKeys.includes(key))
         : [file.sourceKey];
+    // Expand each highlighted row to the real files it stands for (clip → segments).
+    const keys = repKeys.flatMap((key) => memberKeyMap.get(key) ?? [key]);
     selectFileKeys(keys, checked, setSelectedRelativePaths);
-    setHighlightedFileKeys(new Set(keys));
+    setHighlightedFileKeys(new Set(repKeys));
     setLastHighlightedFileKey(file.sourceKey);
   }
 
@@ -3549,14 +3657,14 @@ function FileSelectionDialog({
                     </div>
                     <button
                       className="rounded-lg border border-mist bg-white px-2 py-1 text-[11px] font-semibold text-graphite transition hover:bg-porcelain"
-                      onClick={() => selectFileKeys(dayGroup.selectableKeys, true, setSelectedRelativePaths)}
+                      onClick={() => selectFileKeys(dayGroup.files.flatMap(memberKeysOf), true, setSelectedRelativePaths)}
                       type="button"
                     >
                       Check all
                     </button>
                     <button
                       className="rounded-lg border border-mist bg-white px-2 py-1 text-[11px] font-semibold text-graphite transition hover:bg-porcelain"
-                      onClick={() => selectFileKeys(dayGroup.selectableKeys, false, setSelectedRelativePaths)}
+                      onClick={() => selectFileKeys(dayGroup.files.flatMap(memberKeysOf), false, setSelectedRelativePaths)}
                       type="button"
                     >
                       Uncheck all
@@ -3565,7 +3673,7 @@ function FileSelectionDialog({
 
                   {viewMode === "list" ? (
                     dayGroup.files.map((file) => {
-                      const selected = file.autoSelected || selectedRelativePaths.has(file.sourceKey);
+                      const selected = file.autoSelected || memberKeysOf(file).every((key) => selectedRelativePaths.has(key));
                       return (
                         <FileListRow
                           checked={selected}
@@ -3583,7 +3691,7 @@ function FileSelectionDialog({
                       style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${thumbnailSize}px, 1fr))` }}
                     >
                       {dayGroup.files.map((file) => {
-                        const selected = file.autoSelected || selectedRelativePaths.has(file.sourceKey);
+                        const selected = file.autoSelected || memberKeysOf(file).every((key) => selectedRelativePaths.has(key));
                         return (
                           <ThumbnailFileCard
                             checked={selected}
@@ -4145,7 +4253,67 @@ type ManifestFile = ScannedFile & {
   sourceKey: string;
   sourceLabel: string;
   sourcePath: string;
+  // For a collapsed camera clip (e.g. a RED .RDC folder of spanned .R3D segments):
+  // the sourceKeys of every underlying file the clip row represents.
+  clipMemberKeys?: string[];
+  clipSegmentCount?: number;
 };
+
+// The real file keys a row toggles — a clip's members, or just itself.
+function memberKeysOf(file: ManifestFile): string[] {
+  return file.clipMemberKeys && file.clipMemberKeys.length > 0 ? file.clipMemberKeys : [file.sourceKey];
+}
+
+// Path up to and including a RED clip folder (`*.RDC`) within a relative path, or
+// null if the file isn't inside one. RED records one clip as a .RDC folder full of
+// spanned _001/_002… .R3D segments, so we group by that folder.
+function clipFolderRelPath(relativePath: string): string | null {
+  const parts = relativePath.split(/[\\/]/);
+  const index = parts.findIndex((part) => part.toLowerCase().endsWith(".rdc"));
+  return index >= 0 ? parts.slice(0, index + 1).join("/") : null;
+}
+
+// Collapses spanned camera-clip segments into a single row per clip (name, total
+// size, segment count) so the Choose Files list is readable. Non-clip files pass
+// through untouched. Row order doesn't matter — the list is sorted afterward.
+function collapseClips(files: ManifestFile[]): ManifestFile[] {
+  const singles: ManifestFile[] = [];
+  const clips = new Map<string, ManifestFile[]>();
+  for (const file of files) {
+    const clipRel = clipFolderRelPath(file.relative_path);
+    if (!clipRel) {
+      singles.push(file);
+      continue;
+    }
+    const key = `${file.sourcePath} ${clipRel}`;
+    const bucket = clips.get(key);
+    if (bucket) {
+      bucket.push(file);
+    } else {
+      clips.set(key, [file]);
+    }
+  }
+  const clipRows = [...clips.values()].map((members) => {
+    const first = members[0];
+    const clipRel = clipFolderRelPath(first.relative_path) as string;
+    const clipName = (clipRel.split(/[\\/]/).pop() ?? clipRel).replace(/\.rdc$/i, "");
+    return {
+      ...first,
+      file_name: clipName,
+      relative_path: `${clipName}  ·  ${members.length} R3D`,
+      size_bytes: members.reduce((sum, member) => sum + member.size_bytes, 0),
+      modified_at: members.reduce<string | null>(
+        (latest, member) => (member.modified_at && (!latest || member.modified_at > latest) ? member.modified_at : latest),
+        first.modified_at ?? null,
+      ),
+      autoSelected: members.every((member) => member.autoSelected),
+      disabled: members.every((member) => member.disabled),
+      clipMemberKeys: members.map((member) => member.sourceKey),
+      clipSegmentCount: members.length,
+    } satisfies ManifestFile;
+  });
+  return [...singles, ...clipRows];
+}
 
 type ManifestDayGroup = {
   dayKey: string;
@@ -4589,6 +4757,7 @@ async function buildOutputPreview({
   destinationPath,
   destinationMode,
   preset,
+  projectNameOverride,
   renameFiles,
   scan,
   variableValues,
@@ -4596,6 +4765,7 @@ async function buildOutputPreview({
   destinationPath: string;
   destinationMode: "create_new" | "existing_root";
   preset: Preset;
+  projectNameOverride?: string;
   renameFiles: boolean;
   scan: SourceScan | null;
   variableValues: Record<string, string>;
@@ -4603,7 +4773,9 @@ async function buildOutputPreview({
   const sampleFile = firstRoutableFile(scan);
   const sampleKind = sampleFile?.kind ?? "footage";
   const sampleExtension = sampleFile?.extension ?? ".mp4";
-  const rootName = await previewPattern(preset.root_folder_pattern, {
+  // A wizard-chosen project name replaces the preset's root pattern for this run,
+  // mirroring the backend's root_name_override.
+  const rootName = await previewPattern(projectNameOverride?.trim() || preset.root_folder_pattern, {
     preset_name: preset.name,
     variable_values: variableValues,
     clip_number_padding: preset.clip_number_padding,

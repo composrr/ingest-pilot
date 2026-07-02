@@ -103,6 +103,9 @@ export type Preset = {
   preserve_xml_sidecars: boolean;
   rename_files_default: boolean;
   metadata_preset_id?: string | null;
+  // Preset-chosen metadata field values (field id -> value) pre-filled for imports
+  // made with this preset, so it carries its own tags without editing the schema.
+  metadata_values?: Record<string, string>;
   created_at: string;
   updated_at: string;
 };

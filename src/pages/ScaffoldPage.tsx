@@ -28,6 +28,9 @@ export function ScaffoldPage() {
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [rootPreview, setRootPreview] = useState("");
+  // Resolved pre-folder path (preset sub_path_pattern), inserted before the project
+  // folder so the preview shows the real location, e.g. Desktop/2026/Broll/…
+  const [subPathPreview, setSubPathPreview] = useState("");
   const [folderPreview, setFolderPreview] = useState<FolderPreviewNode[]>([]);
   const setLastAction = useAppStore((state) => state.setLastAction);
   const projectParameters = useMemo(
@@ -132,6 +135,7 @@ export function ScaffoldPage() {
     let isCurrent = true;
     if (!preset) {
       setRootPreview("");
+      setSubPathPreview("");
       setFolderPreview([]);
       return;
     }
@@ -143,17 +147,20 @@ export function ScaffoldPage() {
         clip_number_padding: preset.clip_number_padding,
       }),
       buildFolderPreview(preset, variableValues),
+      resolveSubPathPreview(preset, variableValues),
     ])
-      .then(([preview, nextFolderPreview]) => {
+      .then(([preview, nextFolderPreview, subPath]) => {
         if (isCurrent) {
           setRootPreview(preview);
           setFolderPreview(nextFolderPreview);
+          setSubPathPreview(subPath);
         }
       })
       .catch((caught) => {
         if (isCurrent) {
           setRootPreview(String(caught));
           setFolderPreview([]);
+          setSubPathPreview("");
         }
       });
 
@@ -240,7 +247,9 @@ export function ScaffoldPage() {
                 Project Folder Preview
               </FieldLabel>
               <div className="break-all text-xs font-semibold text-ink">
-                {rootPreview ? joinPreviewPath(destination, rootPreview) : "Choose a preset to preview the folder name."}
+                {rootPreview
+                  ? joinPreviewPath(joinPreviewPath(destination, subPathPreview), rootPreview)
+                  : "Choose a preset to preview the folder name."}
               </div>
             </div>
 
@@ -318,7 +327,7 @@ export function ScaffoldPage() {
                 </div>
               ) : null}
               <div className="max-h-[360px] overflow-auto rounded-xl border border-mist bg-white p-1">
-                <PreviewRootRow name={rootPreview || "Project folder"} path={destination} />
+                <PreviewRootRow name={rootPreview || "Project folder"} path={joinPreviewPath(destination, subPathPreview)} />
                 {folderPreview.length > 0 ? (
                   folderPreview.map((node) => <PreviewFolderRow key={node.id} node={node} depth={1} />)
                 ) : (
@@ -696,10 +705,36 @@ function parseSelectedValues(value: string) {
 }
 
 function joinPreviewPath(destination: string, rootName: string) {
+  if (!rootName.trim()) {
+    return destination;
+  }
   if (!destination.trim()) {
     return rootName;
   }
 
   const separator = destination.includes("\\") ? "\\" : "/";
   return `${destination.replace(/[\\/]+$/, "")}${separator}${rootName}`;
+}
+
+// Resolves the preset's optional pre-folder path (sub_path_pattern) into a display
+// string like "2026/Broll" — each `/`-separated segment resolved via the token
+// engine, blanks dropped — so the folder preview shows where the project lands.
+async function resolveSubPathPreview(preset: Preset, variableValues: Record<string, string>) {
+  const pattern = preset.destinations.sub_path_pattern ?? "";
+  const segments = pattern.split(/[/\\]/).map((segment) => segment.trim()).filter(Boolean);
+  if (segments.length === 0) {
+    return "";
+  }
+  const resolved: string[] = [];
+  for (const segment of segments) {
+    const value = await previewPattern(segment, {
+      preset_name: preset.name,
+      variable_values: variableValues,
+      clip_number_padding: preset.clip_number_padding,
+    });
+    if (value.trim()) {
+      resolved.push(value);
+    }
+  }
+  return resolved.join("/");
 }
