@@ -513,7 +513,14 @@ function normalizeSettings(settings: Partial<AppSettings>): AppSettings {
 // --- iconik metadata API -------------------------------------------------
 
 export type IconikView = { id: string; name: string };
-export type IconikField = { name: string; label: string; field_type: string };
+export type IconikField = {
+  name: string;
+  label: string;
+  field_type: string;
+  options: string[];
+  multi: boolean;
+  required: boolean;
+};
 export type IconikPushItem = { title: string; values: Record<string, string[]> };
 export type IconikPushResult = {
   title: string;

@@ -297,11 +297,11 @@ export async function invoke<T = unknown>(command: string, args?: Record<string,
       ] as T;
     case "iconik_view_fields":
       return [
-        { name: "campus", label: "Campus", field_type: "string" },
-        { name: "ministry", label: "Ministry", field_type: "string" },
-        { name: "video_type", label: "Video Type", field_type: "string" },
-        { name: "keywords", label: "Keywords", field_type: "string" },
-        { name: "notes", label: "Notes", field_type: "text" },
+        { name: "campus", label: "Campus", field_type: "drop_down", multi: false, required: true, options: ["Keller", "Haslet", "McKinney", "Online"] },
+        { name: "ministry", label: "Ministry", field_type: "drop_down", multi: false, required: false, options: ["Central", "Weekends", "Youth", "Missions"] },
+        { name: "video_type", label: "Video Type", field_type: "drop_down", multi: false, required: false, options: ["ARoll", "BRoll", "Interview", "Event"] },
+        { name: "keywords", label: "Keywords", field_type: "drop_down", multi: true, required: false, options: ["baptism", "worship", "testimony", "kids"] },
+        { name: "notes", label: "Notes", field_type: "text", multi: false, required: false, options: [] },
       ] as T;
     case "iconik_push_metadata":
       return ((a.items as { title: string }[]) ?? []).map((item, index) => ({

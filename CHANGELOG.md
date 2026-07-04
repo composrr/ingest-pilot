@@ -10,6 +10,15 @@ and user-facing  -  this is what people read in the update popup.
 
 ## [Unreleased]
 
+## [0.1.9]
+
+### Added
+- **Import metadata views from iconik.** In the Metadata tab, hit "iconik" to pull
+  your metadata views straight from iconik and turn the ones you pick into metadata
+  presets. Field names, types, and dropdown vocabularies come directly from iconik, so
+  what you fill in at ingest matches iconik exactly and pushes land clean. Re-import a
+  view any time to re-sync it.
+
 ## [0.1.8]
 
 ### Added

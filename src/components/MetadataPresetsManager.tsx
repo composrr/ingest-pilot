@@ -1,14 +1,19 @@
-import { Plus, Save, Trash2, X } from "lucide-react";
+import { DownloadCloud, Plus, RefreshCw, Save, Trash2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { SelectMenu } from "./SelectMenu";
-import { createDefaultMetadataPreset } from "../lib/metadataPresetFactory";
+import { createDefaultMetadataPreset, metadataPresetFromIconikView } from "../lib/metadataPresetFactory";
 import {
   deleteMetadataPreset,
   getMetadataPreset,
+  getSettings,
+  iconikListViews,
+  iconikViewFields,
   listMetadataPresets,
   saveMetadataPreset,
+  type IconikView,
 } from "../lib/tauri";
 import type {
+  IconikSettings,
   MetadataCategory,
   MetadataField,
   MetadataFieldType,
@@ -46,6 +51,84 @@ export function MetadataPresetsManager({
   const [draft, setDraft] = useState<MetadataPreset | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
+
+  // iconik view import: pull metadata views (fields + controlled vocabulary) and turn
+  // the chosen ones into metadata presets that mirror iconik exactly.
+  const [importOpen, setImportOpen] = useState(false);
+  const [importConfig, setImportConfig] = useState<IconikSettings | null>(null);
+  const [importViews, setImportViews] = useState<IconikView[]>([]);
+  const [importSelected, setImportSelected] = useState<Set<string>>(new Set());
+  const [importBusy, setImportBusy] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+
+  async function openImport() {
+    setImportError(null);
+    setImportBusy(true);
+    setImportOpen(true);
+    try {
+      const settings = await getSettings();
+      const iconik = settings.iconik;
+      if (!iconik.app_id.trim() || !iconik.auth_token.trim()) {
+        setImportConfig(null);
+        setImportViews([]);
+        setImportError("Connect iconik in Settings first (App-ID and Auth-Token).");
+        return;
+      }
+      setImportConfig(iconik);
+      const views = await iconikListViews(iconik);
+      setImportViews(views);
+      setImportSelected(new Set());
+      if (views.length === 0) {
+        setImportError("No metadata views found on this iconik instance.");
+      }
+    } catch (caught) {
+      setImportError(String(caught));
+      setImportViews([]);
+    } finally {
+      setImportBusy(false);
+    }
+  }
+
+  function toggleImportView(id: string) {
+    setImportSelected((current) => {
+      const next = new Set(current);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }
+
+  async function runImport() {
+    if (!importConfig || importSelected.size === 0) {
+      return;
+    }
+    setImportBusy(true);
+    setImportError(null);
+    try {
+      const now = new Date().toISOString();
+      let lastId: string | null = null;
+      for (const view of importViews.filter((candidate) => importSelected.has(candidate.id))) {
+        const fields = await iconikViewFields(importConfig, view.id);
+        const preset = metadataPresetFromIconikView(view, fields, now);
+        await saveMetadataPreset(preset);
+        lastId = preset.id;
+      }
+      await refreshList();
+      if (lastId) {
+        await select(lastId);
+        onSelect?.(lastId);
+      }
+      setImportOpen(false);
+      setStatus("Imported from iconik");
+    } catch (caught) {
+      setImportError(String(caught));
+    } finally {
+      setImportBusy(false);
+    }
+  }
 
   useEffect(() => {
     void bootstrap();
@@ -214,14 +297,25 @@ export function MetadataPresetsManager({
         <aside className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-mist bg-white">
           <div className="flex items-center justify-between border-b border-mist px-2 py-1.5">
             <span className="text-[11px] font-semibold uppercase tracking-wide text-graphite/60">Presets</span>
-            <button
-              className="inline-flex h-7 items-center gap-1 rounded-lg border border-mist bg-white px-2 text-xs font-semibold text-graphite transition hover:bg-porcelain"
-              onClick={newPreset}
-              type="button"
-            >
-              <Plus size={13} />
-              New
-            </button>
+            <div className="flex items-center gap-1">
+              <button
+                className="inline-flex h-7 items-center gap-1 rounded-lg border border-mist bg-white px-2 text-xs font-semibold text-graphite transition hover:bg-porcelain"
+                onClick={() => void openImport()}
+                title="Import metadata views from iconik"
+                type="button"
+              >
+                <DownloadCloud size={13} />
+                iconik
+              </button>
+              <button
+                className="inline-flex h-7 items-center gap-1 rounded-lg border border-mist bg-white px-2 text-xs font-semibold text-graphite transition hover:bg-porcelain"
+                onClick={newPreset}
+                type="button"
+              >
+                <Plus size={13} />
+                New
+              </button>
+            </div>
           </div>
           <div className="min-h-0 flex-1 space-y-1 overflow-auto p-2">
             {summaries.map((summary) => (
@@ -367,6 +461,83 @@ export function MetadataPresetsManager({
           </section>
         )}
       </div>
+
+      {importOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4" role="dialog">
+          <div className="flex max-h-[80vh] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-mist bg-paper shadow-panel">
+            <div className="flex items-center justify-between border-b border-mist px-4 py-3">
+              <div>
+                <h3 className="text-sm font-semibold">Import from iconik</h3>
+                <p className="text-[11px] text-graphite">
+                  Pick the metadata views to mirror. Fields and controlled-vocabulary options come straight from iconik.
+                </p>
+              </div>
+              <button
+                aria-label="Close"
+                className="rounded-lg p-1 text-graphite transition hover:bg-porcelain"
+                onClick={() => setImportOpen(false)}
+                type="button"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-auto p-3">
+              {importBusy && importViews.length === 0 ? (
+                <div className="flex items-center gap-2 px-1 py-6 text-sm text-graphite">
+                  <RefreshCw className="animate-spin" size={15} />
+                  Loading views from iconik…
+                </div>
+              ) : importError ? (
+                <p className="px-1 py-4 text-sm text-red-700">{importError}</p>
+              ) : importViews.length === 0 ? (
+                <p className="px-1 py-4 text-sm text-graphite">No metadata views available.</p>
+              ) : (
+                <div className="space-y-1">
+                  {importViews.map((view) => (
+                    <label
+                      key={view.id}
+                      className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-sm transition hover:bg-porcelain"
+                    >
+                      <input
+                        checked={importSelected.has(view.id)}
+                        className="h-4 w-4 accent-signal"
+                        onChange={() => toggleImportView(view.id)}
+                        type="checkbox"
+                      />
+                      <span className="truncate">{view.name}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-between gap-2 border-t border-mist px-4 py-3">
+              <span className="text-[11px] text-graphite">
+                {importSelected.size > 0 ? `${importSelected.size} selected` : "Each view becomes a metadata preset."}
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  className="inline-flex h-8 items-center rounded-lg border border-mist bg-white px-3 text-xs font-semibold text-graphite transition hover:bg-porcelain"
+                  onClick={() => setImportOpen(false)}
+                  type="button"
+                >
+                  Cancel
+                </button>
+                <button
+                  className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-signal px-3 text-xs font-semibold text-paper transition hover:bg-black disabled:opacity-40"
+                  disabled={importBusy || importSelected.size === 0}
+                  onClick={() => void runImport()}
+                  type="button"
+                >
+                  {importBusy ? <RefreshCw className="animate-spin" size={14} /> : <DownloadCloud size={14} />}
+                  Import {importSelected.size > 0 ? importSelected.size : ""}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

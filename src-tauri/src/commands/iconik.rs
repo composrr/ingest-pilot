@@ -31,6 +31,12 @@ pub struct IconikField {
     pub name: String,
     pub label: String,
     pub field_type: String,
+    /// Allowed values for a controlled-vocabulary (dropdown) field, so the app can
+    /// mirror iconik's exact options and never push an off-vocab value.
+    pub options: Vec<String>,
+    /// Whether the field accepts multiple values (maps to a multi-select in the app).
+    pub multi: bool,
+    pub required: bool,
 }
 
 /// One asset to tag: matched to an iconik asset by `title` (the file/clip name),
@@ -118,6 +124,24 @@ pub fn iconik_view_fields(config: IconikConfig, view_id: String) -> Result<Vec<I
         .iter()
         .filter_map(|field| {
             let name = field.get("name")?.as_str()?.to_string();
+            // Controlled-vocabulary options: each entry is usually { label, value }.
+            // Prefer the stored `value` (what a push must send) and fall back to label.
+            let options = field
+                .get("options")
+                .and_then(Value::as_array)
+                .map(|entries| {
+                    entries
+                        .iter()
+                        .filter_map(|entry| {
+                            entry
+                                .get("value")
+                                .and_then(Value::as_str)
+                                .or_else(|| entry.get("label").and_then(Value::as_str))
+                                .map(str::to_string)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
             Some(IconikField {
                 label: field
                     .get("label")
@@ -129,6 +153,9 @@ pub fn iconik_view_fields(config: IconikConfig, view_id: String) -> Result<Vec<I
                     .and_then(Value::as_str)
                     .unwrap_or("string")
                     .to_string(),
+                options,
+                multi: field.get("multi").and_then(Value::as_bool).unwrap_or(false),
+                required: field.get("required").and_then(Value::as_bool).unwrap_or(false),
                 name,
             })
         })
