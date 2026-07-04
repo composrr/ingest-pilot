@@ -83,14 +83,20 @@ jobs:
           release_id=$(gh api "repos/$REPO/releases" --paginate \
             -q '[.[] | select(.tag_name=="'"$TAG"'" and .draft==true)][0].id // empty')
           if [ -z "$release_id" ]; then
-            gh release create "$TAG" \
-              --repo "$REPO" \
-              --draft \
-              --target main \
-              --title "Ingest Pilot $TAG" \
-              --notes-file release-notes.md
-            release_id=$(gh api "repos/$REPO/releases" --paginate \
-              -q '[.[] | select(.tag_name=="'"$TAG"'" and .draft==true)][0].id')
+            # Create via the API and read the id straight from the response. (Creating
+            # with `gh release create` then listing races: the just-made draft may not
+            # be visible yet, which left release_id empty and broke the publish step.)
+            release_id=$(gh api -X POST "repos/$REPO/releases" \
+              -f tag_name="$TAG" \
+              -f target_commitish=main \
+              -f name="Ingest Pilot $TAG" \
+              -F draft=true \
+              -f body="$(cat release-notes.md)" \
+              -q '.id')
+          fi
+          if [ -z "$release_id" ]; then
+            echo "Failed to create or find the draft release for $TAG" >&2
+            exit 1
           fi
           echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
 
