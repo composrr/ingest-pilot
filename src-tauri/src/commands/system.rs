@@ -1,4 +1,5 @@
 use serde::Serialize;
+use tauri::AppHandle;
 
 #[derive(Debug, Serialize)]
 pub struct DiskSpace {
@@ -11,6 +12,49 @@ pub struct DiskSpace {
 #[tauri::command]
 pub fn greet(name: &str) -> String {
     format!("Welcome aboard, {name}. Ingest Pilot is ready.")
+}
+
+/// Brings the main window to the front (from tray/background) — used when a card is
+/// inserted or an ingest finishes so the operator is taken straight to it.
+#[tauri::command]
+pub fn show_main_window(app: AppHandle) {
+    crate::show_and_focus(&app);
+}
+
+/// Enables/disables starting the app at login. Best-effort; returns an error string
+/// the frontend can surface if the OS refuses.
+#[tauri::command]
+pub fn set_launch_at_login(app: AppHandle, enabled: bool) -> Result<(), String> {
+    #[cfg(desktop)]
+    {
+        use tauri_plugin_autostart::ManagerExt;
+        let manager = app.autolaunch();
+        return if enabled {
+            manager.enable().map_err(|error| error.to_string())
+        } else {
+            manager.disable().map_err(|error| error.to_string())
+        };
+    }
+    #[cfg(not(desktop))]
+    {
+        let _ = (app, enabled);
+        Ok(())
+    }
+}
+
+/// Reports whether launch-at-login is currently enabled at the OS level.
+#[tauri::command]
+pub fn get_launch_at_login(app: AppHandle) -> Result<bool, String> {
+    #[cfg(desktop)]
+    {
+        use tauri_plugin_autostart::ManagerExt;
+        return app.autolaunch().is_enabled().map_err(|error| error.to_string());
+    }
+    #[cfg(not(desktop))]
+    {
+        let _ = app;
+        Ok(false)
+    }
 }
 
 #[tauri::command]

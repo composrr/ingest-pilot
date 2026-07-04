@@ -288,6 +288,27 @@ export async function invoke<T = unknown>(command: string, args?: Record<string,
       return undefined as T;
     case "export_metadata_manifest":
       return "E:/PROJECTS/2026-06-30_Project/2026-06-30_Project_Metadata.csv" as T;
+
+    case "iconik_list_views":
+      return [
+        { id: "view-general", name: "General" },
+        { id: "view-story", name: "People / Story" },
+        { id: "view-admin", name: "Admin" },
+      ] as T;
+    case "iconik_view_fields":
+      return [
+        { name: "campus", label: "Campus", field_type: "string" },
+        { name: "ministry", label: "Ministry", field_type: "string" },
+        { name: "video_type", label: "Video Type", field_type: "string" },
+        { name: "keywords", label: "Keywords", field_type: "string" },
+        { name: "notes", label: "Notes", field_type: "text" },
+      ] as T;
+    case "iconik_push_metadata":
+      return ((a.items as { title: string }[]) ?? []).map((item, index) => ({
+        title: item.title,
+        status: index === 0 ? "not_found" : "updated",
+        detail: index === 0 ? "No matching asset in iconik yet." : null,
+      })) as T;
     case "duplicate_preset": {
       const original = presets.find((p) => p.id === a.id);
       if (!original) throw new Error("Preset not found");
@@ -412,6 +433,13 @@ export async function invoke<T = unknown>(command: string, args?: Record<string,
     case "save_settings":
       settings = a.settings as AppSettings;
       return settings as T;
+
+    case "show_main_window":
+      return undefined as T;
+    case "set_launch_at_login":
+      return undefined as T;
+    case "get_launch_at_login":
+      return false as T;
 
     default:
       console.warn(`[design-mock] unhandled command: ${command}`);

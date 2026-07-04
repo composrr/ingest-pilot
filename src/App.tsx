@@ -47,7 +47,18 @@ export function App() {
   const setLastAction = useAppStore((state) => state.setLastAction);
   const pendingUpdate = useAppStore((state) => state.pendingUpdate);
   const setPendingUpdate = useAppStore((state) => state.setPendingUpdate);
+  const requestedView = useAppStore((state) => state.requestedView);
+  const setRequestedView = useAppStore((state) => state.setRequestedView);
   const didCheckUpdate = useRef(false);
+
+  // Another part of the app (e.g. the card watcher on insert) can ask us to switch
+  // views. Consume the request once and clear it.
+  useEffect(() => {
+    if (requestedView) {
+      setActiveView(requestedView as AppView);
+      setRequestedView(null);
+    }
+  }, [requestedView, setRequestedView]);
 
   useEffect(() => {
     if (localStorage.getItem("ingest-pilot:onboarding-complete") !== "true") {

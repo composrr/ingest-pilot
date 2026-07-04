@@ -24,6 +24,44 @@ pub struct AppSettings {
     /// Applied globally so those types route to the matching role's folder.
     #[serde(default)]
     pub custom_file_kinds: std::collections::BTreeMap<String, String>,
+    /// iconik connection for pushing metadata to assets via the API.
+    #[serde(default)]
+    pub iconik: IconikSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct IconikSettings {
+    #[serde(default = "default_iconik_base_url")]
+    pub base_url: String,
+    #[serde(default)]
+    pub app_id: String,
+    #[serde(default)]
+    pub auth_token: String,
+    /// The metadata view assets are tagged against.
+    #[serde(default)]
+    pub view_id: String,
+    #[serde(default)]
+    pub view_name: String,
+    /// Push metadata to iconik automatically after an ingest completes.
+    #[serde(default)]
+    pub auto_push: bool,
+}
+
+impl Default for IconikSettings {
+    fn default() -> Self {
+        Self {
+            base_url: default_iconik_base_url(),
+            app_id: String::new(),
+            auth_token: String::new(),
+            view_id: String::new(),
+            view_name: String::new(),
+            auto_push: false,
+        }
+    }
+}
+
+fn default_iconik_base_url() -> String {
+    "https://app.iconik.io".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -79,18 +117,27 @@ impl Default for ReportDefaults {
 pub struct CameraWatcherSettings {
     #[serde(default = "default_true")]
     pub auto_detect_cards: bool,
-    #[serde(default)]
-    pub prompt_on_card_detected: bool,
-    #[serde(default)]
+    /// When a new card is inserted, raise/focus the window and jump to the ingest
+    /// screen with that card pre-selected.
+    #[serde(default = "default_true")]
+    pub pop_open_on_card: bool,
+    /// Keep the app running in the background (close to tray) instead of quitting
+    /// when the window is closed, so the card watcher stays alive.
+    #[serde(default = "default_true")]
     pub tray_mode: bool,
+    /// Start the app automatically at login (so it can be watching before a card
+    /// is inserted). Applied to the OS on save.
+    #[serde(default)]
+    pub launch_at_login: bool,
 }
 
 impl Default for CameraWatcherSettings {
     fn default() -> Self {
         Self {
             auto_detect_cards: true,
-            prompt_on_card_detected: false,
-            tray_mode: false,
+            pop_open_on_card: true,
+            tray_mode: true,
+            launch_at_login: false,
         }
     }
 }
@@ -140,8 +187,29 @@ pub fn save_settings(app: AppHandle, settings: AppSettings) -> Result<AppSetting
     let json = serde_json::to_string_pretty(&settings).map_err(|error| error.to_string())?;
     fs::write(path, json).map_err(|error| error.to_string())?;
     apply_custom_file_kinds(&settings);
+    apply_background_and_autostart(&app, &settings);
 
     Ok(settings)
+}
+
+/// Keeps the OS-level behaviors in sync with the saved settings: the "close to
+/// background" flag the window-close handler reads, and the launch-at-login state.
+/// Both are best-effort — a failure here never blocks saving settings.
+fn apply_background_and_autostart(app: &AppHandle, settings: &AppSettings) {
+    use std::sync::atomic::Ordering;
+    if let Some(state) = app.try_state::<crate::BackgroundMode>() {
+        state.0.store(settings.camera_watcher.tray_mode, Ordering::Relaxed);
+    }
+    #[cfg(desktop)]
+    {
+        use tauri_plugin_autostart::ManagerExt;
+        let manager = app.autolaunch();
+        let _ = if settings.camera_watcher.launch_at_login {
+            manager.enable()
+        } else {
+            manager.disable()
+        };
+    }
 }
 
 /// Pushes the user's extension->kind overrides into the scanner so scans and ingests

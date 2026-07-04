@@ -35,12 +35,18 @@ import {
   retryFailedCopies,
   saveHistoryJob,
   getNamingCatalog,
+  iconikPushMetadata,
+  iconikViewFields,
+  showMainWindow,
   scanSource,
   detectCameraSources,
   type CameraSource,
   type CopiedFile,
   type DiskSpace,
   type FolderMetadataOverride,
+  type IconikField,
+  type IconikPushItem,
+  type IconikPushResult,
   type IngestHistoryJob,
   type IngestProgress,
   type IngestResult,
@@ -58,6 +64,7 @@ import type {
   PresetVariable,
 } from "../lib/types";
 import { useAppStore } from "../stores/appStore";
+import { playCompletionSound } from "../lib/sound";
 import {
   defaultNamingCatalog,
   mergeNamingCatalog,
@@ -70,6 +77,130 @@ import { createDefaultMetadataPreset } from "../lib/metadataPresetFactory";
 // the manifest (from folder defaults) even when no shoot-wide values were entered.
 function folderTreeHasMetadata(nodes: FolderNode[]): boolean {
   return nodes.some((node) => Boolean(node.metadata_preset_id) || folderTreeHasMetadata(node.children ?? []));
+}
+
+type IconikPushState = {
+  status: "idle" | "pushing" | "done" | "error";
+  results: IconikPushResult[];
+  error?: string;
+};
+
+// Normalizes a field name/label so our metadata fields line up with iconik's field
+// names regardless of case, spaces, or punctuation ("Video Type" ~ "video_type").
+function normalizeFieldKey(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+// The delivered filename without its extension — iconik stores asset titles without
+// the extension, so this is what we match assets on.
+function fileStem(destinationPath: string): string {
+  const name = destinationPath.replace(/\\/g, "/").split("/").pop() ?? destinationPath;
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(0, dot) : name;
+}
+
+// Picks the deepest folder metadata override a clip landed inside (longest matching
+// path prefix), mirroring the Rust manifest writer so API pushes and CSV agree.
+function deepestOverride(
+  overrides: FolderMetadataOverride[],
+  destinationPath: string,
+): FolderMetadataOverride | null {
+  const normalized = destinationPath.replace(/\\/g, "/");
+  let best: FolderMetadataOverride | null = null;
+  for (const entry of overrides) {
+    const prefix = entry.path_prefix.replace(/\\/g, "/");
+    if (prefix && normalized.startsWith(prefix)) {
+      if (!best || entry.path_prefix.length > best.path_prefix.length) {
+        best = entry;
+      }
+    }
+  }
+  return best;
+}
+
+// Builds one iconik push item per copied clip: title = delivered filename (no ext),
+// values = our metadata resolved for that clip (shoot-wide overlaid with its campus
+// folder override) and re-keyed to the exact iconik field names in the chosen view.
+// Clips whose resolved values are all empty are dropped so we don't clear tags.
+function buildIconikItems(
+  copiedFiles: CopiedFile[],
+  preset: MetadataPreset,
+  shootValues: Record<string, string>,
+  overrides: FolderMetadataOverride[],
+  iconikFields: IconikField[],
+): IconikPushItem[] {
+  // Map each of our field ids to the iconik field name it should be written to, and
+  // remember which fields are multi-value so we can split comma lists into arrays.
+  const iconikByKey = new Map<string, string>();
+  for (const field of iconikFields) {
+    iconikByKey.set(normalizeFieldKey(field.name), field.name);
+    iconikByKey.set(normalizeFieldKey(field.label), field.name);
+  }
+  const fieldToIconik = new Map<string, string>();
+  const multiValueFields = new Set<string>();
+  const registerField = (id: string, label: string, isMulti: boolean) => {
+    const target = iconikByKey.get(normalizeFieldKey(id)) ?? iconikByKey.get(normalizeFieldKey(label));
+    if (target) {
+      fieldToIconik.set(id, target);
+      if (isMulti) {
+        multiValueFields.add(id);
+      }
+    }
+  };
+  const collectFields = (schema: MetadataPreset) => {
+    for (const category of schema.categories) {
+      for (const field of category.fields) {
+        registerField(field.id, field.label, field.field_type === "multi_select");
+      }
+    }
+  };
+  collectFields(preset);
+  overrides.forEach((entry) => collectFields(entry.preset));
+
+  const items: IconikPushItem[] = [];
+  for (const file of copiedFiles) {
+    if (file.kind === "sidecar") {
+      continue;
+    }
+    const resolved: Record<string, string> = { ...shootValues };
+    const override = deepestOverride(overrides, file.destination_path);
+    if (override) {
+      for (const category of override.preset.categories) {
+        for (const field of category.fields) {
+          if (field.default && field.default.trim()) {
+            resolved[field.id] = field.default;
+          }
+        }
+      }
+    }
+    const values: Record<string, string[]> = {};
+    for (const [fieldId, raw] of Object.entries(resolved)) {
+      const iconikName = fieldToIconik.get(fieldId);
+      if (!iconikName || !raw.trim()) {
+        continue;
+      }
+      values[iconikName] = multiValueFields.has(fieldId)
+        ? raw.split(",").map((part) => part.trim()).filter(Boolean)
+        : [raw.trim()];
+    }
+    if (Object.keys(values).length > 0) {
+      items.push({ title: fileStem(file.destination_path), values });
+    }
+  }
+  return items;
+}
+
+// Overlays fresh push results onto prior ones (keyed by title) so a retry updates the
+// affected rows without dropping the clips we did not re-push.
+function mergePushResults(
+  prior: IconikPushResult[],
+  fresh: IconikPushResult[],
+): IconikPushResult[] {
+  const byTitle = new Map(prior.map((row) => [row.title, row]));
+  for (const row of fresh) {
+    byTitle.set(row.title, row);
+  }
+  return Array.from(byTitle.values());
 }
 
 // Queue mode: a sequential pipeline of source cards. Each card is scanned in the
@@ -155,6 +286,7 @@ export function IngestPage() {
   const [metadataPreset, setMetadataPreset] = useState<MetadataPreset | null>(null);
   const [metadataValues, setMetadataValues] = useState<Record<string, string>>({});
   const [isSavingManifest, setIsSavingManifest] = useState(false);
+  const [iconikPush, setIconikPush] = useState<IconikPushState>({ status: "idle", results: [] });
   const [isNamingOpen, setIsNamingOpen] = useState(false);
   // Project name chosen via the Naming wizard for THIS ingest. Overrides the
   // preset's root folder name at run time without touching the preset itself.
@@ -186,6 +318,7 @@ export function IngestPage() {
   const sampleTimerRef = useRef<number | null>(null);
   const runStartRef = useRef<number>(0);
   const setLastAction = useAppStore((state) => state.setLastAction);
+  const setRequestedView = useAppStore((state) => state.setRequestedView);
   const sourcePath = sourcePaths[0] ?? "";
   const scan = useMemo(() => aggregateSourceScans(sourceScans), [sourceScans]);
   const destinationTargets = useMemo(
@@ -545,6 +678,62 @@ export function IngestPage() {
       setError(String(caught));
     } finally {
       setIsSavingManifest(false);
+    }
+  }
+
+  // Pushes this ingest's metadata straight onto the matching iconik assets over the
+  // API (no sidecars, no CSV). Fetches the chosen view's fields, maps our metadata to
+  // the exact iconik field names, then tags each clip by its delivered filename. If
+  // `onlyTitles` is given, re-pushes just those clips (used to retry assets iconik
+  // had not scanned yet).
+  async function pushToIconik(onlyTitles?: string[]) {
+    if (!ingestResult || !metadataPreset) {
+      return;
+    }
+    const iconik = appSettings.iconik;
+    if (!iconik.app_id.trim() || !iconik.auth_token.trim() || !iconik.view_id.trim()) {
+      setIconikPush({
+        status: "error",
+        results: [],
+        error: "Connect iconik and choose a metadata view in Settings first.",
+      });
+      return;
+    }
+    setIconikPush((current) => ({ ...current, status: "pushing", error: undefined }));
+    try {
+      const overrides = await buildFolderMetadataOverrides(ingestResult.root_path);
+      const fields = await iconikViewFields(iconik, iconik.view_id);
+      let items = buildIconikItems(
+        ingestResult.copied_files,
+        metadataPreset,
+        metadataValues,
+        overrides,
+        fields,
+      );
+      if (onlyTitles) {
+        const wanted = new Set(onlyTitles);
+        items = items.filter((item) => wanted.has(item.title));
+      }
+      if (items.length === 0) {
+        setIconikPush({
+          status: "error",
+          results: [],
+          error: "No metadata values to push. Fill in the metadata fields for this ingest first.",
+        });
+        return;
+      }
+      const results = await iconikPushMetadata(iconik, iconik.view_id, items);
+      // On a retry, merge the fresh results over the prior ones so the summary reflects
+      // the whole ingest, not just the clips we retried.
+      setIconikPush((current) => {
+        const merged = onlyTitles
+          ? mergePushResults(current.results, results)
+          : results;
+        return { status: "done", results: merged, error: undefined };
+      });
+      setLastAction(`iconik: ${results.filter((row) => row.status === "updated").length} tagged`);
+    } catch (caught) {
+      setIconikPush({ status: "error", results: [], error: String(caught) });
     }
   }
 
@@ -1397,6 +1586,49 @@ export function IngestPage() {
     void loadSelectedPreset(selectedPresetId);
   }, [selectedPresetId]);
 
+  // Card-watcher edge detection: the set of card paths seen on the previous poll, plus
+  // a flag so the first poll only primes the baseline (no pop-open on launch).
+  const knownCardPathsRef = useRef<Set<string>>(new Set());
+  const cardBaselinePrimedRef = useRef(false);
+
+  // Announce a finished transfer: play a success/needs-review chime, and if we're
+  // running in the background, surface the window so the operator sees it. Runs once
+  // per delivery (keyed on the project root) so single + queue both fire exactly once.
+  const announcedRootRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!ingestResult) {
+      announcedRootRef.current = null;
+      return;
+    }
+    if (announcedRootRef.current === ingestResult.root_path) {
+      return;
+    }
+    announcedRootRef.current = ingestResult.root_path;
+    playCompletionSound(ingestResult.verification_failed === 0);
+    if (appSettings.camera_watcher.tray_mode) {
+      void showMainWindow();
+    }
+  }, [ingestResult, appSettings.camera_watcher.tray_mode]);
+
+  // When an ingest finishes, optionally push its metadata to iconik automatically
+  // (Settings -> iconik -> "Push automatically after ingest"). Runs once per delivery.
+  const autoPushedRootRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!ingestResult) {
+      autoPushedRootRef.current = null;
+      return;
+    }
+    if (
+      appSettings.iconik.auto_push &&
+      appSettings.iconik.view_id &&
+      metadataPreset &&
+      autoPushedRootRef.current !== ingestResult.root_path
+    ) {
+      autoPushedRootRef.current = ingestResult.root_path;
+      void pushToIconik();
+    }
+  }, [ingestResult, appSettings.iconik.auto_push, appSettings.iconik.view_id, metadataPreset]);
+
   // Clear the speed-sampling timer if we unmount mid-run (e.g. navigating away).
   useEffect(() => {
     return () => {
@@ -1515,6 +1747,20 @@ export function IngestPage() {
           return;
         }
         setDetectedSources(sources);
+        // Edge-detect a newly inserted card: if a card path appears that wasn't there
+        // on the previous poll, surface the window (from tray/background) and jump to
+        // the ingest screen. The first poll only primes the baseline so we don't pop
+        // on launch for a card that was already inserted.
+        const currentPaths = sources.map((source) => source.path);
+        if (appSettings.camera_watcher.pop_open_on_card && cardBaselinePrimedRef.current) {
+          const isNewCard = currentPaths.some((path) => !knownCardPathsRef.current.has(path));
+          if (isNewCard) {
+            void showMainWindow();
+            setRequestedView("ingest");
+          }
+        }
+        knownCardPathsRef.current = new Set(currentPaths);
+        cardBaselinePrimedRef.current = true;
         // Pre-load connected memory cards automatically: if nothing is set up yet and
         // a card (or cards) are plugged in, drop them straight into "Copy From" and
         // scan so the ingest screen is ready without any clicks.
@@ -1548,7 +1794,13 @@ export function IngestPage() {
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [appSettings.camera_watcher.auto_detect_cards, setLastAction, sourcePath]);
+  }, [
+    appSettings.camera_watcher.auto_detect_cards,
+    appSettings.camera_watcher.pop_open_on_card,
+    setLastAction,
+    setRequestedView,
+    sourcePath,
+  ]);
 
   if (isIngesting && !isQueueRunning) {
     return (
@@ -1576,7 +1828,7 @@ export function IngestPage() {
           <div>
             <p className="mb-0.5 text-[11px] font-semibold text-graphite/70">Delivery</p>
             <h1 className="text-xl font-semibold tracking-normal">
-              {allVerified ? "Ingest complete" : "Ingest complete — review needed"}
+              {allVerified ? "Transfer complete" : "Transfer complete — review needed"}
             </h1>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -1621,11 +1873,22 @@ export function IngestPage() {
                 {isSavingManifest ? "Saving…" : "Metadata CSV"}
               </button>
             ) : null}
+            {metadataPreset && appSettings.iconik.view_id ? (
+              <button
+                className="text-xs font-semibold text-graphite underline-offset-2 hover:underline disabled:opacity-60"
+                disabled={iconikPush.status === "pushing"}
+                onClick={() => void pushToIconik()}
+                type="button"
+              >
+                {iconikPush.status === "pushing" ? "Pushing…" : "Push to iconik"}
+              </button>
+            ) : null}
             <button
               className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-signal px-3 text-xs font-semibold text-paper transition hover:bg-black"
               onClick={() => {
                 setIngestResult(null);
                 setQueue([]);
+                setIconikPush({ status: "idle", results: [] });
                 cardScanPromises.current.clear();
               }}
               type="button"
@@ -1650,6 +1913,12 @@ export function IngestPage() {
               result={result}
             />
             <CoverageCard files={result.copied_files} />
+            {iconikPush.status !== "idle" ? (
+              <IconikPushPanel
+                onRetry={(titles) => void pushToIconik(titles)}
+                state={iconikPush}
+              />
+            ) : null}
             {reportBuild.status !== "idle" ? (
               <div className="border-b border-mist px-3 py-2">
                 <div className="mb-1 flex items-center justify-between gap-3 text-xs font-semibold text-graphite">
@@ -4733,6 +5002,69 @@ function ingestStartHint({
     return "Choose files";
   }
   return "Ready";
+}
+
+// Delivery-screen panel summarizing an iconik metadata push: how many clips were
+// tagged, how many iconik has not scanned yet (retryable), and any errors.
+function IconikPushPanel({
+  onRetry,
+  state,
+}: {
+  onRetry: (titles: string[]) => void;
+  state: IconikPushState;
+}) {
+  const updated = state.results.filter((row) => row.status === "updated");
+  const notFound = state.results.filter((row) => row.status === "not_found");
+  const errored = state.results.filter((row) => row.status === "error");
+  return (
+    <div className="border-b border-mist px-3 py-2">
+      <div className="mb-1 flex items-center justify-between gap-3">
+        <span className="text-xs font-semibold text-graphite">iconik metadata push</span>
+        {notFound.length > 0 && state.status !== "pushing" ? (
+          <button
+            className="text-[11px] font-semibold text-signal underline-offset-2 hover:underline"
+            onClick={() => onRetry(notFound.map((row) => row.title))}
+            type="button"
+          >
+            Retry {notFound.length} not found
+          </button>
+        ) : null}
+      </div>
+      {state.status === "pushing" ? (
+        <p className="text-[11px] text-graphite">Matching clips and writing metadata to iconik…</p>
+      ) : state.status === "error" ? (
+        <p className="text-[11px] font-semibold text-red-700">{state.error}</p>
+      ) : (
+        <>
+          <div className="flex flex-wrap gap-1.5 text-[11px] font-semibold">
+            <span className="rounded-md bg-emerald-50 px-2 py-0.5 text-emerald-700 ring-1 ring-emerald-200">
+              {updated.length} tagged
+            </span>
+            {notFound.length > 0 ? (
+              <span className="rounded-md bg-amber-50 px-2 py-0.5 text-amber-700 ring-1 ring-amber-200">
+                {notFound.length} not in iconik yet
+              </span>
+            ) : null}
+            {errored.length > 0 ? (
+              <span className="rounded-md bg-red-50 px-2 py-0.5 text-red-700 ring-1 ring-red-200">
+                {errored.length} error{errored.length === 1 ? "" : "s"}
+              </span>
+            ) : null}
+          </div>
+          {notFound.length > 0 ? (
+            <p className="mt-1 text-[11px] text-graphite/70">
+              iconik may not have scanned these files yet. Give it a minute, then retry.
+            </p>
+          ) : null}
+          {errored.length > 0 ? (
+            <p className="mt-1 truncate text-[11px] text-red-700" title={errored[0].detail ?? undefined}>
+              {errored[0].detail}
+            </p>
+          ) : null}
+        </>
+      )}
+    </div>
+  );
 }
 
 function reportStatusLabel(reportBuild: ReportBuildState) {

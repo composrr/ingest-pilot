@@ -3,6 +3,7 @@ import { createShippedPresets } from "./presetFactory";
 import type { NamingCatalog } from "./namingCatalog";
 import type {
   AppSettings,
+  IconikSettings,
   FolderNode,
   MetadataPreset,
   MetadataPresetSummary,
@@ -31,8 +32,9 @@ export const defaultAppSettings: AppSettings = {
   },
   camera_watcher: {
     auto_detect_cards: true,
-    prompt_on_card_detected: false,
-    tray_mode: false,
+    pop_open_on_card: true,
+    tray_mode: true,
+    launch_at_login: false,
   },
   file_selector: {
     default_view: "list",
@@ -41,6 +43,14 @@ export const defaultAppSettings: AppSettings = {
   },
   operator_name: "",
   custom_file_kinds: {},
+  iconik: {
+    base_url: "https://app.iconik.io",
+    app_id: "",
+    auth_token: "",
+    view_id: "",
+    view_name: "",
+    auto_push: false,
+  },
 };
 
 export type DroppedTemplateItems = {
@@ -454,6 +464,29 @@ export async function generateIngestReport(
   });
 }
 
+// Brings the app window to the front from the tray/background (card insert, ingest
+// complete). Best-effort and safe to call when already visible; swallows the error in
+// design mode where the command isn't present.
+export async function showMainWindow() {
+  try {
+    await invoke("show_main_window");
+  } catch {
+    // no-op in design mode / non-desktop
+  }
+}
+
+export async function setLaunchAtLogin(enabled: boolean) {
+  return invoke<void>("set_launch_at_login", { enabled });
+}
+
+export async function getLaunchAtLogin() {
+  try {
+    return await invoke<boolean>("get_launch_at_login");
+  } catch {
+    return false;
+  }
+}
+
 export async function getSettings() {
   const settings = await invoke<Partial<AppSettings>>("get_settings");
   return normalizeSettings(settings);
@@ -473,5 +506,53 @@ function normalizeSettings(settings: Partial<AppSettings>): AppSettings {
     report_defaults: { ...defaultAppSettings.report_defaults, ...settings.report_defaults },
     camera_watcher: { ...defaultAppSettings.camera_watcher, ...settings.camera_watcher },
     file_selector: { ...defaultAppSettings.file_selector, ...settings.file_selector },
+    iconik: { ...defaultAppSettings.iconik, ...settings.iconik },
   };
+}
+
+// --- iconik metadata API -------------------------------------------------
+
+export type IconikView = { id: string; name: string };
+export type IconikField = { name: string; label: string; field_type: string };
+export type IconikPushItem = { title: string; values: Record<string, string[]> };
+export type IconikPushResult = {
+  title: string;
+  status: "updated" | "not_found" | "error";
+  detail?: string | null;
+};
+
+type IconikConfig = { base_url: string; app_id: string; auth_token: string };
+
+function iconikConfig(settings: IconikSettings): IconikConfig {
+  return {
+    base_url: settings.base_url,
+    app_id: settings.app_id,
+    auth_token: settings.auth_token,
+  };
+}
+
+/** Lists the metadata views on the connected iconik instance (also a connection test). */
+export async function iconikListViews(settings: IconikSettings) {
+  return invoke<IconikView[]>("iconik_list_views", { config: iconikConfig(settings) });
+}
+
+/** Returns the fields (name/label/type) of a specific iconik metadata view. */
+export async function iconikViewFields(settings: IconikSettings, viewId: string) {
+  return invoke<IconikField[]>("iconik_view_fields", {
+    config: iconikConfig(settings),
+    viewId,
+  });
+}
+
+/** Writes metadata onto iconik assets, matching each item to an asset by title. */
+export async function iconikPushMetadata(
+  settings: IconikSettings,
+  viewId: string,
+  items: IconikPushItem[],
+) {
+  return invoke<IconikPushResult[]>("iconik_push_metadata", {
+    config: iconikConfig(settings),
+    viewId,
+    items,
+  });
 }

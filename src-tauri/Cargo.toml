@@ -1,6 +1,6 @@
 [package]
 name = "ingest-pilot"
-version = "0.1.7"
+version = "0.1.8"
 description = "A desktop app for repeatable project scaffolding and verified media ingest."
 authors = ["Ingest Pilot"]
 edition = "2021"
@@ -15,11 +15,20 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-process = "2"
 tauri-plugin-updater = "2"
+# Focus the running window instead of spawning a duplicate when relaunched
+# (important now that the app can sit closed-to-tray in the background).
+tauri-plugin-single-instance = "2"
+# Optional "launch at login" so the card watcher can be running before a card
+# is inserted.
+tauri-plugin-autostart = "2"
 chrono = { version = "0.4", features = ["serde"] }
+# HTTP client for the iconik REST API (rustls so it builds on all CI platforms
+# without a system OpenSSL). Blocking client keeps the command code simple.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 printpdf = "0.7"
 windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }

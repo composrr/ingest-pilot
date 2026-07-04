@@ -135,8 +135,12 @@ export type AppSettings = {
   };
   camera_watcher: {
     auto_detect_cards: boolean;
-    prompt_on_card_detected: boolean;
+    // Raise the window and jump to Ingest with the card pre-selected on insert.
+    pop_open_on_card: boolean;
+    // Keep running in the background (close to tray) instead of quitting.
     tray_mode: boolean;
+    // Start the app at login so the watcher is running before a card is inserted.
+    launch_at_login: boolean;
   };
   file_selector: {
     default_view: "list" | "thumbs";
@@ -145,6 +149,16 @@ export type AppSettings = {
   };
   operator_name: string;
   custom_file_kinds: Record<string, string>;
+  iconik: IconikSettings;
+};
+
+export type IconikSettings = {
+  base_url: string;
+  app_id: string;
+  auth_token: string;
+  view_id: string;
+  view_name: string;
+  auto_push: boolean;
 };
 
 export type TokenContext = {

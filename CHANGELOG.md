@@ -10,6 +10,27 @@ and user-facing  -  this is what people read in the update popup.
 
 ## [Unreleased]
 
+## [0.1.8]
+
+### Added
+- **Runs in the background.** Closing the window now keeps Ingest Pilot alive in the
+  system tray (Windows) or menu bar (Mac) so it can keep watching for cards. Open it
+  again from the tray icon, or quit for real from there. Turn it off in Settings.
+- **Pops open when you insert a card.** With the card watcher running in the
+  background, plugging in a card brings the window to the front and jumps straight to
+  Ingest with that card already selected and scanning.
+- **Optional launch at login**, so the watcher is ready before you even open the app
+  (Settings, Camera Cards & Background).
+- **A sound when a transfer finishes** so you know it's done without watching the
+  screen. A bright chime when everything verified, a lower tone when a file needs
+  review.
+- **iconik metadata push.** Connect your iconik instance in Settings and push shoot
+  metadata straight onto assets after an ingest. No sidecar files, no CSV import.
+  Assets are matched by filename.
+
+### Changed
+- The delivery screen now reads "Transfer complete."
+
 ## [0.1.7]
 
 ### Fixed

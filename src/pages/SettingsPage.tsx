@@ -1,11 +1,17 @@
-import { Plus, RefreshCw, Save, Trash2, X } from "lucide-react";
+import { CheckCircle2, Plus, Plug, RefreshCw, Save, Trash2, X } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import { FloatingHelp } from "../components/FloatingHelp";
 import { OptionsTextField } from "../components/OptionsTextField";
 import { SelectMenu } from "../components/SelectMenu";
 import { currentLocalDate, slugifyToken } from "../lib/parameters";
-import { defaultAppSettings, getSettings, saveSettings } from "../lib/tauri";
-import type { AppSettings, PresetVariable, VariableType } from "../lib/types";
+import {
+  defaultAppSettings,
+  getSettings,
+  iconikListViews,
+  saveSettings,
+  type IconikView,
+} from "../lib/tauri";
+import type { AppSettings, IconikSettings, PresetVariable, VariableType } from "../lib/types";
 import { checkForUpdate } from "../lib/updater";
 import { useAppStore } from "../stores/appStore";
 
@@ -274,8 +280,8 @@ export function SettingsPage() {
           </SettingsSection>
 
           <SettingsSection
-            help="Near-term behavior for automatically finding camera cards."
-            title="Camera Cards"
+            help="Watch for camera cards and keep the app ready in the background so a card is ingest-ready the moment it's inserted."
+            title="Camera Cards & Background"
           >
             <ToggleRow
               checked={settings.camera_watcher.auto_detect_cards}
@@ -286,19 +292,27 @@ export function SettingsPage() {
               }
             />
             <ToggleRow
-              checked={settings.camera_watcher.prompt_on_card_detected}
-              description="Future tray behavior: prompt when a new camera card appears."
-              label="Prompt on card"
-              onChange={(prompt_on_card_detected) =>
-                updateSettings({ camera_watcher: { ...settings.camera_watcher, prompt_on_card_detected } })
+              checked={settings.camera_watcher.pop_open_on_card}
+              description="When a card is inserted, bring the window forward and jump to Ingest with it selected."
+              label="Pop open when a card is inserted"
+              onChange={(pop_open_on_card) =>
+                updateSettings({ camera_watcher: { ...settings.camera_watcher, pop_open_on_card } })
               }
             />
             <ToggleRow
               checked={settings.camera_watcher.tray_mode}
-              description="Future behavior: keep the app ready in the tray."
-              label="Tray mode"
+              description="Closing the window keeps Ingest Pilot running in the tray so it can keep watching. Quit from the tray icon."
+              label="Keep running in the background"
               onChange={(tray_mode) =>
                 updateSettings({ camera_watcher: { ...settings.camera_watcher, tray_mode } })
+              }
+            />
+            <ToggleRow
+              checked={settings.camera_watcher.launch_at_login}
+              description="Start Ingest Pilot automatically when you log in (applies on Save)."
+              label="Launch at login"
+              onChange={(launch_at_login) =>
+                updateSettings({ camera_watcher: { ...settings.camera_watcher, launch_at_login } })
               }
             />
           </SettingsSection>
@@ -358,6 +372,28 @@ export function SettingsPage() {
           <CustomFileKindsEditor
             onChange={(custom_file_kinds) => updateSettings({ custom_file_kinds })}
             value={settings.custom_file_kinds}
+          />
+        </section>
+
+        <section className="min-h-0 overflow-visible rounded-2xl border border-mist bg-white xl:col-span-2">
+          <div className="flex min-h-12 items-center justify-between gap-3 border-b border-mist px-3 py-2">
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5">
+                <h2 className="text-sm font-semibold">iconik Metadata</h2>
+                <FloatingHelp label="iconik metadata help">
+                  Connect your iconik instance so Ingest Pilot can write metadata straight onto assets after an
+                  ingest — no sidecar files, no CSV import. Assets are matched by filename. Your App-ID and
+                  Auth-Token stay on this machine.
+                </FloatingHelp>
+              </div>
+              <p className="mt-0.5 text-[11px] font-medium text-graphite">
+                Push shoot metadata to iconik assets directly over the API. Matched by filename, no extra files.
+              </p>
+            </div>
+          </div>
+          <IconikSection
+            onChange={(iconik) => updateSettings({ iconik })}
+            value={settings.iconik}
           />
         </section>
 
@@ -517,6 +553,176 @@ function TextRow({
         onChange={(event) => onChange(event.target.value)}
         value={value}
       />
+    </div>
+  );
+}
+
+// iconik connection: base URL + App-ID + Auth-Token, a "Test connection" that lists
+// the instance's metadata views, and a picker to choose which view assets are tagged
+// against. Credentials live in settings.iconik and never leave the user's machine
+// except in requests to their own iconik instance.
+function IconikSection({
+  onChange,
+  value,
+}: {
+  onChange: (next: IconikSettings) => void;
+  value: IconikSettings;
+}) {
+  const [status, setStatus] = useState<"idle" | "testing" | "connected" | "error">("idle");
+  const [message, setMessage] = useState<string | null>(null);
+  const [views, setViews] = useState<IconikView[]>([]);
+
+  const canTest = value.base_url.trim() && value.app_id.trim() && value.auth_token.trim();
+
+  async function testConnection() {
+    setStatus("testing");
+    setMessage(null);
+    try {
+      const loaded = await iconikListViews(value);
+      setViews(loaded);
+      setStatus("connected");
+      setMessage(
+        loaded.length
+          ? `Connected — ${loaded.length} metadata view${loaded.length === 1 ? "" : "s"} found.`
+          : "Connected, but this instance has no metadata views.",
+      );
+      // If the saved view no longer exists, clear it so we don't push to a stale id.
+      if (value.view_id && !loaded.some((view) => view.id === value.view_id)) {
+        onChange({ ...value, view_id: "", view_name: "" });
+      }
+    } catch (caught) {
+      setStatus("error");
+      setMessage(String(caught));
+      setViews([]);
+    }
+  }
+
+  const viewOptions = views.map((view) => ({ label: view.name, value: view.id }));
+
+  return (
+    <div className="grid gap-3 p-3 lg:grid-cols-2">
+      <div className="space-y-2">
+        <LabeledField
+          description="Your iconik URL. Usually https://app.iconik.io."
+          label="Base URL"
+        >
+          <input
+            className="h-8 w-full rounded-lg border border-mist bg-white px-2 text-xs outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+            onChange={(event) => onChange({ ...value, base_url: event.target.value })}
+            placeholder="https://app.iconik.io"
+            value={value.base_url}
+          />
+        </LabeledField>
+        <LabeledField
+          description="From iconik: Settings → Application tokens → App-ID."
+          label="App-ID"
+        >
+          <input
+            autoComplete="off"
+            className="h-8 w-full rounded-lg border border-mist bg-white px-2 font-mono text-xs outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+            onChange={(event) => onChange({ ...value, app_id: event.target.value })}
+            placeholder="00000000-0000-0000-0000-000000000000"
+            value={value.app_id}
+          />
+        </LabeledField>
+        <LabeledField
+          description="The paired Auth-Token. Stored locally on this machine only."
+          label="Auth-Token"
+        >
+          <input
+            autoComplete="off"
+            className="h-8 w-full rounded-lg border border-mist bg-white px-2 font-mono text-xs outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+            onChange={(event) => onChange({ ...value, auth_token: event.target.value })}
+            placeholder="Paste your Auth-Token"
+            type="password"
+            value={value.auth_token}
+          />
+        </LabeledField>
+      </div>
+
+      <div className="space-y-2">
+        <div className="flex items-center gap-2">
+          <button
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-mist bg-white px-2.5 text-xs font-semibold text-graphite transition hover:bg-porcelain disabled:opacity-40"
+            disabled={!canTest || status === "testing"}
+            onClick={() => void testConnection()}
+            type="button"
+          >
+            {status === "testing" ? (
+              <RefreshCw className="animate-spin" size={14} />
+            ) : status === "connected" ? (
+              <CheckCircle2 className="text-emerald-600" size={14} />
+            ) : (
+              <Plug size={14} />
+            )}
+            Test connection &amp; load views
+          </button>
+        </div>
+        {message ? (
+          <p className={`text-[11px] ${status === "error" ? "text-red-700" : "text-graphite"}`}>{message}</p>
+        ) : (
+          <p className="text-[11px] text-graphite/60">
+            Enter your credentials, then test the connection to load your metadata views.
+          </p>
+        )}
+
+        <LabeledField
+          description="Assets are tagged against this metadata view when pushing."
+          label="Metadata view"
+        >
+          {viewOptions.length ? (
+            <SelectMenu
+              onChange={(viewId) =>
+                onChange({
+                  ...value,
+                  view_id: viewId,
+                  view_name: views.find((view) => view.id === viewId)?.name ?? "",
+                })
+              }
+              options={viewOptions}
+              size="sm"
+              value={value.view_id}
+            />
+          ) : (
+            <div className="flex h-8 items-center rounded-lg border border-dashed border-mist px-2 text-[11px] text-graphite/60">
+              {value.view_name ? `Saved view: ${value.view_name}` : "Test the connection to choose a view."}
+            </div>
+          )}
+        </LabeledField>
+
+        <label className="flex items-start gap-2 pt-1">
+          <input
+            checked={value.auto_push}
+            className="mt-0.5 h-4 w-4 accent-signal"
+            onChange={(event) => onChange({ ...value, auto_push: event.target.checked })}
+            type="checkbox"
+          />
+          <span>
+            <span className="block text-xs font-semibold text-ink">Push automatically after ingest</span>
+            <span className="block text-[11px] text-graphite">
+              Offer to push metadata to iconik as soon as an ingest finishes.
+            </span>
+          </span>
+        </label>
+      </div>
+    </div>
+  );
+}
+
+function LabeledField({
+  children,
+  description,
+  label,
+}: {
+  children: ReactNode;
+  description: string;
+  label: string;
+}) {
+  return (
+    <div>
+      <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-graphite/50">{label}</div>
+      {children}
+      <p className="mt-0.5 text-[11px] text-graphite/70">{description}</p>
     </div>
   );
 }

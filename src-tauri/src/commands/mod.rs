@@ -1,4 +1,5 @@
 pub mod history;
+pub mod iconik;
 pub mod ingest;
 pub mod metadata_presets;
 pub mod naming_catalog;
