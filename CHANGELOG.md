@@ -10,6 +10,25 @@ and user-facing  -  this is what people read in the update popup.
 
 ## [Unreleased]
 
+## [0.1.11]
+
+### Added
+- **Shooter metadata field.** A new "Shooter" field type records who shot the video.
+  It defaults to whoever is running this copy of Ingest Pilot (your operator name),
+  shows your internal staff by default, and has a toggle to reveal pre-loaded
+  volunteers and contractors for big events. Add someone on the fly, or pre-load the
+  full roster in Settings > Shooters. Add a matching field to your iconik view and it
+  pushes with the rest of the metadata.
+
+### Changed
+- **Save now confirms.** Clicking Save in Settings turns the button green with a
+  "Saved" check and a short confirmation banner, so it's clear the change took.
+
+### Fixed
+- **Metadata presets appear on Ingest right away.** A metadata preset you import or
+  create in the Metadata tab now shows up on the Ingest screen immediately, instead of
+  only after restarting the app.
+
 ## [0.1.10]
 
 ### Changed

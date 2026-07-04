@@ -43,6 +43,7 @@ export const defaultAppSettings: AppSettings = {
   },
   operator_name: "",
   custom_file_kinds: {},
+  shooters: [],
   iconik: {
     base_url: "https://app.iconik.io",
     app_id: "",
@@ -506,6 +507,7 @@ function normalizeSettings(settings: Partial<AppSettings>): AppSettings {
     report_defaults: { ...defaultAppSettings.report_defaults, ...settings.report_defaults },
     camera_watcher: { ...defaultAppSettings.camera_watcher, ...settings.camera_watcher },
     file_selector: { ...defaultAppSettings.file_selector, ...settings.file_selector },
+    shooters: settings.shooters ?? [],
     iconik: { ...defaultAppSettings.iconik, ...settings.iconik },
   };
 }

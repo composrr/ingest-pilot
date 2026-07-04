@@ -1,7 +1,16 @@
 export type VariableType = "short_text" | "long_text" | "dropdown" | "boolean" | "date";
 
 // Metadata presets (Lightroom-style): reusable shoot-level metadata schemas.
-export type MetadataFieldType = "text" | "long_text" | "dropdown" | "multi_select" | "boolean" | "date";
+export type MetadataFieldType =
+  | "text"
+  | "long_text"
+  | "dropdown"
+  | "multi_select"
+  | "boolean"
+  | "date"
+  // Who shot the video: options come from the shared Shooters roster (Settings) and it
+  // defaults to this machine's operator.
+  | "shooter";
 
 export type MetadataField = {
   id: string;
@@ -149,7 +158,18 @@ export type AppSettings = {
   };
   operator_name: string;
   custom_file_kinds: Record<string, string>;
+  // Roster of shooters offered by a "Shooter" metadata field; the field defaults to
+  // operator_name (this machine's user). Staff show by default; volunteers/contractors
+  // are revealed on request so a big event can be pre-loaded without cluttering.
+  shooters: Shooter[];
   iconik: IconikSettings;
+};
+
+export type ShooterGroup = "staff" | "volunteer" | "contractor";
+
+export type Shooter = {
+  name: string;
+  group: ShooterGroup;
 };
 
 export type IconikSettings = {

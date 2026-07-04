@@ -11,7 +11,7 @@ import {
   saveSettings,
   type IconikView,
 } from "../lib/tauri";
-import type { AppSettings, IconikSettings, PresetVariable, VariableType } from "../lib/types";
+import type { AppSettings, IconikSettings, PresetVariable, Shooter, ShooterGroup, VariableType } from "../lib/types";
 import { checkForUpdate } from "../lib/updater";
 import { useAppStore } from "../stores/appStore";
 
@@ -27,6 +27,7 @@ export function SettingsPage() {
   const [settings, setSettings] = useState<AppSettings>(defaultAppSettings);
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [justSaved, setJustSaved] = useState(false);
   const setLastAction = useAppStore((state) => state.setLastAction);
   const setPendingUpdate = useAppStore((state) => state.setPendingUpdate);
   const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "uptodate" | "error">("idle");
@@ -82,11 +83,15 @@ export function SettingsPage() {
 
   async function saveDraft() {
     setIsSaving(true);
+    setJustSaved(false);
     setError(null);
     try {
       const saved = await saveSettings(settings);
       setSettings(saved);
       setLastAction("Settings saved");
+      // Flash a clear "Saved" confirmation so it's obvious the click took effect.
+      setJustSaved(true);
+      window.setTimeout(() => setJustSaved(false), 2600);
     } catch (caught) {
       setError(String(caught));
       setLastAction("Settings save failed");
@@ -126,15 +131,23 @@ export function SettingsPage() {
           </p>
         </div>
         <button
-          className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-signal px-2.5 text-xs font-semibold text-paper transition hover:bg-black disabled:opacity-40"
+          className={`inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold text-paper transition disabled:opacity-40 ${
+            justSaved ? "bg-emerald-600 hover:bg-emerald-600" : "bg-signal hover:bg-black"
+          }`}
           disabled={isSaving}
           onClick={() => void saveDraft()}
           type="button"
         >
-          <Save size={16} />
-          {isSaving ? "Saving..." : "Save"}
+          {justSaved ? <CheckCircle2 size={16} /> : <Save size={16} />}
+          {isSaving ? "Saving..." : justSaved ? "Saved" : "Save"}
         </button>
       </header>
+      {justSaved ? (
+        <div className="mb-3 flex items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800">
+          <CheckCircle2 size={16} />
+          Settings saved.
+        </div>
+      ) : null}
 
       {error ? (
         <div className="mb-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
@@ -314,6 +327,17 @@ export function SettingsPage() {
               onChange={(launch_at_login) =>
                 updateSettings({ camera_watcher: { ...settings.camera_watcher, launch_at_login } })
               }
+            />
+          </SettingsSection>
+
+          <SettingsSection
+            help="The people who shoot for your team. A 'Shooter' metadata field offers this list and defaults to this machine's operator name."
+            title="Shooters"
+          >
+            <ShootersEditor
+              onChange={(shooters) => updateSettings({ shooters })}
+              operator={settings.operator_name}
+              value={settings.shooters}
             />
           </SettingsSection>
 
@@ -879,6 +903,112 @@ function normalizeExtension(value: string): string | null {
 // the top-left drives two panels: the built-in extensions already covered for that role
 // (left) and the custom ones the user is adding for it (right). Stored in
 // settings.custom_file_kinds (ext -> kind) and applied globally.
+const SHOOTER_GROUPS: { value: ShooterGroup; label: string; plural: string }[] = [
+  { value: "staff", label: "Staff", plural: "Staff" },
+  { value: "volunteer", label: "Volunteer", plural: "Volunteers" },
+  { value: "contractor", label: "Contractor", plural: "Contractors" },
+];
+
+// The shared shooter roster, grouped into Staff / Volunteers / Contractors. Staff are
+// the internal team shown by default on a Shooter field; volunteers and contractors are
+// pre-loaded here (e.g. before a big serve day) and revealed on request at ingest so
+// they don't clutter the everyday list. The operator is pinned into Staff as "you".
+function ShootersEditor({
+  value,
+  operator,
+  onChange,
+}: {
+  value: Shooter[];
+  operator: string;
+  onChange: (next: Shooter[]) => void;
+}) {
+  const [newName, setNewName] = useState("");
+  const [newGroup, setNewGroup] = useState<ShooterGroup>("staff");
+
+  function addShooter() {
+    const name = newName.trim();
+    setNewName("");
+    if (name && !value.some((shooter) => shooter.name.toLowerCase() === name.toLowerCase())) {
+      onChange([...value, { name, group: newGroup }]);
+    }
+  }
+
+  function removeShooter(name: string) {
+    onChange(value.filter((shooter) => shooter.name !== name));
+  }
+
+  return (
+    <div className="space-y-2 p-3">
+      <div className="flex items-center gap-1.5">
+        <input
+          className="h-8 flex-1 rounded-lg border border-mist bg-white px-2 text-sm outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+          onChange={(event) => setNewName(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              addShooter();
+            }
+          }}
+          placeholder="Shooter name"
+          value={newName}
+        />
+        <div className="w-32">
+          <SelectMenu
+            onChange={(group) => setNewGroup(group as ShooterGroup)}
+            options={SHOOTER_GROUPS.map((entry) => ({ label: entry.label, value: entry.value }))}
+            size="sm"
+            value={newGroup}
+          />
+        </div>
+        <button
+          className="inline-flex h-8 items-center gap-1 rounded-lg border border-mist bg-white px-2.5 text-xs font-semibold text-graphite transition hover:bg-porcelain"
+          onClick={addShooter}
+          type="button"
+        >
+          <Plus size={13} />
+          Add
+        </button>
+      </div>
+
+      {SHOOTER_GROUPS.map((group) => {
+        const members = value.filter((shooter) => shooter.group === group.value);
+        const showOperator = group.value === "staff" && operator.trim().length > 0;
+        if (members.length === 0 && !showOperator) {
+          return null;
+        }
+        return (
+          <div key={group.value} className="rounded-lg border border-mist bg-white p-2">
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-graphite/50">{group.plural}</div>
+            <div className="flex flex-wrap gap-1">
+              {showOperator ? (
+                <span className="inline-flex items-center gap-1 rounded-md bg-lavender/25 px-2 py-0.5 text-[11px] font-semibold text-ink ring-1 ring-lavender/50">
+                  {operator.trim()} (you)
+                </span>
+              ) : null}
+              {members.map((shooter) => (
+                <span key={shooter.name} className="inline-flex items-center gap-1 rounded-md bg-porcelain py-0.5 pl-2 pr-1 text-[11px] font-semibold text-ink">
+                  {shooter.name}
+                  <button
+                    aria-label={`Remove ${shooter.name}`}
+                    className="rounded p-0.5 text-graphite/60 transition hover:text-red-700"
+                    onClick={() => removeShooter(shooter.name)}
+                    type="button"
+                  >
+                    <X size={11} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+      {value.length === 0 && !operator.trim() ? (
+        <p className="text-[11px] text-graphite/50">No shooters yet — add your staff, then pre-load volunteers/contractors for events.</p>
+      ) : null}
+    </div>
+  );
+}
+
 function CustomFileKindsEditor({
   value,
   onChange,

@@ -116,6 +116,7 @@ export function createDefaultMetadataPreset(nowIso: string): MetadataPreset {
         id: "people-story",
         name: "People / Story",
         fields: [
+          field("Shooter", "Shooter", "shooter"),
           field("Talent", "Talent", "text"),
           field("SubjectType", "Subject Type", "dropdown", ["Individual", "Couple", "Family", "Group", "Crowd"]),
           field("Diversity", "Diversity", "boolean"),

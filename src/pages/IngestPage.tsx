@@ -2,7 +2,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { Check, ChevronDown, ChevronUp, FolderOpen, Image, Layers, List, Plus, RefreshCw, Search, Wand2, X } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, FolderOpen, Image, Layers, List, Plus, RefreshCw, Search, Users, Wand2, X } from "lucide-react";
 import { type Dispatch, type SetStateAction, useEffect, useMemo, useRef, useState } from "react";
 import {
   defaultsForParameters,
@@ -17,6 +17,7 @@ import {
   defaultAppSettings,
   getPreset,
   getSettings,
+  saveSettings,
   listHistory,
   listPresets,
   openPath,
@@ -62,6 +63,7 @@ import type {
   Preset,
   PresetSummary,
   PresetVariable,
+  Shooter,
 } from "../lib/types";
 import { useAppStore } from "../stores/appStore";
 import { playCompletionSound } from "../lib/sound";
@@ -322,6 +324,7 @@ export function IngestPage() {
   const runStartRef = useRef<number>(0);
   const setLastAction = useAppStore((state) => state.setLastAction);
   const setRequestedView = useAppStore((state) => state.setRequestedView);
+  const metadataRev = useAppStore((state) => state.metadataRev);
   const sourcePath = sourcePaths[0] ?? "";
   const scan = useMemo(() => aggregateSourceScans(sourceScans), [sourceScans]);
   const destinationTargets = useMemo(
@@ -472,7 +475,7 @@ export function IngestPage() {
         // non-fatal
       }
     })();
-  }, []);
+  }, [metadataRev]);
   useEffect(() => {
     if (!metadataPresetId) {
       setMetadataPreset(null);
@@ -490,7 +493,13 @@ export function IngestPage() {
             const next = { ...current };
             for (const category of preset.categories) {
               for (const field of category.fields) {
-                if (!(field.id in next)) {
+                if (field.field_type === "shooter") {
+                  // Default the shooter to this machine's operator (fill if still blank
+                  // so it lands even if settings loaded after the preset).
+                  if (!next[field.id]) {
+                    next[field.id] = field.default || appSettings.operator_name || "";
+                  }
+                } else if (!(field.id in next)) {
                   next[field.id] = field.default ?? "";
                 }
               }
@@ -503,11 +512,35 @@ export function IngestPage() {
     return () => {
       active = false;
     };
-  }, [metadataPresetId]);
+  }, [metadataPresetId, appSettings.operator_name]);
   const hasMetadataValues = useMemo(
     () => metadataPreset != null && Object.values(metadataValues).some((value) => value.trim().length > 0),
     [metadataPreset, metadataValues],
   );
+
+  // Adds a shooter on the fly to the shared roster (persisted to settings) and returns
+  // the name so the field can select it. On-the-fly adds default to "volunteer" so they
+  // don't clutter the everyday staff list; recategorize in Settings. Used by the
+  // "+ Add shooter" option on a Shooter field.
+  async function addShooter(): Promise<string | null> {
+    const name = window.prompt("Add a shooter (name)")?.trim();
+    if (!name) {
+      return null;
+    }
+    if (!appSettings.shooters.some((shooter) => shooter.name.toLowerCase() === name.toLowerCase())) {
+      const next: AppSettings = {
+        ...appSettings,
+        shooters: [...appSettings.shooters, { name, group: "volunteer" as const }],
+      };
+      setAppSettings(next);
+      try {
+        await saveSettings(next);
+      } catch {
+        // non-fatal: the roster still updates in-session
+      }
+    }
+    return name;
+  }
 
   async function refreshPresets(preferredId = selectedPresetId) {
     setError(null);
@@ -2430,6 +2463,9 @@ export function IngestPage() {
             presetId={metadataPresetId}
             preset={metadataPreset}
             values={metadataValues}
+            shooters={appSettings.shooters}
+            operator={appSettings.operator_name}
+            onAddShooter={addShooter}
             onSelectPreset={(id) => {
               setMetadataPresetId(id);
               setIngestResult(null);
@@ -2768,15 +2804,118 @@ function QueueCardsSummary({ cards }: { cards: QueueCard[] }) {
 
 // Renders one metadata field input by type; values are stored as strings
 // (booleans as "true"/"false", multi-selects as comma-joined).
+const ADD_SHOOTER_VALUE = " add-shooter";
+
+// The Shooter field: a dropdown that defaults to this machine's operator and lists the
+// internal staff by default. A toggle reveals pre-loaded volunteers/contractors (for a
+// big event), and "+ Add shooter" adds someone on the fly.
+function ShooterFieldInput({
+  value,
+  onChange,
+  shooters,
+  operator,
+  onAddShooter,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  shooters: Shooter[];
+  operator: string;
+  onAddShooter: () => Promise<string | null>;
+}) {
+  const [showAll, setShowAll] = useState(false);
+  const op = operator.trim();
+
+  const staff: string[] = [];
+  if (op) {
+    staff.push(op);
+  }
+  for (const shooter of shooters) {
+    if (shooter.group === "staff" && shooter.name.trim() && !staff.includes(shooter.name)) {
+      staff.push(shooter.name);
+    }
+  }
+  const extended = shooters.filter((shooter) => shooter.group !== "staff");
+  const hasExtended = extended.length > 0;
+
+  const options = [
+    { label: "—", value: "" },
+    ...staff.map((name) => ({ label: name === op ? `${name} (you)` : name, value: name })),
+  ];
+  if (showAll) {
+    for (const shooter of extended) {
+      options.push({ label: `${shooter.name} · ${shooter.group}`, value: shooter.name });
+    }
+  }
+  // Keep the current value visible even if it belongs to a hidden tier.
+  if (value && !options.some((option) => option.value === value)) {
+    options.push({ label: value, value });
+  }
+  options.push({ label: "+ Add shooter…", value: ADD_SHOOTER_VALUE });
+
+  return (
+    <div className="flex items-center gap-1">
+      <div className="min-w-0 flex-1">
+        <SelectMenu
+          onChange={(next) => {
+            if (next === ADD_SHOOTER_VALUE) {
+              void onAddShooter().then((added) => {
+                if (added) {
+                  setShowAll(true);
+                  onChange(added);
+                }
+              });
+              return;
+            }
+            onChange(next);
+          }}
+          options={options}
+          size="sm"
+          value={value}
+        />
+      </div>
+      {hasExtended ? (
+        <button
+          aria-label={showAll ? "Show staff only" : "Show volunteers and contractors"}
+          className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-mist transition hover:bg-porcelain ${
+            showAll ? "bg-lavender/25 text-ink" : "bg-white text-graphite"
+          }`}
+          onClick={() => setShowAll((current) => !current)}
+          title={showAll ? "Show staff only" : "Show volunteers & contractors"}
+          type="button"
+        >
+          <Users size={14} />
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 function MetadataFieldInput({
   field,
   value,
   onChange,
+  shooters,
+  operator,
+  onAddShooter,
 }: {
   field: MetadataPreset["categories"][number]["fields"][number];
   value: string;
   onChange: (value: string) => void;
+  shooters: Shooter[];
+  operator: string;
+  onAddShooter: () => Promise<string | null>;
 }) {
+  if (field.field_type === "shooter") {
+    return (
+      <ShooterFieldInput
+        onAddShooter={onAddShooter}
+        onChange={onChange}
+        operator={operator}
+        shooters={shooters}
+        value={value}
+      />
+    );
+  }
   if (field.field_type === "long_text") {
     return (
       <textarea
@@ -2844,6 +2983,9 @@ function MetadataFillPanel({
   values,
   onSelectPreset,
   onChange,
+  shooters,
+  operator,
+  onAddShooter,
 }: {
   summaries: MetadataPresetSummary[];
   presetId: string;
@@ -2851,6 +2993,9 @@ function MetadataFillPanel({
   values: Record<string, string>;
   onSelectPreset: (id: string) => void;
   onChange: (fieldId: string, value: string) => void;
+  shooters: Shooter[];
+  operator: string;
+  onAddShooter: () => Promise<string | null>;
 }) {
   return (
     <section className="overflow-hidden rounded-2xl border border-mist bg-white">
@@ -2880,7 +3025,14 @@ function MetadataFillPanel({
                     <span className="truncate text-xs font-semibold text-graphite" title={field.label}>
                       {field.label}
                     </span>
-                    <MetadataFieldInput field={field} onChange={(value) => onChange(field.id, value)} value={values[field.id] ?? ""} />
+                    <MetadataFieldInput
+                      field={field}
+                      onAddShooter={onAddShooter}
+                      onChange={(value) => onChange(field.id, value)}
+                      operator={operator}
+                      shooters={shooters}
+                      value={values[field.id] ?? ""}
+                    />
                   </div>
                 ))}
                 {category.fields.length === 0 ? <p className="text-[11px] text-graphite/60">No fields.</p> : null}

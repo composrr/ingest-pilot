@@ -49,6 +49,9 @@ pub enum MetadataFieldType {
     MultiSelect,
     Boolean,
     Date,
+    /// Who shot the video. Options come from the shared Shooters roster (Settings)
+    /// rather than per-field options, and it defaults to this machine's operator.
+    Shooter,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

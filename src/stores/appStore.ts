@@ -14,6 +14,13 @@ type AppState = {
    */
   requestedView: string | null;
   setRequestedView: (view: string | null) => void;
+  /**
+   * Bumped whenever metadata presets change (created, imported, edited, deleted) so
+   * other screens (e.g. the ingest fill panel) can refresh their list instead of
+   * showing a stale one from mount.
+   */
+  metadataRev: number;
+  bumpMetadataRev: () => void;
 };
 
 export const useAppStore = create<AppState>((set) => ({
@@ -23,4 +30,6 @@ export const useAppStore = create<AppState>((set) => ({
   setPendingUpdate: (update) => set({ pendingUpdate: update }),
   requestedView: null,
   setRequestedView: (view) => set({ requestedView: view }),
+  metadataRev: 0,
+  bumpMetadataRev: () => set((state) => ({ metadataRev: state.metadataRev + 1 })),
 }));

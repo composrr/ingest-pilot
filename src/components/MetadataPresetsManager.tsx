@@ -20,6 +20,7 @@ import type {
   MetadataPreset,
   MetadataPresetSummary,
 } from "../lib/types";
+import { useAppStore } from "../stores/appStore";
 
 const FIELD_TYPE_OPTIONS: { label: string; value: MetadataFieldType }[] = [
   { label: "Text", value: "text" },
@@ -28,6 +29,7 @@ const FIELD_TYPE_OPTIONS: { label: string; value: MetadataFieldType }[] = [
   { label: "Multi-select", value: "multi_select" },
   { label: "Yes / No", value: "boolean" },
   { label: "Date", value: "date" },
+  { label: "Shooter", value: "shooter" },
 ];
 
 function slugify(value: string) {
@@ -51,6 +53,7 @@ export function MetadataPresetsManager({
   const [draft, setDraft] = useState<MetadataPreset | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
+  const bumpMetadataRev = useAppStore((state) => state.bumpMetadataRev);
 
   // iconik view import: pull metadata views (fields + controlled vocabulary) and turn
   // the chosen ones into metadata presets that mirror iconik exactly.
@@ -156,6 +159,9 @@ export function MetadataPresetsManager({
     const list = await listMetadataPresets();
     setSummaries(list);
     onChange?.();
+    // Signal other screens (e.g. the ingest fill panel) that the preset list changed
+    // so they don't show a stale list from their own mount.
+    bumpMetadataRev();
   }
 
   async function select(id: string) {
@@ -427,6 +433,8 @@ export function MetadataPresetsManager({
                             placeholder="Options, comma-separated"
                             value={field.options.join(", ")}
                           />
+                        ) : field.field_type === "shooter" ? (
+                          <span className="truncate px-1 text-[11px] text-graphite/60">from Shooters list · defaults to operator</span>
                         ) : (
                           <span className="truncate px-1 text-[11px] text-graphite/60">column: {field.id}</span>
                         )}

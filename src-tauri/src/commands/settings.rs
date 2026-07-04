@@ -24,9 +24,27 @@ pub struct AppSettings {
     /// Applied globally so those types route to the matching role's folder.
     #[serde(default)]
     pub custom_file_kinds: std::collections::BTreeMap<String, String>,
+    /// Roster of shooters/videographers, offered as the options for a "Shooter"
+    /// metadata field. The field defaults to `operator_name` (this machine's user).
+    /// Each has a `group` (staff / volunteer / contractor) so the ingest picker can
+    /// show internal staff by default and reveal volunteers/contractors on request.
+    #[serde(default)]
+    pub shooters: Vec<Shooter>,
     /// iconik connection for pushing metadata to assets via the API.
     #[serde(default)]
     pub iconik: IconikSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Shooter {
+    pub name: String,
+    /// "staff" (shown by default), "volunteer", or "contractor" (revealed on request).
+    #[serde(default = "default_shooter_group")]
+    pub group: String,
+}
+
+fn default_shooter_group() -> String {
+    "staff".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
