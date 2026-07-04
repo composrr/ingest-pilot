@@ -297,6 +297,9 @@ export function IngestPage() {
   // Which drop zone the OS drag is currently over ("queue" | "destinations" | "sources" | null).
   const [dragZone, setDragZone] = useState<DropZone | null>(null);
   const currentIngestJobId = useRef<string | null>(null);
+  // The source-path set most recently auto-scanned, so the auto-scan effect scans a
+  // given set of sources at most once (and never retries a failed set in a loop).
+  const autoScanSignatureRef = useRef("");
   // Live mirror of the queue so the async runner sees cards added mid-run.
   const queueRef = useRef<QueueCard[]>([]);
   // Dedupes scan-ahead: one in-flight scan promise per card id.
@@ -1654,13 +1657,39 @@ export function IngestPage() {
     setVariableValues(defaults);
   }, [ingestParameters]);
 
+  // Switching presets only changes routing and naming — both of which recompute
+  // reactively from (preset, scan) — not which files exist on the card. So keep the
+  // scan and the operator's file selection instead of wiping them and forcing a
+  // manual Rescan; only the prior delivery result is no longer valid.
   useEffect(() => {
-    setSourceScans([]);
     setIngestResult(null);
-    setSelectedRelativePaths(new Set());
-    setIngestProgress(null);
-    setIsFileSelectorOpen(false);
   }, [selectedPresetId]);
+
+  // Keep the file list in sync automatically: whenever there are source folders but
+  // no current scan (e.g. right after adding or removing a source), scan them so the
+  // operator never has to click Rescan to get "Files to Copy" back. Deduped by the
+  // attempted path set so a scan that fails or finds nothing isn't retried in a loop
+  // — the manual Rescan button stays available as the escape hatch. Honors the
+  // auto-scan-sources setting and skips queue mode (which scans its own cards).
+  useEffect(() => {
+    if (queueMode || !appSettings.ingest_defaults.auto_scan_sources) {
+      return;
+    }
+    if (sourcePaths.length === 0) {
+      autoScanSignatureRef.current = "";
+      return;
+    }
+    if (sourceScans.length > 0 || isScanning) {
+      return;
+    }
+    const signature = JSON.stringify(sourcePaths);
+    if (autoScanSignatureRef.current === signature) {
+      return;
+    }
+    autoScanSignatureRef.current = signature;
+    void scanPaths(sourcePaths);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queueMode, sourcePaths, sourceScans, isScanning, appSettings.ingest_defaults.auto_scan_sources]);
 
   useEffect(() => {
     setIngestResult(null);

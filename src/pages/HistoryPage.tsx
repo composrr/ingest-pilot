@@ -14,6 +14,9 @@ export function HistoryPage() {
     () => jobs.find((job) => job.id === selectedId) ?? jobs[0] ?? null,
     [jobs, selectedId],
   );
+  // The project/folder name actually created for this job (e.g. the name chosen via
+  // the Naming wizard). It's the last segment of the project root path.
+  const selectedProjectName = selectedJob ? folderName(selectedJob.root_path) : "";
   const totals = useMemo(
     () =>
       jobs.reduce(
@@ -123,31 +126,41 @@ export function HistoryPage() {
             </div>
           ) : (
             <div className="max-h-[560px] overflow-auto">
-              {jobs.map((job) => (
-                <button
-                  key={job.id}
-                  className={`grid w-full grid-cols-[22px_1fr_auto] items-center gap-2 border-b border-mist px-3 py-2 text-left last:border-b-0 ${
-                    selectedJob?.id === job.id ? "bg-lavender/20" : "bg-white hover:bg-porcelain/55"
-                  }`}
-                  onClick={() => setSelectedId(job.id)}
-                  type="button"
-                >
-                  {job.verification_failed > 0 ? (
-                    <XCircle className="text-red-700" size={17} />
-                  ) : (
-                    <CheckCircle2 className="text-emerald-700" size={17} />
-                  )}
-                  <span className="min-w-0">
-                    <span className="block truncate text-sm font-semibold text-ink">{job.preset_name}</span>
-                    <span className="block truncate text-xs text-graphite">
-                      {formatDate(job.completed_at)} / {job.files_copied} files / {formatBytes(job.bytes_copied)}
+              {jobs.map((job) => {
+                const projectName = folderName(job.root_path);
+                const showProject = Boolean(projectName) && projectName !== job.preset_name;
+                return (
+                  <button
+                    key={job.id}
+                    className={`grid w-full grid-cols-[22px_1fr_auto] items-center gap-2 border-b border-mist px-3 py-2 text-left last:border-b-0 ${
+                      selectedJob?.id === job.id ? "bg-lavender/20" : "bg-white hover:bg-porcelain/55"
+                    }`}
+                    onClick={() => setSelectedId(job.id)}
+                    type="button"
+                  >
+                    {job.verification_failed > 0 ? (
+                      <XCircle className="text-red-700" size={17} />
+                    ) : (
+                      <CheckCircle2 className="text-emerald-700" size={17} />
+                    )}
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-semibold text-ink">{job.preset_name}</span>
+                      {showProject ? (
+                        <span className="flex min-w-0 items-center gap-1 text-xs font-medium text-graphite" title={job.root_path}>
+                          <FolderOpen className="shrink-0 text-graphite/70" size={12} />
+                          <span className="min-w-0 truncate">{projectName}</span>
+                        </span>
+                      ) : null}
+                      <span className="block truncate text-[11px] text-graphite/80">
+                        {formatDate(job.completed_at)} / {job.files_copied} files / {formatBytes(job.bytes_copied)}
+                      </span>
                     </span>
-                  </span>
-                  <span className="rounded-full bg-porcelain px-2 py-0.5 text-[11px] font-semibold text-graphite">
-                    {job.destination_paths.length} dest
-                  </span>
-                </button>
-              ))}
+                    <span className="rounded-full bg-porcelain px-2 py-0.5 text-[11px] font-semibold text-graphite">
+                      {job.destination_paths.length} dest
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>
@@ -165,6 +178,12 @@ export function HistoryPage() {
                   )}
                   <h2 className="min-w-0 truncate text-base font-semibold">{selectedJob.preset_name}</h2>
                 </div>
+                {selectedProjectName && selectedProjectName !== selectedJob.preset_name ? (
+                  <p className="mt-1 flex items-center gap-1 text-sm font-semibold text-ink" title={selectedJob.root_path}>
+                    <FolderOpen className="shrink-0 text-graphite/70" size={14} />
+                    <span className="min-w-0 truncate">{selectedProjectName}</span>
+                  </p>
+                ) : null}
                 <p className="mt-1 text-xs font-medium text-graphite">{formatDate(selectedJob.completed_at)}</p>
               </div>
 
@@ -233,6 +252,12 @@ function SummaryTile({ label, value }: { label: string; value: string }) {
       <div className="mt-1 truncate text-lg font-semibold text-ink">{value}</div>
     </div>
   );
+}
+
+// The last path segment (project/folder name) of a project root, handling both
+// Windows and POSIX separators. Empty string if the path is blank.
+function folderName(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? "";
 }
 
 function formatDate(value: string) {

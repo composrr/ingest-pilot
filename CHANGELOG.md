@@ -10,6 +10,17 @@ and user-facing  -  this is what people read in the update popup.
 
 ## [Unreleased]
 
+## [0.1.10]
+
+### Changed
+- **History shows the project name.** Each job in the History list — and its detail
+  panel — now shows the project/folder name the ingest created (for example the name
+  you set in the Naming wizard) right under the preset name, so you can tell jobs
+  apart at a glance instead of seeing only the preset.
+- **The Ingest screen keeps your scan.** Switching presets or toggling a copy option
+  no longer clears "Files to copy" and makes you press Rescan — your scan and file
+  selection stay put, and sources rescan on their own when you add or remove one.
+
 ## [0.1.9]
 
 ### Added
