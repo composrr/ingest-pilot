@@ -6,8 +6,19 @@ name: Release
 # from the public repo with no auth. Push a version tag (e.g. `git tag v0.1.4 &&
 # git push origin v0.1.4`) and this runs automatically.
 #
+# Release flow (three jobs):
+#   1. create-release  - make one empty DRAFT release, output its numeric id.
+#   2. build (matrix)  - build/sign each platform and upload into that draft, one
+#                        platform at a time so the per-platform latest.json merges
+#                        don't race.
+#   3. publish         - flip the draft to published ONLY after all three succeed.
+# GitHub's "latest release" endpoint ignores drafts, so the updater keeps offering
+# the previous complete release until the new one is fully built and downloadable -
+# no mid-build "None of the fallback platforms" errors, and a build that fails on any
+# platform never reaches users (it just leaves a draft to inspect or delete).
+#
 # You can also trigger it manually (Actions -> Release -> Run workflow) for a tag
-# that already exists; tauri-action appends the built installers to that release.
+# that already exists.
 #
 # Required repository secrets (see docs/AUTO_UPDATE.md for the one-time setup):
 #   RELEASES_TOKEN                     PAT with contents:write on the releases repo
@@ -28,13 +39,69 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  # 1) Create an empty DRAFT release on the public releases repo and hand its numeric
+  # id to the build jobs. Drafts are invisible to the "latest release" endpoint, so the
+  # updater keeps offering the previous release until `publish` runs.
+  create-release:
+    name: Create draft release
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.mk.outputs.release_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Prepare release notes
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          VERSION="${TAG#v}"
+          NOTES_FILE="release-notes.md"
+          # Pull the changelog section for this version out of CHANGELOG.md:
+          # everything between "## [VERSION]" (or "## VERSION") and the next "## ".
+          if [ -f CHANGELOG.md ]; then
+            awk -v ver="$VERSION" '
+              $0 ~ "^## \\[?" ver "\\]?([^0-9]|$)" { grab=1; next }
+              grab && /^## / { exit }
+              grab { print }
+            ' CHANGELOG.md > "$NOTES_FILE"
+          fi
+          # Fall back to a generic note so the release always has a body.
+          if [ ! -s "$NOTES_FILE" ]; then
+            printf "Ingest Pilot %s\n\nThis release includes general improvements and fixes.\n" "$VERSION" > "$NOTES_FILE"
+          fi
+
+      - name: Create draft release
+        id: mk
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          REPO="composrr/ingest-pilot-releases"
+          # Reuse an existing draft for this tag if a prior run left one; else create it.
+          release_id=$(gh api "repos/$REPO/releases" --paginate \
+            -q '[.[] | select(.tag_name=="'"$TAG"'" and .draft==true)][0].id // empty')
+          if [ -z "$release_id" ]; then
+            gh release create "$TAG" \
+              --repo "$REPO" \
+              --draft \
+              --target main \
+              --title "Ingest Pilot $TAG" \
+              --notes-file release-notes.md
+            release_id=$(gh api "repos/$REPO/releases" --paginate \
+              -q '[.[] | select(.tag_name=="'"$TAG"'" and .draft==true)][0].id')
+          fi
+          echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
+
+  # 2) Build + sign each platform and upload into that one draft release. Serialized so
+  # the per-platform latest.json merges don't race (a Windows entry went missing in
+  # v0.1.6 when the platforms ran in parallel).
+  build:
     name: Build ${{ matrix.label }}
+    needs: create-release
     strategy:
       fail-fast: false
-      # Run one platform at a time: each job merges its platform into the shared
-      # latest.json on the release. Parallel jobs race on that file and can drop a
-      # platform (a Windows entry went missing in v0.1.6). Serializing avoids it.
       max-parallel: 1
       matrix:
         include:
@@ -90,53 +157,37 @@ jobs:
       - name: Install JS dependencies
         run: npm ci
 
-      - name: Prepare release notes
-        id: notes
-        shell: bash
-        run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          VERSION="${TAG#v}"
-          NOTES_FILE="$(mktemp)"
-          # Pull the changelog section for this version out of CHANGELOG.md:
-          # everything between "## [VERSION]" (or "## VERSION") and the next "## ".
-          if [ -f CHANGELOG.md ]; then
-            awk -v ver="$VERSION" '
-              $0 ~ "^## \\[?" ver "\\]?([^0-9]|$)" { grab=1; next }
-              grab && /^## / { exit }
-              grab { print }
-            ' CHANGELOG.md > "$NOTES_FILE"
-          fi
-          # Fall back to a generic note so latest.json always has a body.
-          if [ ! -s "$NOTES_FILE" ]; then
-            printf "Ingest Pilot %s\n\nThis release includes general improvements and fixes.\n" "$VERSION" > "$NOTES_FILE"
-          fi
-          {
-            echo "body<<__NOTES_EOF__"
-            cat "$NOTES_FILE"
-            echo "__NOTES_EOF__"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Build and publish release
+      - name: Build and upload to the draft release
         uses: tauri-apps/tauri-action@v0
         env:
           # PAT with contents:write on the PUBLIC releases repo (cross-repo publish).
           GITHUB_TOKEN: ${{ secrets.RELEASES_TOKEN }}
-          # Updater signing (minisign). The password is empty by design — the
+          # Updater signing (minisign). The password is empty by design - the
           # secret value itself is the protection. See docs/AUTO_UPDATE.md.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          # Publish installers + latest.json to the public releases repo so the
-          # updater can fetch them without auth, while source stays private.
+          # Upload installers + latest.json into the draft release created above.
           owner: composrr
           repo: ingest-pilot-releases
-          releaseCommitish: main
-          tagName: ${{ github.event.inputs.tag || github.ref_name }}
-          releaseName: Ingest Pilot ${{ github.event.inputs.tag || github.ref_name }}
-          releaseBody: ${{ steps.notes.outputs.body }}
-          releaseDraft: false
-          prerelease: false
+          releaseId: ${{ needs.create-release.outputs.release_id }}
           # Point the updater at the NSIS (setup.exe) bundle on Windows so the
           # "passive" install mode applies.
           updaterJsonPreferNsis: true
           args: ${{ matrix.args }}
+
+  # 3) Publish the draft only after ALL platforms built successfully. `needs: build`
+  # gates on the whole matrix, so a partial or failed build never goes live. Until this
+  # runs, the updater sees the previous release and offers nothing new.
+  publish:
+    name: Publish release
+    needs: [create-release, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish the draft release
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        run: |
+          gh api -X PATCH \
+            "repos/composrr/ingest-pilot-releases/releases/${{ needs.create-release.outputs.release_id }}" \
+            -F draft=false -f make_latest=true
