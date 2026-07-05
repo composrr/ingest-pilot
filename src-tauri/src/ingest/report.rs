@@ -25,8 +25,21 @@ pub struct ReportInput<'a> {
 }
 
 pub fn write_html_report(root_path: &Path, input: ReportInput<'_>) -> Result<PathBuf, String> {
+    write_html_report_to(root_path, None, input)
+}
+
+/// As `write_html_report`, but writes the .html into `output_dir` when given (the
+/// project name still comes from `root_path`, and thumbnail paths are absolute so they
+/// resolve wherever the report lands).
+pub fn write_html_report_to(
+    root_path: &Path,
+    output_dir: Option<&Path>,
+    input: ReportInput<'_>,
+) -> Result<PathBuf, String> {
     let project_name = project_name(root_path);
-    let path = root_path.join(format!(
+    let dir = output_dir.unwrap_or(root_path);
+    let _ = fs::create_dir_all(dir);
+    let path = dir.join(format!(
         "{}_IngestPilot_Report.html",
         sanitize_report_file_stem(&project_name)
     ));

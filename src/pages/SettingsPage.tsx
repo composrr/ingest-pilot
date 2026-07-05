@@ -668,6 +668,13 @@ export function SettingsPage() {
           </SettingsSection>
 
           <SettingsSection
+            help="Keyboard shortcuts for jumping around the app. They work anywhere except while typing in a field."
+            title="Keyboard Shortcuts"
+          >
+            <KeyboardShortcutsList />
+          </SettingsSection>
+
+          <SettingsSection
             help="Save your whole setup (settings, presets, metadata presets, naming catalog, shooters) to one file, or load it onto another machine. iconik credentials are left out of the export for safety."
             title="Backup & Transfer Config"
           >
@@ -1546,6 +1553,35 @@ function ConfigBundleRow({ onError }: { onError: (message: string | null) => voi
         </button>
       </div>
       {note ? <p className="text-[11px] text-graphite">{note}</p> : null}
+    </div>
+  );
+}
+
+const KEYBOARD_SHORTCUTS: { keys: string; action: string }[] = [
+  { keys: "Ctrl/⌘ + 1", action: "Home" },
+  { keys: "Ctrl/⌘ + 2", action: "Presets" },
+  { keys: "Ctrl/⌘ + 3", action: "Create Folders" },
+  { keys: "Ctrl/⌘ + 4", action: "Ingest Media" },
+  { keys: "Ctrl/⌘ + 5", action: "Metadata" },
+  { keys: "Ctrl/⌘ + 6", action: "Naming" },
+  { keys: "Ctrl/⌘ + 7", action: "History" },
+  { keys: "Ctrl/⌘ + 8", action: "Settings" },
+  { keys: "Ctrl/⌘ + ,", action: "Settings" },
+];
+
+function KeyboardShortcutsList() {
+  return (
+    <div className="p-3">
+      <div className="divide-y divide-mist rounded-lg border border-mist">
+        {KEYBOARD_SHORTCUTS.map((shortcut) => (
+          <div key={shortcut.keys} className="flex items-center justify-between gap-2 px-2 py-1.5 text-xs">
+            <span className="text-graphite">{shortcut.action}</span>
+            <span className="rounded-md bg-porcelain px-2 py-0.5 font-mono font-semibold text-ink ring-1 ring-mist">
+              {shortcut.keys}
+            </span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

@@ -38,6 +38,7 @@ import {
   getNamingCatalog,
   iconikPushMetadata,
   iconikViewFields,
+  resolveReportDir,
   showMainWindow,
   scanSource,
   detectCameraSources,
@@ -611,8 +612,8 @@ export function IngestPage() {
     }
   }
 
-  // Generate a printable PDF offload integrity proof at the project root and open it.
-  async function saveOffloadProof() {
+  // Generate a printable PDF offload integrity proof and (optionally) open it.
+  async function saveOffloadProof(openAfter = true) {
     if (!ingestResult || !preset) {
       return;
     }
@@ -631,8 +632,11 @@ export function IngestPage() {
         bytesCopied: ingestResult.bytes_copied,
         operator: appSettings.operator_name ?? "",
         generatedAt: new Date().toLocaleString(),
+        outputDir: resolveReportDir(ingestResult.root_path, appSettings.report_defaults.output_location),
       });
-      await openPath(path);
+      if (openAfter) {
+        await openPath(path);
+      }
       setLastAction("Offload proof saved");
     } catch (caught) {
       setError(String(caught));
@@ -648,7 +652,12 @@ export function IngestPage() {
     }
     setError(null);
     try {
-      const path = await exportReelIndex(ingestResult.root_path, ingestResult.copied_files, "csv");
+      const path = await exportReelIndex(
+        ingestResult.root_path,
+        ingestResult.copied_files,
+        "csv",
+        resolveReportDir(ingestResult.root_path, appSettings.report_defaults.output_location),
+      );
       await openPath(path);
       setLastAction("Reel index saved");
     } catch (caught) {
@@ -707,6 +716,7 @@ export function IngestPage() {
         metadataPreset,
         metadataValues,
         overrides,
+        resolveReportDir(ingestResult.root_path, appSettings.report_defaults.output_location),
       );
       await openPath(path);
       setLastAction("Metadata manifest saved");
@@ -783,7 +793,14 @@ export function IngestPage() {
     const overrides = await buildFolderMetadataOverrides(result.root_path);
     for (const root of roots) {
       try {
-        await exportMetadataManifest(root, result.copied_files, metadataPreset, metadataValues, overrides);
+        await exportMetadataManifest(
+          root,
+          result.copied_files,
+          metadataPreset,
+          metadataValues,
+          overrides,
+          resolveReportDir(root, appSettings.report_defaults.output_location),
+        );
       } catch {
         // best-effort per destination
       }
@@ -1080,7 +1097,9 @@ export function IngestPage() {
           entry.sourcePath,
           variableValues,
           isFirstForDestination ? destination : (knownRoot as string),
-          !deleteSidecars,
+          // preserve sidecars = don't delete them; Safe Mode's never-delete-source
+          // forces preservation regardless of the delete-sidecars toggle.
+          !deleteSidecars || appSettings.safety.never_delete_source,
           renameFiles,
           entry.cameraAlias?.trim() || undefined,
           entry.includedRelativePaths,
@@ -1115,6 +1134,28 @@ export function IngestPage() {
     if (selectedFileCount === 0) {
       setError("Select at least one file to copy.");
       return;
+    }
+    // Safe-mode guardrails: block before we start rather than fail partway.
+    const safety = appSettings.safety;
+    if (safety.min_verified_copies > destinationTargets.length) {
+      setError(
+        `Safe Mode requires ${safety.min_verified_copies} verified copies, but only ${destinationTargets.length} destination${destinationTargets.length === 1 ? " is" : "s are"} set. Add more backup destinations, or lower the requirement in Settings → Safety.`,
+      );
+      return;
+    }
+    if (safety.low_space_stop_percent > 0) {
+      for (const destination of destinationTargets) {
+        const space = spaceByPath[destination];
+        if (space && space.total_bytes > 0) {
+          const freePercent = (space.available_bytes / space.total_bytes) * 100;
+          if (freePercent < safety.low_space_stop_percent) {
+            setError(
+              `Safe Mode stop: "${destination}" is only ${freePercent.toFixed(1)}% free, below the ${safety.low_space_stop_percent}% limit. Free up space or lower the limit in Settings → Safety.`,
+            );
+            return;
+          }
+        }
+      }
     }
 
     setIsIngesting(true);
@@ -1551,6 +1592,7 @@ export function IngestPage() {
         result.mhl_path,
         reportJobId,
         Math.max(0, new Date(completedAt).getTime() - new Date(startedAt).getTime()),
+        resolveReportDir(result.root_path, appSettings.report_defaults.output_location),
       );
       setIngestResult((current) => (current ? { ...current, report_path: reportPath } : current));
       setReportBuild({ status: "ready", progress: null, path: reportPath });
@@ -1646,7 +1688,17 @@ export function IngestPage() {
     if (appSettings.camera_watcher.tray_mode) {
       void showMainWindow();
     }
-  }, [ingestResult, appSettings.camera_watcher.tray_mode, appSettings.sound.enabled, appSettings.sound.volume]);
+    // Safe Mode: always write the offload proof (silently) once per delivery.
+    if (appSettings.safety.always_write_offload_proof && preset) {
+      void saveOffloadProof(false);
+    }
+  }, [
+    ingestResult,
+    appSettings.camera_watcher.tray_mode,
+    appSettings.sound.enabled,
+    appSettings.sound.volume,
+    appSettings.safety.always_write_offload_proof,
+  ]);
 
   // When an ingest finishes, optionally push its metadata to iconik automatically
   // (Settings -> iconik -> "Push automatically after ingest"). Runs once per delivery.

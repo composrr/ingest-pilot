@@ -8,7 +8,7 @@ use crate::core::metadata_preset::MetadataPreset;
 use crate::ingest::metadata_manifest::{write_metadata_manifest, FolderMetadataOverride};
 use crate::ingest::offload_proof::{write_offload_proof, OffloadProofInput};
 use crate::ingest::reel_index::write_reel_index;
-use crate::ingest::report::{write_html_report, ReportInput};
+use crate::ingest::report::{write_html_report_to, ReportInput};
 use crate::ingest::scanner::ScanFileKind;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -151,10 +151,12 @@ pub async fn generate_offload_proof(
     bytes_copied: u64,
     operator: String,
     generated_at: String,
+    output_dir: Option<String>,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let path = write_offload_proof(OffloadProofInput {
             root_path: &root_path,
+            output_dir: output_dir.as_deref(),
             preset_name: &preset_name,
             source_paths: &source_paths,
             destination_paths: &destination_paths,
@@ -178,9 +180,10 @@ pub async fn export_reel_index(
     root_path: String,
     copied_files: Vec<CopiedFile>,
     format: String,
+    output_dir: Option<String>,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let path = write_reel_index(&root_path, &copied_files, format != "json")?;
+        let path = write_reel_index(&root_path, output_dir.as_deref(), &copied_files, format != "json")?;
         Ok(path.to_string_lossy().to_string())
     })
     .await
@@ -196,11 +199,18 @@ pub async fn export_metadata_manifest(
     preset: MetadataPreset,
     values: BTreeMap<String, String>,
     folder_overrides: Option<Vec<FolderMetadataOverride>>,
+    output_dir: Option<String>,
 ) -> Result<String, String> {
     let folder_overrides = folder_overrides.unwrap_or_default();
     tauri::async_runtime::spawn_blocking(move || {
-        let path =
-            write_metadata_manifest(&root_path, &copied_files, &preset, &values, &folder_overrides)?;
+        let path = write_metadata_manifest(
+            &root_path,
+            output_dir.as_deref(),
+            &copied_files,
+            &preset,
+            &values,
+            &folder_overrides,
+        )?;
         Ok(path.to_string_lossy().to_string())
     })
     .await
@@ -234,9 +244,11 @@ pub fn write_ingest_report(
     bytes_copied: u64,
     mhl_path: String,
     duration_ms: Option<u64>,
+    output_dir: Option<String>,
 ) -> Result<String, String> {
-    let report_path = write_html_report(
+    let report_path = write_html_report_to(
         &PathBuf::from(&root_path),
+        output_dir.as_deref().map(std::path::Path::new),
         ReportInput {
             preset_name: &preset_name,
             source_path: &source_path,
@@ -274,6 +286,7 @@ pub async fn generate_ingest_report(
     mhl_path: String,
     job_id: Option<String>,
     duration_ms: Option<u64>,
+    output_dir: Option<String>,
 ) -> Result<String, String> {
     let app_for_progress = app.clone();
     let emit_job_id = job_id.unwrap_or_default();
@@ -294,8 +307,9 @@ pub async fn generate_ingest_report(
         )?;
 
         // One combined report (lists every destination + each file's copy per destination).
-        let report_path = write_html_report(
+        let report_path = write_html_report_to(
             &PathBuf::from(&root_path),
+            output_dir.as_deref().map(std::path::Path::new),
             ReportInput {
                 preset_name: &preset_name,
                 source_path: &source_path,

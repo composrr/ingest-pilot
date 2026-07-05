@@ -10,6 +10,34 @@ and user-facing  -  this is what people read in the update popup.
 
 ## [Unreleased]
 
+## [0.1.12]
+
+### Added
+- **Settings is now tabbed** (Ingest, Automation, Metadata, Reports, Safety, Advanced,
+  About) with a **Show advanced** toggle that hides the power-user sections until you
+  want them.
+- **Choose where reports go.** Set the report, offload proof, reel index, and metadata
+  CSV to land in the project folder, a subfolder (like `_Admin`, with `{year}` tokens),
+  or one central folder, so your delivery folders stay clean. The verified MHL stays
+  with the media unless you move it too. In Settings > Reports.
+- **Data-safety guardrails** (Settings > Safety): a Safe Mode master switch, plus
+  never-delete-source, require-N-verified-copies (blocks starting an ingest with too
+  few destinations), a low-free-space hard stop, always-write-offload-proof, and
+  confirm-before-risky-changes.
+- **Sound controls** - turn the completion chime on/off, set its volume, and preview it.
+- **Pop-open style** for card insert: always bring to front, only if already in front,
+  or just notify without stealing focus.
+- **Drive nicknames**, a **naming-token reference**, **keyboard shortcuts**
+  (Ctrl/Cmd + 1-8 to switch views, Ctrl/Cmd + , for Settings), and a
+  **Reset to defaults** button.
+- **Backup & transfer your config** - export your whole setup (settings, presets,
+  metadata presets, naming catalog, shooters) to one file and import it on another
+  machine. iconik credentials are left out of the export.
+
+### Changed
+- Plainer wording throughout Settings ("Yes / No" instead of "Boolean", sidecars and
+  tray explained), and turning on a file-removing option now asks first.
+
 ## [0.1.11]
 
 ### Added

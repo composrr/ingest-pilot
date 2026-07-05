@@ -1,6 +1,6 @@
 [package]
 name = "ingest-pilot"
-version = "0.1.11"
+version = "0.1.12"
 description = "A desktop app for repeatable project scaffolding and verified media ingest."
 authors = ["Ingest Pilot"]
 edition = "2021"

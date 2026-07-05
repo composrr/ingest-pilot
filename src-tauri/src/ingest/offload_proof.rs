@@ -8,6 +8,8 @@ use crate::ingest::copier::CopiedFile;
 
 pub struct OffloadProofInput<'a> {
     pub root_path: &'a str,
+    /// Directory the PDF is written to (defaults to root_path when None).
+    pub output_dir: Option<&'a str>,
     pub preset_name: &'a str,
     pub source_paths: &'a [String],
     pub destination_paths: &'a [String],
@@ -124,7 +126,9 @@ pub fn write_offload_proof(input: OffloadProofInput<'_>) -> Result<PathBuf, Stri
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or("IngestPilot");
-    let out_path = Path::new(input.root_path).join(format!("{project_name}_OffloadProof.pdf"));
+    let dir = input.output_dir.unwrap_or(input.root_path);
+    let _ = std::fs::create_dir_all(dir);
+    let out_path = Path::new(dir).join(format!("{project_name}_OffloadProof.pdf"));
     doc.save(&mut BufWriter::new(
         File::create(&out_path).map_err(|error| format!("{}: {error}", out_path.display()))?,
     ))

@@ -25,6 +25,7 @@ pub struct FolderMetadataOverride {
 /// they can be mapped to the iconik metadata view.
 pub fn write_metadata_manifest(
     root_path: &str,
+    output_dir: Option<&str>,
     copied_files: &[CopiedFile],
     preset: &MetadataPreset,
     values: &BTreeMap<String, String>,
@@ -102,7 +103,9 @@ pub fn write_metadata_manifest(
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or("IngestPilot");
-    let out_path = Path::new(root_path).join(format!("{project}_Metadata.csv"));
+    let dir = output_dir.unwrap_or(root_path);
+    let _ = fs::create_dir_all(dir);
+    let out_path = Path::new(dir).join(format!("{project}_Metadata.csv"));
     fs::write(&out_path, text).map_err(|error| format!("{}: {error}", out_path.display()))?;
     Ok(out_path)
 }
@@ -201,7 +204,7 @@ mod tests {
         ]);
 
         let path =
-            write_metadata_manifest(&dir.to_string_lossy(), &files, &preset(), &values, &[]).expect("write");
+            write_metadata_manifest(&dir.to_string_lossy(), None, &files, &preset(), &values, &[]).expect("write");
         let body = fs::read_to_string(&path).expect("read");
         let lines: Vec<&str> = body.lines().collect();
 
@@ -265,7 +268,7 @@ mod tests {
         ];
 
         let path =
-            write_metadata_manifest(&dir.to_string_lossy(), &files, &preset(), &values, &overrides)
+            write_metadata_manifest(&dir.to_string_lossy(), None, &files, &preset(), &values, &overrides)
                 .expect("write");
         let body = fs::read_to_string(&path).expect("read");
         let lines: Vec<&str> = body.lines().collect();

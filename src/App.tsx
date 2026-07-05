@@ -60,6 +60,33 @@ export function App() {
     }
   }, [requestedView, setRequestedView]);
 
+  // Global keyboard shortcuts: Ctrl/Cmd + 1..8 jumps between the sidebar views, and
+  // Ctrl/Cmd + , opens Settings. Ignored while typing in an input/textarea.
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey) {
+        return;
+      }
+      const target = event.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
+        return;
+      }
+      if (event.key === ",") {
+        event.preventDefault();
+        selectView("settings");
+        return;
+      }
+      const index = Number(event.key);
+      if (Number.isInteger(index) && index >= 1 && index <= navItems.length) {
+        event.preventDefault();
+        selectView(navItems[index - 1].view);
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     if (localStorage.getItem("ingest-pilot:onboarding-complete") !== "true") {
       setIsWalkthroughOpen(true);

@@ -4,6 +4,7 @@ import type { NamingCatalog } from "./namingCatalog";
 import type {
   AppSettings,
   IconikSettings,
+  ReportOutputLocation,
   FolderNode,
   MetadataPreset,
   MetadataPresetSummary,
@@ -297,6 +298,7 @@ export async function exportMetadataManifest(
   preset: MetadataPreset,
   values: Record<string, string>,
   folderOverrides: FolderMetadataOverride[] = [],
+  outputDir?: string,
 ) {
   return invoke<string>("export_metadata_manifest", {
     rootPath,
@@ -304,6 +306,7 @@ export async function exportMetadataManifest(
     preset,
     values,
     folderOverrides,
+    outputDir: outputDir ?? null,
   });
 }
 
@@ -382,6 +385,29 @@ export async function retryFailedCopies(items: RetryFailedItem[]) {
   return invoke<CopiedFile[]>("retry_failed_copies", { items });
 }
 
+// Resolves where generated artifacts should be written for a given project root and
+// output-location config. Returns undefined for "root" (the writers default to root).
+// {year}/{month}/{day} tokens in a subfolder name are resolved to today.
+export function resolveReportDir(rootPath: string, loc: ReportOutputLocation): string | undefined {
+  if (!loc || loc.mode === "root") {
+    return undefined;
+  }
+  if (loc.mode === "custom") {
+    return loc.custom_path.trim() || undefined;
+  }
+  const now = new Date();
+  const sub = (loc.subfolder || "_Admin")
+    .replace(/\{year\}/g, String(now.getFullYear()))
+    .replace(/\{month\}/g, String(now.getMonth() + 1).padStart(2, "0"))
+    .replace(/\{day\}/g, String(now.getDate()).padStart(2, "0"))
+    .trim();
+  if (!sub) {
+    return undefined;
+  }
+  const sep = rootPath.includes("\\") ? "\\" : "/";
+  return `${rootPath.replace(/[\\/]+$/, "")}${sep}${sub}`;
+}
+
 export async function generateOffloadProof(args: {
   rootPath: string;
   presetName: string;
@@ -394,12 +420,18 @@ export async function generateOffloadProof(args: {
   bytesCopied: number;
   operator: string;
   generatedAt: string;
+  outputDir?: string;
 }) {
-  return invoke<string>("generate_offload_proof", args);
+  return invoke<string>("generate_offload_proof", { ...args, outputDir: args.outputDir ?? null });
 }
 
-export async function exportReelIndex(rootPath: string, copiedFiles: CopiedFile[], format: "csv" | "json") {
-  return invoke<string>("export_reel_index", { rootPath, copiedFiles, format });
+export async function exportReelIndex(
+  rootPath: string,
+  copiedFiles: CopiedFile[],
+  format: "csv" | "json",
+  outputDir?: string,
+) {
+  return invoke<string>("export_reel_index", { rootPath, copiedFiles, format, outputDir: outputDir ?? null });
 }
 
 export async function listHistory() {
@@ -427,6 +459,7 @@ export async function writeIngestReport(
   bytesCopied: number,
   mhlPath: string,
   durationMs?: number,
+  outputDir?: string,
 ) {
   return invoke<string>("write_ingest_report", {
     presetName,
@@ -441,6 +474,7 @@ export async function writeIngestReport(
     bytesCopied,
     mhlPath,
     durationMs: durationMs ?? null,
+    outputDir: outputDir ?? null,
   });
 }
 
@@ -459,6 +493,7 @@ export async function generateIngestReport(
   mhlPath: string,
   jobId: string,
   durationMs?: number,
+  outputDir?: string,
 ) {
   return invoke<string>("generate_ingest_report", {
     presetName,
@@ -475,6 +510,7 @@ export async function generateIngestReport(
     mhlPath,
     jobId,
     durationMs: durationMs ?? null,
+    outputDir: outputDir ?? null,
   });
 }
 

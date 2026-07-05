@@ -45,6 +45,7 @@ fn rows(copied_files: &[CopiedFile]) -> Vec<ReelRow> {
 /// derived camera) to the project root as CSV or JSON. Returns the file path.
 pub fn write_reel_index(
     root_path: &str,
+    output_dir: Option<&str>,
     copied_files: &[CopiedFile],
     as_csv: bool,
 ) -> Result<PathBuf, String> {
@@ -53,6 +54,8 @@ pub fn write_reel_index(
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or("IngestPilot");
+    let dir = output_dir.unwrap_or(root_path);
+    let _ = fs::create_dir_all(dir);
 
     let (ext, content) = if as_csv {
         let mut text = String::from(
@@ -80,7 +83,7 @@ pub fn write_reel_index(
         )
     };
 
-    let out_path = Path::new(root_path).join(format!("{project}_ReelIndex.{ext}"));
+    let out_path = Path::new(dir).join(format!("{project}_ReelIndex.{ext}"));
     fs::write(&out_path, content).map_err(|error| format!("{}: {error}", out_path.display()))?;
     Ok(out_path)
 }
