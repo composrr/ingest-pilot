@@ -163,6 +163,29 @@ jobs:
       - name: Install JS dependencies
         run: npm ci
 
+      - name: Prepare release notes
+        id: notes
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          VERSION="${TAG#v}"
+          NOTES_FILE="$(mktemp)"
+          if [ -f CHANGELOG.md ]; then
+            awk -v ver="$VERSION" '
+              $0 ~ "^## \\[?" ver "\\]?([^0-9]|$)" { grab=1; next }
+              grab && /^## / { exit }
+              grab { print }
+            ' CHANGELOG.md > "$NOTES_FILE"
+          fi
+          if [ ! -s "$NOTES_FILE" ]; then
+            printf "Ingest Pilot %s\n\nThis release includes general improvements and fixes.\n" "$VERSION" > "$NOTES_FILE"
+          fi
+          {
+            echo "body<<__NOTES_EOF__"
+            cat "$NOTES_FILE"
+            echo "__NOTES_EOF__"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build and upload to the draft release
         uses: tauri-apps/tauri-action@v0
         env:
@@ -177,6 +200,9 @@ jobs:
           owner: composrr
           repo: ingest-pilot-releases
           releaseId: ${{ needs.create-release.outputs.release_id }}
+          # Feed the changelog into latest.json's "notes" (the in-app What's-new box
+          # reads this, not the GitHub release body). Without it the box is blank.
+          releaseBody: ${{ steps.notes.outputs.body }}
           # Point the updater at the NSIS (setup.exe) bundle on Windows so the
           # "passive" install mode applies.
           updaterJsonPreferNsis: true
