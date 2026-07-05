@@ -33,6 +33,106 @@ pub struct AppSettings {
     /// iconik connection for pushing metadata to assets via the API.
     #[serde(default)]
     pub iconik: IconikSettings,
+    /// Completion-sound behavior (chime on transfer finish).
+    #[serde(default)]
+    pub sound: SoundSettings,
+    /// Data-integrity guardrails enforced on this machine.
+    #[serde(default)]
+    pub safety: SafetySettings,
+    /// Friendly names for card readers / removable volumes, keyed by the volume root
+    /// path (e.g. "E:\\" -> "CFexpress Reader #2"). Shown in Copy From / auto-detect.
+    #[serde(default)]
+    pub drive_nicknames: std::collections::BTreeMap<String, String>,
+    /// Show advanced settings sections in the UI. Off by default so newcomers see a
+    /// simpler surface.
+    #[serde(default)]
+    pub show_advanced: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SoundSettings {
+    /// Play a chime when a transfer finishes.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Volume 0-100.
+    #[serde(default = "default_sound_volume")]
+    pub volume: u8,
+}
+
+impl Default for SoundSettings {
+    fn default() -> Self {
+        Self { enabled: true, volume: 80 }
+    }
+}
+
+fn default_sound_volume() -> u8 {
+    80
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct SafetySettings {
+    /// Never delete source media on this machine, regardless of other options.
+    #[serde(default)]
+    pub never_delete_source: bool,
+    /// Hard-stop an ingest if a destination has less than this percent free (0 = off).
+    #[serde(default)]
+    pub low_space_stop_percent: u8,
+    /// Minimum number of destinations that must verify before an ingest is "done"
+    /// (1 = current behavior).
+    #[serde(default = "default_min_copies")]
+    pub min_verified_copies: u8,
+    /// Ask for confirmation before enabling destructive options (e.g. delete sidecars).
+    #[serde(default = "default_true")]
+    pub confirm_destructive: bool,
+    /// Always write the offload-proof PDF, even when reports are otherwise off.
+    #[serde(default)]
+    pub always_write_offload_proof: bool,
+    /// Master switch that turns on the strict guardrails as a group (UI convenience).
+    #[serde(default)]
+    pub safe_mode: bool,
+}
+
+fn default_min_copies() -> u8 {
+    1
+}
+
+/// Where the app writes the artifacts it generates (HTML report, offload-proof PDF,
+/// reel index, metadata CSV). The verified MHL manifest stays in the project root by
+/// default so the delivered folder self-verifies, unless `move_mhl` is set.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReportOutputLocation {
+    /// "root" (project folder), "subfolder" (a folder inside the project), or "custom"
+    /// (an absolute path collecting artifacts from every ingest).
+    #[serde(default = "default_report_mode")]
+    pub mode: String,
+    /// Subfolder name used when mode == "subfolder" (tokens like {year} allowed).
+    #[serde(default = "default_report_subfolder")]
+    pub subfolder: String,
+    /// Absolute path used when mode == "custom".
+    #[serde(default)]
+    pub custom_path: String,
+    /// Also relocate the MHL manifest (off by default: it belongs with the media).
+    #[serde(default)]
+    pub move_mhl: bool,
+}
+
+impl Default for ReportOutputLocation {
+    fn default() -> Self {
+        Self {
+            mode: default_report_mode(),
+            subfolder: default_report_subfolder(),
+            custom_path: String::new(),
+            move_mhl: false,
+        }
+    }
+}
+
+fn default_report_mode() -> String {
+    "root".to_string()
+}
+
+fn default_report_subfolder() -> String {
+    "_Admin".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -118,6 +218,9 @@ pub struct ReportDefaults {
     pub open_report_when_done: bool,
     #[serde(default)]
     pub notes_template: String,
+    /// Where generated artifacts land (root / subfolder / custom path).
+    #[serde(default)]
+    pub output_location: ReportOutputLocation,
 }
 
 impl Default for ReportDefaults {
@@ -127,6 +230,7 @@ impl Default for ReportDefaults {
             write_html_report: true,
             open_report_when_done: false,
             notes_template: String::new(),
+            output_location: ReportOutputLocation::default(),
         }
     }
 }
@@ -147,6 +251,11 @@ pub struct CameraWatcherSettings {
     /// is inserted). Applied to the OS on save.
     #[serde(default)]
     pub launch_at_login: bool,
+    /// How aggressively to surface the window when a card is inserted:
+    /// "always" (raise + focus), "if_frontmost" (only if the app is already in front),
+    /// or "notify" (don't steal focus). Applies when pop_open_on_card is on.
+    #[serde(default = "default_pop_open_mode")]
+    pub pop_open_mode: String,
 }
 
 impl Default for CameraWatcherSettings {
@@ -156,8 +265,13 @@ impl Default for CameraWatcherSettings {
             pop_open_on_card: true,
             tray_mode: true,
             launch_at_login: false,
+            pop_open_mode: default_pop_open_mode(),
         }
     }
+}
+
+fn default_pop_open_mode() -> String {
+    "always".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

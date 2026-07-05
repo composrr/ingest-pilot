@@ -1,3 +1,4 @@
+pub mod config_bundle;
 pub mod history;
 pub mod iconik;
 pub mod ingest;

@@ -141,6 +141,7 @@ export type AppSettings = {
     write_html_report: boolean;
     open_report_when_done: boolean;
     notes_template: string;
+    output_location: ReportOutputLocation;
   };
   camera_watcher: {
     auto_detect_cards: boolean;
@@ -150,6 +151,8 @@ export type AppSettings = {
     tray_mode: boolean;
     // Start the app at login so the watcher is running before a card is inserted.
     launch_at_login: boolean;
+    // How aggressively to surface the window on card insert.
+    pop_open_mode: PopOpenMode;
   };
   file_selector: {
     default_view: "list" | "thumbs";
@@ -163,6 +166,32 @@ export type AppSettings = {
   // are revealed on request so a big event can be pre-loaded without cluttering.
   shooters: Shooter[];
   iconik: IconikSettings;
+  // Completion-sound behavior.
+  sound: { enabled: boolean; volume: number };
+  // Data-integrity guardrails enforced on this machine.
+  safety: SafetySettings;
+  // Friendly names for card readers / volumes, keyed by volume root path.
+  drive_nicknames: Record<string, string>;
+  // Show advanced settings sections in the UI.
+  show_advanced: boolean;
+};
+
+export type PopOpenMode = "always" | "if_frontmost" | "notify";
+
+export type ReportOutputLocation = {
+  mode: "root" | "subfolder" | "custom";
+  subfolder: string;
+  custom_path: string;
+  move_mhl: boolean;
+};
+
+export type SafetySettings = {
+  never_delete_source: boolean;
+  low_space_stop_percent: number;
+  min_verified_copies: number;
+  confirm_destructive: boolean;
+  always_write_offload_proof: boolean;
+  safe_mode: boolean;
 };
 
 export type ShooterGroup = "staff" | "volunteer" | "contractor";

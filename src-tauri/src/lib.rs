@@ -135,6 +135,8 @@ pub fn run() {
             commands::iconik::iconik_list_views,
             commands::iconik::iconik_view_fields,
             commands::iconik::iconik_push_metadata,
+            commands::config_bundle::export_config_bundle,
+            commands::config_bundle::import_config_bundle,
             commands::ingest::scaffold_project,
             commands::ingest::run_ingest,
             commands::ingest::retry_failed_copies,

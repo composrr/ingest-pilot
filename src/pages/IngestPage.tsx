@@ -1640,11 +1640,13 @@ export function IngestPage() {
       return;
     }
     announcedRootRef.current = ingestResult.root_path;
-    playCompletionSound(ingestResult.verification_failed === 0);
+    if (appSettings.sound.enabled) {
+      playCompletionSound(ingestResult.verification_failed === 0, appSettings.sound.volume);
+    }
     if (appSettings.camera_watcher.tray_mode) {
       void showMainWindow();
     }
-  }, [ingestResult, appSettings.camera_watcher.tray_mode]);
+  }, [ingestResult, appSettings.camera_watcher.tray_mode, appSettings.sound.enabled, appSettings.sound.volume]);
 
   // When an ingest finishes, optionally push its metadata to iconik automatically
   // (Settings -> iconik -> "Push automatically after ingest"). Runs once per delivery.
@@ -1817,7 +1819,13 @@ export function IngestPage() {
         if (appSettings.camera_watcher.pop_open_on_card && cardBaselinePrimedRef.current) {
           const isNewCard = currentPaths.some((path) => !knownCardPathsRef.current.has(path));
           if (isNewCard) {
-            void showMainWindow();
+            // Respect the pop-open style: always raise, only-if-already-in-front, or
+            // just navigate in-app without stealing focus ("notify").
+            const mode = appSettings.camera_watcher.pop_open_mode;
+            const shouldRaise = mode === "always" || (mode === "if_frontmost" && document.hasFocus());
+            if (shouldRaise) {
+              void showMainWindow();
+            }
             setRequestedView("ingest");
           }
         }
@@ -1859,6 +1867,7 @@ export function IngestPage() {
   }, [
     appSettings.camera_watcher.auto_detect_cards,
     appSettings.camera_watcher.pop_open_on_card,
+    appSettings.camera_watcher.pop_open_mode,
     setLastAction,
     setRequestedView,
     sourcePath,

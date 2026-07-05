@@ -1,17 +1,29 @@
-import { CheckCircle2, Plus, Plug, RefreshCw, Save, Trash2, X } from "lucide-react";
+import { CheckCircle2, DownloadCloud, Plus, Plug, RefreshCw, RotateCcw, Save, Trash2, UploadCloud, X } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import { FloatingHelp } from "../components/FloatingHelp";
 import { OptionsTextField } from "../components/OptionsTextField";
 import { SelectMenu } from "../components/SelectMenu";
 import { currentLocalDate, slugifyToken } from "../lib/parameters";
+import { playCompletionSound } from "../lib/sound";
 import {
   defaultAppSettings,
+  exportConfigBundle,
   getSettings,
   iconikListViews,
+  importConfigBundle,
   saveSettings,
   type IconikView,
 } from "../lib/tauri";
-import type { AppSettings, IconikSettings, PresetVariable, Shooter, ShooterGroup, VariableType } from "../lib/types";
+import type {
+  AppSettings,
+  IconikSettings,
+  PresetVariable,
+  ReportOutputLocation,
+  SafetySettings,
+  Shooter,
+  ShooterGroup,
+  VariableType,
+} from "../lib/types";
 import { checkForUpdate } from "../lib/updater";
 import { useAppStore } from "../stores/appStore";
 
@@ -19,15 +31,34 @@ const variableTypes: Array<{ value: VariableType; label: string }> = [
   { value: "short_text", label: "Text" },
   { value: "long_text", label: "Long Text" },
   { value: "dropdown", label: "List" },
-  { value: "boolean", label: "Boolean" },
+  { value: "boolean", label: "Yes / No" },
   { value: "date", label: "Date" },
 ];
+
+type SettingsTab = "ingest" | "automation" | "metadata" | "reports" | "safety" | "advanced" | "about";
+
+const SETTINGS_TABS: { id: SettingsTab; label: string; advanced?: boolean }[] = [
+  { id: "ingest", label: "Ingest" },
+  { id: "automation", label: "Automation" },
+  { id: "metadata", label: "Metadata" },
+  { id: "reports", label: "Reports" },
+  { id: "safety", label: "Safety" },
+  { id: "advanced", label: "Advanced", advanced: true },
+  { id: "about", label: "About" },
+];
+
+// Renders its children only when its tab is active. Sections are wrapped in these so
+// the same flat JSX list can drive a tabbed layout without reordering the markup.
+function TabPanel({ active, tab, children }: { active: SettingsTab; tab: SettingsTab; children: ReactNode }) {
+  return active === tab ? <div className="space-y-2">{children}</div> : null;
+}
 
 export function SettingsPage() {
   const [settings, setSettings] = useState<AppSettings>(defaultAppSettings);
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
+  const [activeTab, setActiveTab] = useState<SettingsTab>("ingest");
   const setLastAction = useAppStore((state) => state.setLastAction);
   const setPendingUpdate = useAppStore((state) => state.setPendingUpdate);
   const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "uptodate" | "error">("idle");
@@ -100,6 +131,27 @@ export function SettingsPage() {
     }
   }
 
+  // Reset every setting back to defaults (after a confirm), then persist it so the
+  // change is immediate and obvious.
+  async function resetDefaults() {
+    if (!window.confirm("Reset all settings to their defaults? This can't be undone.")) {
+      return;
+    }
+    setIsSaving(true);
+    setError(null);
+    try {
+      const saved = await saveSettings(defaultAppSettings);
+      setSettings(saved);
+      setLastAction("Settings reset to defaults");
+      setJustSaved(true);
+      window.setTimeout(() => setJustSaved(false), 2600);
+    } catch (caught) {
+      setError(String(caught));
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
   async function checkUpdates() {
     setUpdateStatus("checking");
     setUpdateError(null);
@@ -130,18 +182,53 @@ export function SettingsPage() {
             Set how ingest starts, how reports are written, how file picking behaves, and which variables are shared everywhere.
           </p>
         </div>
-        <button
-          className={`inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold text-paper transition disabled:opacity-40 ${
-            justSaved ? "bg-emerald-600 hover:bg-emerald-600" : "bg-signal hover:bg-black"
-          }`}
-          disabled={isSaving}
-          onClick={() => void saveDraft()}
-          type="button"
-        >
-          {justSaved ? <CheckCircle2 size={16} /> : <Save size={16} />}
-          {isSaving ? "Saving..." : justSaved ? "Saved" : "Save"}
-        </button>
+        <div className="flex items-center gap-2">
+          <label className="flex cursor-pointer items-center gap-1.5 text-[11px] font-semibold text-graphite">
+            <input
+              checked={settings.show_advanced}
+              className="h-3.5 w-3.5 accent-signal"
+              onChange={(event) => updateSettings({ show_advanced: event.target.checked })}
+              type="checkbox"
+            />
+            Show advanced
+          </label>
+          <button
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-mist bg-white px-2.5 text-xs font-semibold text-graphite transition hover:bg-porcelain"
+            onClick={() => void resetDefaults()}
+            title="Reset all settings to their defaults"
+            type="button"
+          >
+            <RotateCcw size={14} />
+            Reset
+          </button>
+          <button
+            className={`inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold text-paper transition disabled:opacity-40 ${
+              justSaved ? "bg-emerald-600 hover:bg-emerald-600" : "bg-signal hover:bg-black"
+            }`}
+            disabled={isSaving}
+            onClick={() => void saveDraft()}
+            type="button"
+          >
+            {justSaved ? <CheckCircle2 size={16} /> : <Save size={16} />}
+            {isSaving ? "Saving..." : justSaved ? "Saved" : "Save"}
+          </button>
+        </div>
       </header>
+
+      <div className="mb-2 flex flex-wrap gap-1 border-b border-mist pb-2">
+        {SETTINGS_TABS.filter((tab) => !tab.advanced || settings.show_advanced).map((tab) => (
+          <button
+            key={tab.id}
+            className={`h-7 rounded-lg px-3 text-xs font-semibold transition ${
+              activeTab === tab.id ? "bg-signal text-paper" : "text-graphite hover:bg-porcelain"
+            }`}
+            onClick={() => setActiveTab(tab.id)}
+            type="button"
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
       {justSaved ? (
         <div className="mb-3 flex items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800">
           <CheckCircle2 size={16} />
@@ -155,8 +242,8 @@ export function SettingsPage() {
         </div>
       ) : null}
 
-      <div className="grid min-h-0 gap-2 xl:grid-cols-2">
-        <div className="grid min-h-0 gap-2">
+      <div>
+        <TabPanel active={activeTab} tab="ingest">
           <SettingsSection
             help="These defaults apply when opening Ingest Media. Presets can still override some behavior."
             title="Ingest Defaults"
@@ -179,11 +266,20 @@ export function SettingsPage() {
             />
             <ToggleRow
               checked={settings.ingest_defaults.delete_sidecars}
-              description="When enabled, XML/XMP/THM/CPF companions are skipped."
-              label="Delete sidecars by default"
-              onChange={(delete_sidecars) =>
-                updateSettings({ ingest_defaults: { ...settings.ingest_defaults, delete_sidecars } })
-              }
+              description="Skip the small helper files cameras write next to clips (XMP, THM, CPF). Your video/photo files are never touched."
+              label="Delete sidecar files by default"
+              onChange={(delete_sidecars) => {
+                if (
+                  delete_sidecars &&
+                  settings.safety.confirm_destructive &&
+                  !window.confirm(
+                    "Turn on 'Delete sidecar files'? During ingest this permanently skips XMP/THM/CPF helper files. Your video and photo files are never affected.",
+                  )
+                ) {
+                  return;
+                }
+                updateSettings({ ingest_defaults: { ...settings.ingest_defaults, delete_sidecars } });
+              }}
             />
             <CompactSelectRow
               description="Choose whether Ingest Media starts in new-project or existing-folder mode."
@@ -243,13 +339,20 @@ export function SettingsPage() {
               }
               value={settings.file_selector.thumbnail_size}
             />
+            <ToggleRow
+              checked={settings.file_selector.group_by_date}
+              description="Group files by the day they were shot in Choose Files (Today / Yesterday / date)."
+              label="Group files by date"
+              onChange={(group_by_date) =>
+                updateSettings({ file_selector: { ...settings.file_selector, group_by_date } })
+              }
+            />
           </SettingsSection>
+        </TabPanel>
 
-        </div>
-
-        <div className="grid min-h-0 content-start gap-2">
+        <TabPanel active={activeTab} tab="reports">
           <SettingsSection
-            help="Report settings are persisted now; deeper report layout controls will come as reporting matures."
+            help="What the app writes after an ingest and where it puts it."
             title="Reports"
           >
             <ToggleRow
@@ -293,6 +396,20 @@ export function SettingsPage() {
           </SettingsSection>
 
           <SettingsSection
+            help="Where the app writes the report, offload proof, reel index, and metadata CSV. Keep them in the project folder, tuck them in a subfolder, or send them to one central folder. The verified MHL stays with the media unless you move it too. Presets can override this."
+            title="Where reports go"
+          >
+            <ReportOutputEditor
+              onChange={(output_location) =>
+                updateSettings({ report_defaults: { ...settings.report_defaults, output_location } })
+              }
+              value={settings.report_defaults.output_location}
+            />
+          </SettingsSection>
+        </TabPanel>
+
+        <TabPanel active={activeTab} tab="automation">
+          <SettingsSection
             help="Watch for camera cards and keep the app ready in the background so a card is ingest-ready the moment it's inserted."
             title="Camera Cards & Background"
           >
@@ -328,8 +445,68 @@ export function SettingsPage() {
                 updateSettings({ camera_watcher: { ...settings.camera_watcher, launch_at_login } })
               }
             />
+            <CompactSelectRow
+              description="How the window behaves when a card is inserted."
+              label="Pop-open style"
+              onChange={(pop_open_mode) =>
+                updateSettings({
+                  camera_watcher: {
+                    ...settings.camera_watcher,
+                    pop_open_mode: pop_open_mode as AppSettings["camera_watcher"]["pop_open_mode"],
+                  },
+                })
+              }
+              options={[
+                { label: "Always bring to front", value: "always" },
+                { label: "Only if already in front", value: "if_frontmost" },
+                { label: "Notify, don't steal focus", value: "notify" },
+              ]}
+              value={settings.camera_watcher.pop_open_mode}
+            />
           </SettingsSection>
 
+          <SettingsSection
+            help="The chime that plays when a transfer finishes so you know it's done without watching the screen."
+            title="Sound"
+          >
+            <ToggleRow
+              checked={settings.sound.enabled}
+              description="Play a chime when a transfer finishes (a bright tone for verified, a lower one if review is needed)."
+              label="Completion sound"
+              onChange={(enabled) => updateSettings({ sound: { ...settings.sound, enabled } })}
+            />
+            <SliderRow
+              description="How loud the completion chime is."
+              label="Volume"
+              max={100}
+              min={0}
+              onChange={(volume) => updateSettings({ sound: { ...settings.sound, volume } })}
+              value={settings.sound.volume}
+            />
+            <div className="flex items-center justify-between px-3 py-1.5">
+              <span className="text-[11px] text-graphite">Preview the sound</span>
+              <button
+                className="inline-flex h-7 items-center gap-1 rounded-lg border border-mist bg-white px-2.5 text-xs font-semibold text-graphite transition hover:bg-porcelain"
+                onClick={() => playCompletionSound(true, settings.sound.volume)}
+                type="button"
+              >
+                Play
+              </button>
+            </div>
+          </SettingsSection>
+
+          <SettingsSection
+            help="Nickname your card readers and drives so auto-detect shows 'CFexpress Reader #2' instead of a bare drive letter."
+            title="Drive Nicknames"
+          >
+            <DriveNicknamesEditor
+              onChange={(drive_nicknames) => updateSettings({ drive_nicknames })}
+              value={settings.drive_nicknames}
+            />
+          </SettingsSection>
+        </TabPanel>
+
+        <TabPanel active={activeTab} tab="metadata">
           <SettingsSection
             help="The people who shoot for your team. A 'Shooter' metadata field offers this list and defaults to this machine's operator name."
             title="Shooters"
@@ -340,7 +517,21 @@ export function SettingsPage() {
               value={settings.shooters}
             />
           </SettingsSection>
+        </TabPanel>
 
+        <TabPanel active={activeTab} tab="safety">
+          <SettingsSection
+            help="Guardrails that enforce a safe data-management discipline on this machine. Turn on Safe Mode to switch on the whole set at once."
+            title="Data Safety"
+          >
+            <SafetyEditor
+              onChange={(safety) => updateSettings({ safety })}
+              value={settings.safety}
+            />
+          </SettingsSection>
+        </TabPanel>
+
+        <TabPanel active={activeTab} tab="about">
           <SettingsSection
             help="Ingest Pilot checks for updates on launch and asks before installing. You can also check manually here."
             title="About & Updates"
@@ -376,9 +567,10 @@ export function SettingsPage() {
               </span>
             </div>
           </SettingsSection>
-        </div>
+        </TabPanel>
 
-        <section className="min-h-0 overflow-visible rounded-2xl border border-mist bg-white xl:col-span-2">
+        <TabPanel active={activeTab} tab="ingest">
+        <section className="min-h-0 overflow-visible rounded-2xl border border-mist bg-white">
           <div className="flex min-h-12 items-center justify-between gap-3 border-b border-mist px-3 py-2">
             <div className="min-w-0">
               <div className="flex items-center gap-1.5">
@@ -398,8 +590,10 @@ export function SettingsPage() {
             value={settings.custom_file_kinds}
           />
         </section>
+        </TabPanel>
 
-        <section className="min-h-0 overflow-visible rounded-2xl border border-mist bg-white xl:col-span-2">
+        <TabPanel active={activeTab} tab="metadata">
+        <section className="min-h-0 overflow-visible rounded-2xl border border-mist bg-white">
           <div className="flex min-h-12 items-center justify-between gap-3 border-b border-mist px-3 py-2">
             <div className="min-w-0">
               <div className="flex items-center gap-1.5">
@@ -420,8 +614,10 @@ export function SettingsPage() {
             value={settings.iconik}
           />
         </section>
+        </TabPanel>
 
-        <section className="min-h-0 overflow-visible rounded-2xl border border-mist bg-white xl:col-span-2">
+        <TabPanel active={activeTab} tab="advanced">
+        <section className="min-h-0 overflow-visible rounded-2xl border border-mist bg-white">
             <div className="flex min-h-12 items-center justify-between gap-3 border-b border-mist px-3 py-2">
               <div className="min-w-0">
                 <div className="flex items-center gap-1.5">
@@ -463,6 +659,21 @@ export function SettingsPage() {
               )}
             </div>
           </section>
+
+          <SettingsSection
+            help="Every naming token you can use in patterns: built-in date/camera/clip tokens plus your Global Variables. This is a read-only reference — edit values above or in the Naming tab."
+            title="Naming Tokens"
+          >
+            <NamingTokenList globals={settings.global_parameters} />
+          </SettingsSection>
+
+          <SettingsSection
+            help="Save your whole setup (settings, presets, metadata presets, naming catalog, shooters) to one file, or load it onto another machine. iconik credentials are left out of the export for safety."
+            title="Backup & Transfer Config"
+          >
+            <ConfigBundleRow onError={setError} />
+          </SettingsSection>
+        </TabPanel>
       </div>
     </div>
   );
@@ -1005,6 +1216,369 @@ function ShootersEditor({
       {value.length === 0 && !operator.trim() ? (
         <p className="text-[11px] text-graphite/50">No shooters yet — add your staff, then pre-load volunteers/contractors for events.</p>
       ) : null}
+    </div>
+  );
+}
+
+// Where generated artifacts land: project root, a named subfolder inside the project,
+// or one central absolute path. The MHL can optionally move with them.
+function ReportOutputEditor({
+  value,
+  onChange,
+}: {
+  value: ReportOutputLocation;
+  onChange: (next: ReportOutputLocation) => void;
+}) {
+  return (
+    <div className="space-y-2 p-3">
+      <SelectMenu
+        onChange={(mode) => onChange({ ...value, mode: mode as ReportOutputLocation["mode"] })}
+        options={[
+          { label: "Project folder (root)", value: "root" },
+          { label: "A subfolder inside the project", value: "subfolder" },
+          { label: "One central folder (absolute path)", value: "custom" },
+        ]}
+        size="sm"
+        value={value.mode}
+      />
+      {value.mode === "subfolder" ? (
+        <div>
+          <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-graphite/50">Subfolder name</div>
+          <input
+            className="h-8 w-full rounded-lg border border-mist bg-white px-2 text-xs outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+            onChange={(event) => onChange({ ...value, subfolder: event.target.value })}
+            placeholder="_Admin"
+            value={value.subfolder}
+          />
+          <p className="mt-0.5 text-[11px] text-graphite/60">Tokens like {"{year}"} are allowed.</p>
+        </div>
+      ) : null}
+      {value.mode === "custom" ? (
+        <div>
+          <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-graphite/50">Folder path</div>
+          <input
+            className="h-8 w-full rounded-lg border border-mist bg-white px-2 font-mono text-xs outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+            onChange={(event) => onChange({ ...value, custom_path: event.target.value })}
+            placeholder="D:\\Ingest Reports"
+            value={value.custom_path}
+          />
+        </div>
+      ) : null}
+      {value.mode !== "root" ? (
+        <label className="flex items-start gap-2 pt-0.5">
+          <input
+            checked={value.move_mhl}
+            className="mt-0.5 h-4 w-4 accent-signal"
+            onChange={(event) => onChange({ ...value, move_mhl: event.target.checked })}
+            type="checkbox"
+          />
+          <span>
+            <span className="block text-xs font-semibold text-ink">Move the MHL manifest too</span>
+            <span className="block text-[11px] text-graphite">
+              Off by default — the checksum manifest belongs next to the media so the delivered folder self-verifies.
+            </span>
+          </span>
+        </label>
+      ) : null}
+    </div>
+  );
+}
+
+// A simple map of volume/drive path -> friendly name, shown in auto-detect / Copy From.
+function DriveNicknamesEditor({
+  value,
+  onChange,
+}: {
+  value: Record<string, string>;
+  onChange: (next: Record<string, string>) => void;
+}) {
+  const [path, setPath] = useState("");
+  const [name, setName] = useState("");
+  const entries = Object.entries(value);
+
+  function add() {
+    const key = path.trim();
+    const nickname = name.trim();
+    setPath("");
+    setName("");
+    if (key && nickname) {
+      onChange({ ...value, [key]: nickname });
+    }
+  }
+
+  return (
+    <div className="space-y-2 p-3">
+      {entries.length > 0 ? (
+        <div className="divide-y divide-mist rounded-lg border border-mist">
+          {entries.map(([key, nickname]) => (
+            <div key={key} className="flex items-center gap-2 px-2 py-1.5 text-xs">
+              <span className="w-24 shrink-0 truncate font-mono text-graphite" title={key}>{key}</span>
+              <span className="min-w-0 flex-1 truncate font-semibold text-ink">{nickname}</span>
+              <button
+                aria-label={`Remove ${nickname}`}
+                className="rounded p-0.5 text-graphite/60 transition hover:text-red-700"
+                onClick={() => {
+                  const next = { ...value };
+                  delete next[key];
+                  onChange(next);
+                }}
+                type="button"
+              >
+                <X size={12} />
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="text-[11px] text-graphite/50">No nicknames yet.</p>
+      )}
+      <div className="flex items-center gap-1.5">
+        <input
+          className="h-8 w-24 shrink-0 rounded-lg border border-mist bg-white px-2 font-mono text-xs outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+          onChange={(event) => setPath(event.target.value)}
+          placeholder="E:\\"
+          value={path}
+        />
+        <input
+          className="h-8 flex-1 rounded-lg border border-mist bg-white px-2 text-xs outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+          onChange={(event) => setName(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              add();
+            }
+          }}
+          placeholder="CFexpress Reader #2"
+          value={name}
+        />
+        <button
+          className="inline-flex h-8 items-center gap-1 rounded-lg border border-mist bg-white px-2.5 text-xs font-semibold text-graphite transition hover:bg-porcelain"
+          onClick={add}
+          type="button"
+        >
+          <Plus size={13} />
+          Add
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// The data-integrity guardrails. Safe Mode flips on the strict set as a group.
+function SafetyEditor({
+  value,
+  onChange,
+}: {
+  value: SafetySettings;
+  onChange: (next: SafetySettings) => void;
+}) {
+  function setSafeMode(safe_mode: boolean) {
+    if (safe_mode) {
+      onChange({
+        ...value,
+        safe_mode: true,
+        never_delete_source: true,
+        always_write_offload_proof: true,
+        confirm_destructive: true,
+        min_verified_copies: Math.max(2, value.min_verified_copies),
+        low_space_stop_percent: value.low_space_stop_percent > 0 ? value.low_space_stop_percent : 5,
+      });
+    } else {
+      onChange({ ...value, safe_mode: false });
+    }
+  }
+
+  return (
+    <div className="divide-y divide-mist">
+      <label className="flex items-start gap-2 px-3 py-2">
+        <input checked={value.safe_mode} className="mt-0.5 h-4 w-4 accent-signal" onChange={(event) => setSafeMode(event.target.checked)} type="checkbox" />
+        <span>
+          <span className="block text-xs font-semibold text-ink">Safe Mode</span>
+          <span className="block text-[11px] text-graphite">Turns on every guardrail below at once — good for volunteer/contractor laptops.</span>
+        </span>
+      </label>
+      <ToggleRow
+        checked={value.never_delete_source}
+        description="Block any deletion of source media on this machine, no matter what."
+        label="Never delete source"
+        onChange={(never_delete_source) => onChange({ ...value, never_delete_source })}
+      />
+      <ToggleRow
+        checked={value.always_write_offload_proof}
+        description="Always write the offload-proof PDF, even if other reports are off."
+        label="Always write offload proof"
+        onChange={(always_write_offload_proof) => onChange({ ...value, always_write_offload_proof })}
+      />
+      <ToggleRow
+        checked={value.confirm_destructive}
+        description="Ask before turning on anything that removes files (like deleting sidecars)."
+        label="Confirm risky changes"
+        onChange={(confirm_destructive) => onChange({ ...value, confirm_destructive })}
+      />
+      <NumberRow
+        description="Don't call an ingest done until at least this many destinations verify (1 = normal)."
+        label="Require verified copies"
+        max={5}
+        min={1}
+        onChange={(min_verified_copies) => onChange({ ...value, min_verified_copies })}
+        value={value.min_verified_copies}
+      />
+      <NumberRow
+        description="Hard-stop an ingest if a destination drops below this percent free (0 = off)."
+        label="Low-space stop (%)"
+        max={50}
+        min={0}
+        onChange={(low_space_stop_percent) => onChange({ ...value, low_space_stop_percent })}
+        value={value.low_space_stop_percent}
+      />
+    </div>
+  );
+}
+
+const BUILTIN_TOKENS: { token: string; meaning: string }[] = [
+  { token: "{year}", meaning: "4-digit capture year" },
+  { token: "{month}", meaning: "2-digit month" },
+  { token: "{day}", meaning: "2-digit day" },
+  { token: "{date}", meaning: "Full capture date (YYYY-MM-DD)" },
+  { token: "{camera}", meaning: "Camera label / alias" },
+  { token: "{clip}", meaning: "Clip number (zero-padded)" },
+  { token: "{original}", meaning: "Original file name" },
+  { token: "{ext}", meaning: "File extension" },
+];
+
+// Read-only reference of every naming token: built-ins plus the user's Global Variables.
+function NamingTokenList({ globals }: { globals: PresetVariable[] }) {
+  return (
+    <div className="space-y-2 p-3">
+      <div>
+        <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-graphite/50">Built-in</div>
+        <div className="divide-y divide-mist rounded-lg border border-mist">
+          {BUILTIN_TOKENS.map((entry) => (
+            <div key={entry.token} className="flex items-center gap-2 px-2 py-1 text-xs">
+              <span className="w-24 shrink-0 font-mono font-semibold text-signal">{entry.token}</span>
+              <span className="min-w-0 flex-1 truncate text-graphite">{entry.meaning}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div>
+        <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-graphite/50">Your global variables</div>
+        {globals.length === 0 ? (
+          <p className="text-[11px] text-graphite/50">None yet — add them above.</p>
+        ) : (
+          <div className="divide-y divide-mist rounded-lg border border-mist">
+            {globals.map((variable) => (
+              <div key={variable.id} className="flex items-center gap-2 px-2 py-1 text-xs">
+                <span className="w-24 shrink-0 font-mono font-semibold text-signal">{`{${variable.id}}`}</span>
+                <span className="min-w-0 flex-1 truncate text-graphite">{variable.name}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Export/import the whole config bundle to a file the user picks.
+function ConfigBundleRow({ onError }: { onError: (message: string | null) => void }) {
+  const [busy, setBusy] = useState<"idle" | "export" | "import">("idle");
+  const [note, setNote] = useState<string | null>(null);
+  const setLastAction = useAppStore((state) => state.setLastAction);
+
+  async function doExport() {
+    setBusy("export");
+    setNote(null);
+    onError(null);
+    try {
+      const path = await exportConfigBundle();
+      if (path) {
+        setNote(`Exported to ${path}`);
+        setLastAction("Config exported");
+      }
+    } catch (caught) {
+      onError(String(caught));
+    } finally {
+      setBusy("idle");
+    }
+  }
+
+  async function doImport() {
+    if (!window.confirm("Import a config bundle? This replaces your current settings, presets, metadata presets, naming catalog, and shooters.")) {
+      return;
+    }
+    setBusy("import");
+    setNote(null);
+    onError(null);
+    try {
+      const imported = await importConfigBundle();
+      if (imported) {
+        setNote("Imported. Restart the app to see everything.");
+        setLastAction("Config imported");
+      }
+    } catch (caught) {
+      onError(String(caught));
+    } finally {
+      setBusy("idle");
+    }
+  }
+
+  return (
+    <div className="space-y-2 p-3">
+      <div className="flex items-center gap-2">
+        <button
+          className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-mist bg-white px-2.5 text-xs font-semibold text-graphite transition hover:bg-porcelain disabled:opacity-40"
+          disabled={busy !== "idle"}
+          onClick={() => void doExport()}
+          type="button"
+        >
+          <DownloadCloud size={14} />
+          Export config
+        </button>
+        <button
+          className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-mist bg-white px-2.5 text-xs font-semibold text-graphite transition hover:bg-porcelain disabled:opacity-40"
+          disabled={busy !== "idle"}
+          onClick={() => void doImport()}
+          type="button"
+        >
+          <UploadCloud size={14} />
+          Import config
+        </button>
+      </div>
+      {note ? <p className="text-[11px] text-graphite">{note}</p> : null}
+    </div>
+  );
+}
+
+function NumberRow({
+  description,
+  label,
+  max,
+  min,
+  onChange,
+  value,
+}: {
+  description: string;
+  label: string;
+  max: number;
+  min: number;
+  onChange: (value: number) => void;
+  value: number;
+}) {
+  return (
+    <div className="grid min-h-10 grid-cols-[1fr_90px] items-center gap-3 px-3 py-1.5">
+      <span className="min-w-0">
+        <span className="block text-xs font-semibold text-ink">{label}</span>
+        <span className="block text-[11px] text-graphite">{description}</span>
+      </span>
+      <input
+        className="h-8 w-full rounded-lg border border-mist bg-white px-2 text-xs outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+        max={max}
+        min={min}
+        onChange={(event) => onChange(Math.max(min, Math.min(max, Number(event.target.value) || min)))}
+        type="number"
+        value={value}
+      />
     </div>
   );
 }

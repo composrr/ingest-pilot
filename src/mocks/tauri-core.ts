@@ -434,6 +434,11 @@ export async function invoke<T = unknown>(command: string, args?: Record<string,
       settings = a.settings as AppSettings;
       return settings as T;
 
+    case "export_config_bundle":
+      return undefined as T;
+    case "import_config_bundle":
+      return undefined as T;
+
     case "show_main_window":
       return undefined as T;
     case "set_launch_at_login":

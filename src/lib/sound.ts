@@ -2,8 +2,11 @@
 // ship or path-resolve, and it works identically in design mode. Success is a bright
 // rising triad; failure is a lower two-note fall so the operator can tell them apart
 // from across the room without looking.
-export function playCompletionSound(success: boolean): void {
+export function playCompletionSound(success: boolean, volume = 80): void {
   try {
+    if (volume <= 0) {
+      return;
+    }
     const AudioCtx: typeof AudioContext | undefined =
       window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
     if (!AudioCtx) {
@@ -15,6 +18,7 @@ export function playCompletionSound(success: boolean): void {
     const notes = success ? [523.25, 659.25, 783.99] : [311.13, 233.08];
     const step = success ? 0.12 : 0.2;
     const dur = success ? 0.2 : 0.32;
+    const peak = 0.28 * Math.max(0, Math.min(100, volume)) / 100;
 
     notes.forEach((freq, index) => {
       const osc = ctx.createOscillator();
@@ -23,7 +27,7 @@ export function playCompletionSound(success: boolean): void {
       osc.frequency.value = freq;
       const start = now + index * step;
       gain.gain.setValueAtTime(0.0001, start);
-      gain.gain.exponentialRampToValueAtTime(0.28, start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(peak, start + 0.02);
       gain.gain.exponentialRampToValueAtTime(0.0001, start + dur);
       osc.connect(gain);
       gain.connect(ctx.destination);

@@ -29,12 +29,14 @@ export const defaultAppSettings: AppSettings = {
     write_html_report: true,
     open_report_when_done: false,
     notes_template: "",
+    output_location: { mode: "root", subfolder: "_Admin", custom_path: "", move_mhl: false },
   },
   camera_watcher: {
     auto_detect_cards: true,
     pop_open_on_card: true,
     tray_mode: true,
     launch_at_login: false,
+    pop_open_mode: "always",
   },
   file_selector: {
     default_view: "list",
@@ -52,6 +54,17 @@ export const defaultAppSettings: AppSettings = {
     view_name: "",
     auto_push: false,
   },
+  sound: { enabled: true, volume: 80 },
+  safety: {
+    never_delete_source: false,
+    low_space_stop_percent: 0,
+    min_verified_copies: 1,
+    confirm_destructive: true,
+    always_write_offload_proof: false,
+    safe_mode: false,
+  },
+  drive_nicknames: {},
+  show_advanced: false,
 };
 
 export type DroppedTemplateItems = {
@@ -488,6 +501,37 @@ export async function getLaunchAtLogin() {
   }
 }
 
+// Exports the full config (settings, presets, metadata presets, naming catalog,
+// shooters) to a file the user picks. iconik credentials are omitted. Returns the
+// written path, or null if the user cancelled the save dialog.
+export async function exportConfigBundle() {
+  const { save } = await import("@tauri-apps/plugin-dialog");
+  const path = await save({
+    defaultPath: "Ingest Pilot Config.ingestpilot.json",
+    filters: [{ name: "Ingest Pilot Config", extensions: ["json"] }],
+  });
+  if (!path) {
+    return null;
+  }
+  await invoke("export_config_bundle", { path });
+  return path;
+}
+
+// Imports a config bundle the user picks, replacing local config. Returns true if a
+// file was imported, false if cancelled.
+export async function importConfigBundle() {
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const selected = await open({
+    multiple: false,
+    filters: [{ name: "Ingest Pilot Config", extensions: ["json"] }],
+  });
+  if (!selected || Array.isArray(selected)) {
+    return false;
+  }
+  await invoke("import_config_bundle", { path: selected });
+  return true;
+}
+
 export async function getSettings() {
   const settings = await invoke<Partial<AppSettings>>("get_settings");
   return normalizeSettings(settings);
@@ -504,11 +548,22 @@ function normalizeSettings(settings: Partial<AppSettings>): AppSettings {
     ...settings,
     global_parameters: settings.global_parameters ?? [],
     ingest_defaults: { ...defaultAppSettings.ingest_defaults, ...settings.ingest_defaults },
-    report_defaults: { ...defaultAppSettings.report_defaults, ...settings.report_defaults },
     camera_watcher: { ...defaultAppSettings.camera_watcher, ...settings.camera_watcher },
     file_selector: { ...defaultAppSettings.file_selector, ...settings.file_selector },
     shooters: settings.shooters ?? [],
     iconik: { ...defaultAppSettings.iconik, ...settings.iconik },
+    sound: { ...defaultAppSettings.sound, ...settings.sound },
+    safety: { ...defaultAppSettings.safety, ...settings.safety },
+    drive_nicknames: settings.drive_nicknames ?? {},
+    show_advanced: settings.show_advanced ?? false,
+    report_defaults: {
+      ...defaultAppSettings.report_defaults,
+      ...settings.report_defaults,
+      output_location: {
+        ...defaultAppSettings.report_defaults.output_location,
+        ...settings.report_defaults?.output_location,
+      },
+    },
   };
 }
 
