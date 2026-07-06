@@ -195,6 +195,17 @@ jobs:
           # secret value itself is the protection. See docs/AUTO_UPDATE.md.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Apple code-signing + notarization for the macOS build so Gatekeeper trusts
+          # it (no "unidentified developer" warnings). Reuses the same Developer ID
+          # certificate + notarization credentials as MCM Vault - add these six secrets
+          # to this repo (same values) and the macOS leg signs + notarizes itself. When
+          # the secrets are absent the build still succeeds, just unsigned.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           # Upload installers + latest.json into the draft release created above.
           owner: composrr
