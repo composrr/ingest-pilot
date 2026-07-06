@@ -10,6 +10,19 @@ and user-facing  -  this is what people read in the update popup.
 
 ## [Unreleased]
 
+## [0.1.13]
+
+### Added
+- **Search your naming templates.** A search box under the Templates header filters
+  templates by name as you type (matching groups open automatically).
+
+### Changed
+- **Naming templates are alphabetical.** Templates inside Video Capture and Delivered
+  Video are now sorted A-Z so they're easier to scan.
+- **Signed & notarized Mac builds.** The macOS app is now code-signed with a Developer
+  ID certificate and notarized by Apple, so it installs without the "unidentified
+  developer" warning.
+
 ## [0.1.12]
 
 ### Added

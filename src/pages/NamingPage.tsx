@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Check, Copy, ListTree, Plus, Save, Sparkles, Trash2, X } from "lucide-react";
+import { Check, Copy, ListTree, Plus, Save, Search, Sparkles, Trash2, X } from "lucide-react";
 import { FloatingHelp } from "../components/FloatingHelp";
 import { OptionsTextField } from "../components/OptionsTextField";
 import { SelectMenu } from "../components/SelectMenu";
@@ -45,6 +45,7 @@ export function NamingPage() {
   // Accordion: which group sections are expanded. Collapsed by default so long
   // catalogs stay tidy — you drill into a group to see its templates.
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const [search, setSearch] = useState("");
 
   useEffect(() => {
     if (!contextMenu) {
@@ -92,10 +93,15 @@ export function NamingPage() {
     [catalog.deliverables, selectedId],
   );
 
-  // Group templates by their (free-form) group, preserving first-seen order.
+  // Group templates by their (free-form) group (preserving first-seen group order),
+  // filtered by the search box and sorted alphabetically within each group.
   const groupedDeliverables = useMemo(() => {
+    const query = search.trim().toLowerCase();
     const map = new Map<string, NamingDeliverable[]>();
     for (const deliverable of catalog.deliverables) {
+      if (query && !deliverable.label.toLowerCase().includes(query)) {
+        continue;
+      }
       const group = deliverable.group.trim() || "Ungrouped";
       const list = map.get(group);
       if (list) {
@@ -104,8 +110,11 @@ export function NamingPage() {
         map.set(group, [deliverable]);
       }
     }
+    for (const list of map.values()) {
+      list.sort((a, b) => a.label.localeCompare(b.label));
+    }
     return [...map.entries()];
-  }, [catalog.deliverables]);
+  }, [catalog.deliverables, search]);
 
   // Keep the selected template's group open so the highlighted row is visible.
   useEffect(() => {
@@ -234,12 +243,33 @@ export function NamingPage() {
                 <Plus size={13} /> New
               </button>
             </div>
+            <div className="border-b border-mist px-2 py-1.5">
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-graphite/50" size={13} />
+                <input
+                  className="h-7 w-full rounded-lg border border-mist bg-white pl-7 pr-6 text-xs outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+                  onChange={(event) => setSearch(event.target.value)}
+                  placeholder="Search templates…"
+                  value={search}
+                />
+                {search ? (
+                  <button
+                    aria-label="Clear search"
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-graphite/50 transition hover:text-graphite"
+                    onClick={() => setSearch("")}
+                    type="button"
+                  >
+                    <X size={12} />
+                  </button>
+                ) : null}
+              </div>
+            </div>
             {/* Accordion — "hairline editorial" style: thin dividers, uppercase group
                 headers with a count and a + that rotates to ×, and a curtain-reveal
                 (grid-rows expand + items slide down) on open. */}
             <div className="min-h-0 flex-1 overflow-auto px-3">
               {groupedDeliverables.map(([group, items]) => {
-                const open = expandedGroups.has(group);
+                const open = expandedGroups.has(group) || search.trim().length > 0;
                 return (
                   <div key={group} className="border-t border-mist/70 first:border-t-0">
                     <button
@@ -293,6 +323,8 @@ export function NamingPage() {
               })}
               {catalog.deliverables.length === 0 ? (
                 <p className="px-2 py-3 text-xs text-graphite">No templates yet — add one.</p>
+              ) : groupedDeliverables.length === 0 ? (
+                <p className="px-2 py-3 text-xs text-graphite">No templates match “{search}”.</p>
               ) : null}
             </div>
           </aside>
