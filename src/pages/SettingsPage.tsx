@@ -60,6 +60,7 @@ export function SettingsPage() {
   const [justSaved, setJustSaved] = useState(false);
   const [activeTab, setActiveTab] = useState<SettingsTab>("ingest");
   const setLastAction = useAppStore((state) => state.setLastAction);
+  const bumpSettingsRev = useAppStore((state) => state.bumpSettingsRev);
   const setPendingUpdate = useAppStore((state) => state.setPendingUpdate);
   const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "uptodate" | "error">("idle");
   const [updateError, setUpdateError] = useState<string | null>(null);
@@ -119,6 +120,8 @@ export function SettingsPage() {
     try {
       const saved = await saveSettings(settings);
       setSettings(saved);
+      // Signal the always-mounted Ingest screen to re-read settings.
+      bumpSettingsRev();
       setLastAction("Settings saved");
       // Flash a clear "Saved" confirmation so it's obvious the click took effect.
       setJustSaved(true);
@@ -142,6 +145,7 @@ export function SettingsPage() {
     try {
       const saved = await saveSettings(defaultAppSettings);
       setSettings(saved);
+      bumpSettingsRev();
       setLastAction("Settings reset to defaults");
       setJustSaved(true);
       window.setTimeout(() => setJustSaved(false), 2600);

@@ -17,6 +17,7 @@ import {
 import { currentLocalDate, mergeGlobalAndPresetParameters, slugifyToken } from "../lib/parameters";
 import { getMetadataPreset, getNamingCatalog, getSettings, listMetadataPresets, saveNamingCatalog } from "../lib/tauri";
 import { getTokenDefinitions, parsePattern } from "../lib/tokens";
+import { useAppStore } from "../stores/appStore";
 import type {
   FolderNode,
   MetadataField,
@@ -130,6 +131,7 @@ function PresetMetadataValueInput({
 }
 
 export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorProps) {
+  const metadataRev = useAppStore((state) => state.metadataRev);
   const [draft, setDraft] = useState<Preset>(initialPreset);
   const [variableRowKeys, setVariableRowKeys] = useState(() =>
     initialPreset.variables.map(() => createRowKey()),
@@ -147,7 +149,7 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
 
   useEffect(() => {
     refreshMetadataSummaries();
-  }, []);
+  }, [metadataRev]);
 
   useEffect(() => {
     getNamingCatalog()
@@ -170,7 +172,9 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
     return () => {
       active = false;
     };
-  }, [draft.metadata_preset_id]);
+    // metadataRev: refresh the tag picker when the attached preset's fields are
+    // edited in the Manage-metadata modal.
+  }, [draft.metadata_preset_id, metadataRev]);
 
   // "New naming preset": save this preset's current folder-name pattern (and
   // pre-folder path) into the naming catalog so it's reusable from the Naming tab

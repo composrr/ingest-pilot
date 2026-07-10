@@ -15,12 +15,17 @@ type AppState = {
   requestedView: string | null;
   setRequestedView: (view: string | null) => void;
   /**
-   * Bumped whenever metadata presets change (created, imported, edited, deleted) so
-   * other screens (e.g. the ingest fill panel) can refresh their list instead of
-   * showing a stale one from mount.
+   * Revision counters bumped whenever a shared data domain changes, so the
+   * permanently-mounted Ingest screen (which loads its data once) can re-fetch
+   * instead of showing a stale copy until a full reload. Pages reached via
+   * navigation already remount + re-fetch, so they don't need these.
    */
   metadataRev: number;
   bumpMetadataRev: () => void;
+  presetsRev: number;
+  bumpPresetsRev: () => void;
+  settingsRev: number;
+  bumpSettingsRev: () => void;
 };
 
 export const useAppStore = create<AppState>((set) => ({
@@ -32,4 +37,8 @@ export const useAppStore = create<AppState>((set) => ({
   setRequestedView: (view) => set({ requestedView: view }),
   metadataRev: 0,
   bumpMetadataRev: () => set((state) => ({ metadataRev: state.metadataRev + 1 })),
+  presetsRev: 0,
+  bumpPresetsRev: () => set((state) => ({ presetsRev: state.presetsRev + 1 })),
+  settingsRev: 0,
+  bumpSettingsRev: () => set((state) => ({ settingsRev: state.settingsRev + 1 })),
 }));

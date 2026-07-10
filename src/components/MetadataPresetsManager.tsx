@@ -144,6 +144,8 @@ export function MetadataPresetsManager({
       if (list.length === 0) {
         await saveMetadataPreset(createDefaultMetadataPreset(new Date().toISOString()));
         list = await listMetadataPresets();
+        // A freshly-seeded default preset is a change other screens need to see.
+        bumpMetadataRev();
       }
       setSummaries(list);
       const initial = (selectedId && list.find((item) => item.id === selectedId)?.id) || list[0]?.id;

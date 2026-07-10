@@ -43,6 +43,7 @@ export function PresetsPage() {
   const [isLibraryCollapsed, setIsLibraryCollapsed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const setLastAction = useAppStore((state) => state.setLastAction);
+  const bumpPresetsRev = useAppStore((state) => state.bumpPresetsRev);
 
   const selectedSummary = useMemo(
     () => presets.find((preset) => preset.id === selectedId) ?? null,
@@ -61,6 +62,8 @@ export function PresetsPage() {
           : nextPresets[0]?.id ?? null;
       setSelectedId(nextSelectedId);
       setLastAction(`Loaded ${nextPresets.length} preset${nextPresets.length === 1 ? "" : "s"}`);
+      // Signal the always-mounted Ingest screen to re-fetch its preset list/detail.
+      bumpPresetsRev();
     } catch (caught) {
       setError(String(caught));
       setLastAction("Preset load failed");
@@ -205,6 +208,7 @@ export function PresetsPage() {
       setPresets(remaining);
       setSelectedId(remaining[0]?.id ?? null);
       setLastAction(`${name} deleted`);
+      bumpPresetsRev();
     } catch (caught) {
       setError(String(caught));
       setLastAction("Preset delete failed");

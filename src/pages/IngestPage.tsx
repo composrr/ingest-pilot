@@ -326,6 +326,8 @@ export function IngestPage() {
   const setLastAction = useAppStore((state) => state.setLastAction);
   const setRequestedView = useAppStore((state) => state.setRequestedView);
   const metadataRev = useAppStore((state) => state.metadataRev);
+  const presetsRev = useAppStore((state) => state.presetsRev);
+  const settingsRev = useAppStore((state) => state.settingsRev);
   const sourcePath = sourcePaths[0] ?? "";
   const scan = useMemo(() => aggregateSourceScans(sourceScans), [sourceScans]);
   const destinationTargets = useMemo(
@@ -513,7 +515,8 @@ export function IngestPage() {
     return () => {
       active = false;
     };
-  }, [metadataPresetId, appSettings.operator_name]);
+    // metadataRev: re-fetch when the selected metadata preset is edited/deleted in the Metadata tab.
+  }, [metadataPresetId, appSettings.operator_name, metadataRev]);
   const hasMetadataValues = useMemo(
     () => metadataPreset != null && Object.values(metadataValues).some((value) => value.trim().length > 0),
     [metadataPreset, metadataValues],
@@ -1646,23 +1649,43 @@ export function IngestPage() {
     }
   }
 
+  // Settings: refetch on mount and whenever Settings is saved in another tab
+  // (settingsRev). The ingest-defaults toggles (rename/sidecars/destination mode)
+  // seed the in-session controls only ONCE so a later settings save doesn't clobber
+  // the choices the operator made on this screen mid-setup.
+  const ingestDefaultsSeeded = useRef(false);
   useEffect(() => {
     getSettings()
       .then((settings) => {
         setAppSettings(settings);
         setGlobalParameters(settings.global_parameters);
-        setRenameFiles(settings.ingest_defaults.rename_files);
-        setDeleteSidecars(settings.ingest_defaults.delete_sidecars);
-        setDestinationMode(settings.ingest_defaults.destination_mode);
+        if (!ingestDefaultsSeeded.current) {
+          ingestDefaultsSeeded.current = true;
+          setRenameFiles(settings.ingest_defaults.rename_files);
+          setDeleteSidecars(settings.ingest_defaults.delete_sidecars);
+          setDestinationMode(settings.ingest_defaults.destination_mode);
+        }
       })
       .catch(() => setGlobalParameters([]));
-    void refreshPresets("");
+  }, [settingsRev]);
+
+  useEffect(() => {
     void refreshRecentJobs();
   }, []);
 
+  // Presets: refetch the list on mount and whenever a preset is created/edited/
+  // deleted in the Presets tab (presetsRev). Uses the default preferredId
+  // (selectedPresetId) so a refresh keeps the operator's current selection —
+  // which is "" on first mount, so mount still lands on the first preset.
+  useEffect(() => {
+    void refreshPresets();
+  }, [presetsRev]);
+
+  // Reload the selected preset's routing rules when it changes, or when it was
+  // edited in place in the Presets tab (presetsRev) so a same-id rename/edit shows.
   useEffect(() => {
     void loadSelectedPreset(selectedPresetId);
-  }, [selectedPresetId]);
+  }, [selectedPresetId, presetsRev]);
 
   // Card-watcher edge detection: the set of card paths seen on the previous poll, plus
   // a flag so the first poll only primes the baseline (no pop-open on launch).
