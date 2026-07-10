@@ -1,4 +1,4 @@
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, Search } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
@@ -13,8 +13,16 @@ type SelectMenuProps = {
   options: SelectMenuOption[];
   placeholder?: string;
   size?: "sm" | "md";
+  /** Show a type-to-filter box. Defaults on automatically once the list is long. */
+  searchable?: boolean;
+  /** Alphabetize the options by label (a leading empty-value placeholder stays on top). */
+  sortOptions?: boolean;
   value: string;
 };
+
+// Lists at or above this length get a search box even without an explicit prop,
+// so long dropdowns throughout the app are filterable.
+const SEARCH_AUTO_THRESHOLD = 8;
 
 export function SelectMenu({
   disabled = false,
@@ -22,24 +30,57 @@ export function SelectMenu({
   options,
   placeholder = "Choose...",
   size = "md",
+  searchable,
+  sortOptions = false,
   value,
 }: SelectMenuProps) {
   const [isOpen, setIsOpen] = useState(false);
+  const [query, setQuery] = useState("");
   const [menuStyle, setMenuStyle] = useState<MenuStyle | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
   const selected = useMemo(() => options.find((option) => option.value === value), [options, value]);
   const buttonClass =
     size === "sm"
       ? "h-8 rounded-lg px-2 text-xs"
       : "h-9 rounded-xl px-3 text-sm";
 
+  // Sort alphabetically when asked, always pinning an empty-value placeholder first.
+  const orderedOptions = useMemo(() => {
+    if (!sortOptions) {
+      return options;
+    }
+    return [...options].sort((a, b) => {
+      if (a.value === "") return -1;
+      if (b.value === "") return 1;
+      return a.label.localeCompare(b.label);
+    });
+  }, [options, sortOptions]);
+
+  const showSearch = searchable ?? options.length >= SEARCH_AUTO_THRESHOLD;
+  const filteredOptions = useMemo(() => {
+    const trimmed = query.trim().toLowerCase();
+    if (!trimmed) {
+      return orderedOptions;
+    }
+    // Keep an empty-value placeholder visible so the "clear"/default choice stays reachable.
+    return orderedOptions.filter(
+      (option) => option.value === "" || option.label.toLowerCase().includes(trimmed),
+    );
+  }, [orderedOptions, query]);
+
   useEffect(() => {
     if (!isOpen) {
+      setQuery("");
       return;
     }
 
     updateMenuPosition();
+    if (showSearch) {
+      // Focus the filter box so the user can just start typing.
+      window.requestAnimationFrame(() => searchRef.current?.focus());
+    }
 
     function handlePointerDown(event: PointerEvent) {
       const target = event.target as Node;
@@ -112,11 +153,37 @@ export function SelectMenu({
             width: menuStyle.width,
           }}
         >
+          {showSearch ? (
+            <div className="mb-1 flex items-center gap-1.5 rounded-lg border border-mist bg-porcelain/60 px-2">
+              <Search className="shrink-0 text-graphite" size={13} />
+              <input
+                ref={searchRef}
+                className="h-7 w-full min-w-0 bg-transparent text-xs outline-none placeholder:text-graphite/70"
+                onChange={(event) => setQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    setIsOpen(false);
+                  } else if (event.key === "Enter") {
+                    // Enter selects the first match so search-then-Enter picks it.
+                    const first = filteredOptions.find((option) => option.value !== "");
+                    if (first) {
+                      event.preventDefault();
+                      choose(first.value);
+                    }
+                  }
+                }}
+                placeholder="Search…"
+                value={query}
+              />
+            </div>
+          ) : null}
           <div className="overflow-auto" style={{ maxHeight: menuStyle.maxHeight }}>
               {options.length === 0 ? (
                 <div className="px-2 py-2 text-sm font-medium text-graphite">{placeholder}</div>
+              ) : filteredOptions.length === 0 ? (
+                <div className="px-2 py-2 text-xs font-medium text-graphite">No matches</div>
               ) : (
-                options.map((option) => {
+                filteredOptions.map((option) => {
                   const selectedOption = option.value === value;
                   return (
                     <button

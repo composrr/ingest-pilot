@@ -471,7 +471,9 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
                         ...namingDeliverables.map((item) => ({ label: item.label, value: item.id })),
                       ]}
                       placeholder="Apply a naming preset…"
+                      searchable
                       size="sm"
+                      sortOptions
                       value=""
                     />
                   </div>
