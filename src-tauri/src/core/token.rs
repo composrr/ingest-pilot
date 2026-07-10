@@ -1,6 +1,38 @@
 use chrono::{Datelike, Local};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::sync::RwLock;
+
+/// The built-in date layout used when nothing else is configured — the historical
+/// behavior (e.g. 20260424).
+pub const DEFAULT_DATE_FORMAT: &str = "YYYYMMDD";
+
+// Process-wide default layout for the `{date}` token, kept in sync with the user's
+// setting (set on startup and whenever settings are saved/read). A TokenContext may
+// still override it per-resolution via `date_format`. This lets the ingest pipeline
+// honor the preference without threading the setting through every call site.
+static GLOBAL_DATE_FORMAT: RwLock<Option<String>> = RwLock::new(None);
+
+/// Set the process-wide default `{date}` layout (called from the settings layer).
+pub fn set_default_date_format(format: &str) {
+    let trimmed = format.trim();
+    let value = if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    };
+    if let Ok(mut guard) = GLOBAL_DATE_FORMAT.write() {
+        *guard = value;
+    }
+}
+
+fn global_date_format() -> String {
+    GLOBAL_DATE_FORMAT
+        .read()
+        .ok()
+        .and_then(|guard| guard.clone())
+        .unwrap_or_else(|| DEFAULT_DATE_FORMAT.to_string())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct TokenContext {
@@ -10,6 +42,10 @@ pub struct TokenContext {
     pub variable_values: BTreeMap<String, String>,
     #[serde(default)]
     pub date: Option<String>,
+    /// Layout for the `{date}` token (e.g. "YYYY-MM-DD"). When None, the process-wide
+    /// default (from the user's setting) is used.
+    #[serde(default)]
+    pub date_format: Option<String>,
     #[serde(default)]
     pub camera: Option<String>,
     #[serde(default)]
@@ -142,28 +178,79 @@ struct DateParts {
 
 impl DateParts {
     fn from_context(context: &TokenContext) -> Self {
-        if let Some(date) = &context.date {
-            if date.len() >= 10 {
-                let year = date[0..4].to_string();
-                let month = date[5..7].to_string();
-                let day = date[8..10].to_string();
-                return Self {
-                    date: format!("{year}{month}{day}"),
-                    year,
-                    month,
-                    day,
-                };
-            }
-        }
+        let format = context
+            .date_format
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(global_date_format);
 
-        let today = Local::now().date_naive();
+        let (year, month, day) = if let Some(date) = &context.date {
+            if date.len() >= 10 {
+                (
+                    date[0..4].to_string(),
+                    date[5..7].to_string(),
+                    date[8..10].to_string(),
+                )
+            } else {
+                today_parts()
+            }
+        } else {
+            today_parts()
+        };
+
         Self {
-            date: today.format("%Y%m%d").to_string(),
-            year: format!("{:04}", today.year()),
-            month: format!("{:02}", today.month()),
-            day: format!("{:02}", today.day()),
+            date: format_date(&year, &month, &day, &format),
+            year,
+            month,
+            day,
         }
     }
+}
+
+fn today_parts() -> (String, String, String) {
+    let today = Local::now().date_naive();
+    (
+        format!("{:04}", today.year()),
+        format!("{:02}", today.month()),
+        format!("{:02}", today.day()),
+    )
+}
+
+/// Render the `{date}` token by substituting the year/month/day parts into a layout
+/// template. Recognized placeholders: `YYYY` (4-digit year), `YY` (2-digit year),
+/// `MM` (month), `DD` (day). Everything else — separators like `-`, `_`, `.`, `/` —
+/// is copied through verbatim, so "YYYY-MM-DD" → "2026-04-24".
+pub fn format_date(year: &str, month: &str, day: &str, format: &str) -> String {
+    let year_short = if year.len() >= 2 {
+        &year[year.len() - 2..]
+    } else {
+        year
+    };
+    let chars: Vec<char> = format.chars().collect();
+    let mut out = String::with_capacity(format.len());
+    let mut index = 0;
+    while index < chars.len() {
+        let remaining = chars.len() - index;
+        if remaining >= 4 && chars[index..index + 4].iter().collect::<String>() == "YYYY" {
+            out.push_str(year);
+            index += 4;
+        } else if remaining >= 2 && chars[index] == 'Y' && chars[index + 1] == 'Y' {
+            out.push_str(year_short);
+            index += 2;
+        } else if remaining >= 2 && chars[index] == 'M' && chars[index + 1] == 'M' {
+            out.push_str(month);
+            index += 2;
+        } else if remaining >= 2 && chars[index] == 'D' && chars[index + 1] == 'D' {
+            out.push_str(day);
+            index += 2;
+        } else {
+            out.push(chars[index]);
+            index += 1;
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -178,6 +265,7 @@ mod tests {
                 ("campus".to_string(), "KLR".to_string()),
             ]),
             date: Some("2026-04-24".to_string()),
+            date_format: None,
             camera: Some("FX3".to_string()),
             clip_number: Some(7),
             clip_number_padding: Some(3),
@@ -252,5 +340,32 @@ mod tests {
             resolve_pattern("{year}-{month}-{day}", &sample_context()).expect("pattern resolves");
 
         assert_eq!(output, "2026-04-24");
+    }
+
+    #[test]
+    fn date_token_honors_per_context_format() {
+        let mut context = sample_context();
+        context.date_format = Some("YYYY-MM-DD".to_string());
+        let output = resolve_pattern("{date}", &context).expect("pattern resolves");
+        assert_eq!(output, "2026-04-24");
+
+        context.date_format = Some("MM-DD-YYYY".to_string());
+        let output = resolve_pattern("{date}", &context).expect("pattern resolves");
+        assert_eq!(output, "04-24-2026");
+
+        // Empty format falls back to the default layout, not an empty string.
+        context.date_format = Some(String::new());
+        let output = resolve_pattern("{date}", &context).expect("pattern resolves");
+        assert_eq!(output, "20260424");
+    }
+
+    #[test]
+    fn format_date_substitutes_known_placeholders() {
+        assert_eq!(format_date("2026", "04", "24", "YYYYMMDD"), "20260424");
+        assert_eq!(format_date("2026", "04", "24", "YYYY-MM-DD"), "2026-04-24");
+        assert_eq!(format_date("2026", "04", "24", "DD.MM.YYYY"), "24.04.2026");
+        assert_eq!(format_date("2026", "04", "24", "MM/DD/YY"), "04/24/26");
+        // Unknown characters pass through untouched.
+        assert_eq!(format_date("2026", "04", "24", "Shot YYYY"), "Shot 2026");
     }
 }

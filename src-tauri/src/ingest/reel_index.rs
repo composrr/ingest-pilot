@@ -128,7 +128,7 @@ mod tests {
             "D:/A001/PRIVATE/CLIP/FX3_6713.MP4",
             &dir.join("Footage/FX3_6713.MP4").to_string_lossy(),
         )];
-        let path = write_reel_index(&dir.to_string_lossy(), &files, true).expect("write");
+        let path = write_reel_index(&dir.to_string_lossy(), None, &files, true).expect("write");
         let body = fs::read_to_string(&path).expect("read");
         assert!(body.starts_with("filename,camera,kind"));
         assert!(body.contains("FX3_6713.MP4,FX3,Footage,10,1000,true"));

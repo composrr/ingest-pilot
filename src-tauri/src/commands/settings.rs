@@ -194,6 +194,10 @@ pub struct IngestDefaults {
     pub destination_mode: String,
     #[serde(default = "default_true")]
     pub open_folder_when_done: bool,
+    /// Layout for the `{date}` token in naming patterns (e.g. "YYYY-MM-DD"). Applied
+    /// globally so every preset's `{date}` renders the operator's preferred format.
+    #[serde(default = "default_date_format")]
+    pub date_format: String,
 }
 
 impl Default for IngestDefaults {
@@ -204,8 +208,13 @@ impl Default for IngestDefaults {
             delete_sidecars: false,
             destination_mode: default_copy_mode(),
             open_folder_when_done: true,
+            date_format: default_date_format(),
         }
     }
+}
+
+fn default_date_format() -> String {
+    crate::core::token::DEFAULT_DATE_FORMAT.to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -305,6 +314,7 @@ pub fn get_settings(app: AppHandle) -> Result<AppSettings, String> {
     let settings: AppSettings =
         serde_json::from_str(&json).map_err(|error| format!("{}: {error}", path.display()))?;
     apply_custom_file_kinds(&settings);
+    apply_date_format(&settings);
     Ok(settings)
 }
 
@@ -319,9 +329,16 @@ pub fn save_settings(app: AppHandle, settings: AppSettings) -> Result<AppSetting
     let json = serde_json::to_string_pretty(&settings).map_err(|error| error.to_string())?;
     fs::write(path, json).map_err(|error| error.to_string())?;
     apply_custom_file_kinds(&settings);
+    apply_date_format(&settings);
     apply_background_and_autostart(&app, &settings);
 
     Ok(settings)
+}
+
+/// Keep the process-wide `{date}` layout in sync with the saved setting, so the
+/// ingest pipeline renders dates in the operator's chosen format.
+fn apply_date_format(settings: &AppSettings) {
+    crate::core::token::set_default_date_format(&settings.ingest_defaults.date_format);
 }
 
 /// Keeps the OS-level behaviors in sync with the saved settings: the "close to

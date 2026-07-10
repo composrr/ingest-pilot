@@ -135,6 +135,7 @@ export type AppSettings = {
     delete_sidecars: boolean;
     destination_mode: "create_new" | "existing_root";
     open_folder_when_done: boolean;
+    date_format: string;
   };
   report_defaults: {
     include_thumbnails: boolean;
@@ -214,6 +215,7 @@ export type TokenContext = {
   preset_name?: string | null;
   variable_values?: Record<string, string>;
   date?: string | null;
+  date_format?: string | null;
   camera?: string | null;
   clip_number?: number | null;
   clip_number_padding?: number | null;

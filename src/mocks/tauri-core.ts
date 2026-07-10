@@ -28,6 +28,22 @@ import type {
 } from "../lib/types";
 
 const SAMPLE_DATE = "20260628";
+const SAMPLE_DATE_PARTS = { year: "2026", month: "06", day: "28" };
+
+// Mirror the Rust {date} formatter for design-mode previews: substitute the sample
+// date parts into a layout template (YYYY / YY / MM / DD), passing separators through.
+function formatMockDate(format?: string | null): string {
+  const fmt = (format ?? "").trim();
+  if (!fmt) {
+    return SAMPLE_DATE;
+  }
+  const { year, month, day } = SAMPLE_DATE_PARTS;
+  return fmt
+    .replace(/YYYY/g, year)
+    .replace(/YY/g, year.slice(-2))
+    .replace(/MM/g, month)
+    .replace(/DD/g, day);
+}
 
 // In-memory preset store so save/delete/duplicate feel real while designing.
 let presets: Preset[] = createShippedPresets();
@@ -56,7 +72,7 @@ function resolvePattern(pattern: string, ctx?: TokenContext): string {
     const key = raw.trim();
     switch (key) {
       case "date":
-        return ctx?.date ?? SAMPLE_DATE;
+        return formatMockDate(ctx?.date_format ?? settings?.ingest_defaults?.date_format);
       case "year":
         return "2026";
       case "month":

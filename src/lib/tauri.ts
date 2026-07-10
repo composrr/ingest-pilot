@@ -24,6 +24,7 @@ export const defaultAppSettings: AppSettings = {
     delete_sidecars: false,
     destination_mode: "create_new",
     open_folder_when_done: true,
+    date_format: "YYYYMMDD",
   },
   report_defaults: {
     include_thumbnails: true,

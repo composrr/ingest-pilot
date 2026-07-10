@@ -35,6 +35,33 @@ const variableTypes: Array<{ value: VariableType; label: string }> = [
   { value: "date", label: "Date" },
 ];
 
+// Render a fixed sample date (Jun 28, 2026) through a {date} layout template so the
+// user sees exactly what the token produces. Mirrors the Rust/mocks formatter.
+function formatSampleDate(format: string): string {
+  const fmt = (format ?? "").trim();
+  if (!fmt) {
+    return "20260628";
+  }
+  return fmt
+    .replace(/YYYY/g, "2026")
+    .replace(/YY/g, "26")
+    .replace(/MM/g, "06")
+    .replace(/DD/g, "28");
+}
+
+// The date layouts offered in Settings. Labels show the live example first so the
+// output is obvious at a glance. The value is the template the token engine reads.
+const DATE_FORMAT_OPTIONS: { label: string; value: string }[] = [
+  "YYYYMMDD",
+  "YYYY-MM-DD",
+  "YYYY_MM_DD",
+  "YYYY.MM.DD",
+  "MM-DD-YYYY",
+  "DD-MM-YYYY",
+  "MMDDYYYY",
+  "DDMMYYYY",
+].map((format) => ({ label: `${formatSampleDate(format)}  ·  ${format}`, value: format }));
+
 type SettingsTab = "ingest" | "automation" | "metadata" | "reports" | "safety" | "advanced" | "about";
 
 const SETTINGS_TABS: { id: SettingsTab; label: string; advanced?: boolean }[] = [
@@ -309,6 +336,17 @@ export function SettingsPage() {
               onChange={(open_folder_when_done) =>
                 updateSettings({ ingest_defaults: { ...settings.ingest_defaults, open_folder_when_done } })
               }
+            />
+            <CompactSelectRow
+              description={`Layout for the {date} token in every naming pattern. Example: ${formatSampleDate(
+                settings.ingest_defaults.date_format,
+              )}`}
+              label="Date format"
+              onChange={(date_format) =>
+                updateSettings({ ingest_defaults: { ...settings.ingest_defaults, date_format } })
+              }
+              options={DATE_FORMAT_OPTIONS}
+              value={settings.ingest_defaults.date_format}
             />
           </SettingsSection>
 

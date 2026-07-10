@@ -1841,7 +1841,8 @@ export function IngestPage() {
     return () => {
       isCurrent = false;
     };
-  }, [destinationMode, destinationPath, preset, projectNameOverride, renameFiles, scan, variableValues]);
+    // settingsRev: recompute the {date}-bearing preview when the date-format setting changes.
+  }, [destinationMode, destinationPath, preset, projectNameOverride, renameFiles, scan, variableValues, settingsRev]);
 
   useEffect(() => {
     const paths = uniquePaths([...sourcePaths, ...destinationTargets]).filter((path) => path.trim().length > 0);
