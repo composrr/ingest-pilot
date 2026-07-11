@@ -1,4 +1,4 @@
-import { CheckCircle2, ClipboardList, FolderTree, HardDriveDownload, Settings, Sparkles, UserRound, X } from "lucide-react";
+import { CheckCircle2, ClipboardList, FolderTree, HardDriveDownload, Settings, Sparkles, Type, UserRound, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { defaultAppSettings, getSettings, saveSettings } from "../lib/tauri";
 import type { AppSettings } from "../lib/types";
@@ -19,6 +19,11 @@ const steps = [
     icon: ClipboardList,
     title: "Presets are the recipe",
     body: "Build reusable folder trees, variables, naming rules, routing, and starter files once. Then use that recipe over and over.",
+  },
+  {
+    icon: Type,
+    title: "Name projects consistently",
+    body: "The Naming tab holds reusable naming templates so every project folder follows the same pattern. A few generic starters ship with the app — edit them or add your own, and they're saved as files in your Documents so you can share them with the team.",
   },
   {
     icon: FolderTree,
@@ -142,7 +147,7 @@ export function Walkthrough({ onClose, onGoTo }: WalkthroughProps) {
                       setIndex((current) => current + 1);
                     }
                   }}
-                  placeholder="e.g. Jon Draper"
+                  placeholder="e.g. Alex Rivera"
                   value={operatorName}
                 />
               </label>

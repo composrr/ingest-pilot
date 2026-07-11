@@ -71,7 +71,7 @@ export function NamingPage() {
           setSelectedId(merged.deliverables[0]?.id ?? "");
         }
         // Persist on first run OR when the shipped catalog is newer than what's on
-        // disk (so the real SOP data replaces earlier placeholder defaults).
+        // disk (so newer shipped defaults replace an older persisted catalog).
         if (!persisted || (persisted.schema_version ?? 1) < merged.schema_version) {
           await saveNamingCatalog(merged);
         }
@@ -202,7 +202,7 @@ export function NamingPage() {
           <p className="mb-0.5 text-[11px] font-semibold text-graphite/70">Naming</p>
           <h1 className="text-xl font-semibold tracking-normal">Naming Templates</h1>
           <p className="mt-0.5 max-w-2xl text-xs text-graphite">
-            SOP-correct project names without memorizing the sheet. Pick a template, fill a field or two, and turn it
+            Consistent project names without memorizing a spec. Pick a template, fill a field or two, and turn it
             into a saved preset. Each template's fields and the shared option lists are editable and sync with your presets.
           </p>
         </div>
