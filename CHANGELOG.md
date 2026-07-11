@@ -10,7 +10,21 @@ and user-facing  -  this is what people read in the update popup.
 
 ## [Unreleased]
 
-## [0.1.13]
+## [0.1.14]
+
+### Added
+- **Choose your date format.** A new **Date format** setting (Settings → Ingest)
+  controls how the `{date}` token renders in every naming pattern — pick
+  `YYYY-MM-DD`, `MM-DD-YYYY`, `YYYY_MM_DD`, and more. Each choice shows a live
+  example so you can see exactly what you'll get.
+- **Search any naming-preset dropdown.** The "Apply a naming preset" picker (and
+  other long dropdowns) now have a type-to-filter search box and list their
+  entries alphabetically, so you can find a template without scrolling.
+
+### Fixed
+- **Edits in other tabs show up right away.** Renaming or editing a preset, or
+  changing a setting, now updates the Ingest screen immediately instead of needing
+  a manual refresh.
 
 ### Added
 - **Search your naming templates.** A search box under the Templates header filters
