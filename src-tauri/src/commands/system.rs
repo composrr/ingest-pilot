@@ -89,6 +89,30 @@ pub fn open_path(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Opens one of the bundled onboarding guides (the walkthrough video or a PDF) in the
+/// user's default app. Only the known guide filenames are accepted, so this can't be
+/// used to open an arbitrary path.
+#[tauri::command]
+pub fn open_guide(app: AppHandle, name: String) -> Result<(), String> {
+    use tauri::Manager;
+    const GUIDES: [&str; 3] = [
+        "Ingest-Pilot-Quickstart.pdf",
+        "Ingest-Pilot-User-Guide.pdf",
+        "Ingest-Pilot-Walkthrough.mp4",
+    ];
+    if !GUIDES.contains(&name.as_str()) {
+        return Err(format!("Unknown guide '{name}'."));
+    }
+    let path = app
+        .path()
+        .resolve(
+            format!("resources/guides/{name}"),
+            tauri::path::BaseDirectory::Resource,
+        )
+        .map_err(|error| error.to_string())?;
+    open_path(path.to_string_lossy().into_owned())
+}
+
 /// Returns only the dropped paths that are existing directories, preserving order
 /// and dropping duplicates. Used by queue-mode drag-and-drop so each dropped folder
 /// becomes one card and stray files are ignored.

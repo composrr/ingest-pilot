@@ -1,6 +1,6 @@
-import { CheckCircle2, ClipboardList, FolderTree, HardDriveDownload, Settings, Sparkles, Type, UserRound, X } from "lucide-react";
+import { CheckCircle2, ClipboardList, FolderTree, HardDriveDownload, PlayCircle, Settings, Sparkles, Type, UserRound, X } from "lucide-react";
 import { useEffect, useState } from "react";
-import { defaultAppSettings, getSettings, saveSettings } from "../lib/tauri";
+import { defaultAppSettings, getSettings, GUIDES, openGuide, saveSettings } from "../lib/tauri";
 import type { AppSettings } from "../lib/types";
 
 type WalkthroughProps = {
@@ -94,14 +94,24 @@ export function Walkthrough({ onClose, onGoTo }: WalkthroughProps) {
               <p className="text-xs font-medium text-graphite">A quick map of how the app works.</p>
             </div>
           </div>
-          <button
-            className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-graphite transition hover:bg-porcelain hover:text-ink"
-            onClick={() => finish()}
-            title="Skip walkthrough"
-            type="button"
-          >
-            <X size={16} />
-          </button>
+          <div className="flex items-center gap-1.5">
+            <button
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-mist bg-white px-2.5 text-xs font-semibold text-graphite transition hover:bg-porcelain hover:text-ink"
+              onClick={() => void openGuide(GUIDES.walkthrough)}
+              title="Watch the video walkthrough"
+              type="button"
+            >
+              <PlayCircle size={14} /> Watch the video
+            </button>
+            <button
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-graphite transition hover:bg-porcelain hover:text-ink"
+              onClick={() => finish()}
+              title="Skip walkthrough"
+              type="button"
+            >
+              <X size={16} />
+            </button>
+          </div>
         </div>
 
         <div className="grid gap-0 md:grid-cols-[220px_1fr]">

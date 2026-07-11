@@ -107,6 +107,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::system::greet,
             commands::system::open_path,
+            commands::system::open_guide,
             commands::system::disk_space,
             commands::system::filter_directories,
             commands::system::show_main_window,

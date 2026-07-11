@@ -331,6 +331,18 @@ export async function openPath(path: string) {
   return invoke<void>("open_path", { path });
 }
 
+// The onboarding docs bundled with the app (see src-tauri/resources/guides + tauri.conf.json).
+export const GUIDES = {
+  walkthrough: "Ingest-Pilot-Walkthrough.mp4",
+  quickstart: "Ingest-Pilot-Quickstart.pdf",
+  userGuide: "Ingest-Pilot-User-Guide.pdf",
+} as const;
+
+// Opens a bundled guide (video or PDF) in the OS default app.
+export async function openGuide(name: string) {
+  return invoke<void>("open_guide", { name });
+}
+
 export async function diskSpace(path: string) {
   return invoke<DiskSpace>("disk_space", { path });
 }

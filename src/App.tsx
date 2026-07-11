@@ -7,6 +7,7 @@ import {
   Home,
   PanelLeftClose,
   PanelLeftOpen,
+  PlayCircle,
   Settings,
   Sparkles,
   Tags,
@@ -24,6 +25,7 @@ import { NamingPage } from "./pages/NamingPage";
 import { PresetsPage } from "./pages/PresetsPage";
 import { ScaffoldPage } from "./pages/ScaffoldPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { GUIDES, openGuide } from "./lib/tauri";
 import { checkForUpdate } from "./lib/updater";
 import { useAppStore } from "./stores/appStore";
 
@@ -166,15 +168,24 @@ export function App() {
           <div className={`${isSidebarExpanded ? "mt-auto hidden rounded-2xl border border-mist bg-paper p-3 xl:block" : "hidden"}`}>
             <div className="mb-2 text-sm font-semibold">Need a map?</div>
             <p className="text-sm leading-5 text-graphite">
-              Replay the quick walkthrough any time.
+              Watch the video walkthrough, or replay the quick tour any time.
             </p>
-            <button
-              className="mt-3 h-8 w-full rounded-lg border border-mist bg-white px-2 text-xs font-semibold text-graphite transition hover:bg-porcelain"
-              onClick={() => setIsWalkthroughOpen(true)}
-              type="button"
-            >
-              Show walkthrough
-            </button>
+            <div className="mt-3 grid gap-1.5">
+              <button
+                className="inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-lg bg-signal px-2 text-xs font-semibold text-paper transition hover:bg-black"
+                onClick={() => void openGuide(GUIDES.walkthrough)}
+                type="button"
+              >
+                <PlayCircle size={14} /> Watch the video
+              </button>
+              <button
+                className="h-8 w-full rounded-lg border border-mist bg-white px-2 text-xs font-semibold text-graphite transition hover:bg-porcelain"
+                onClick={() => setIsWalkthroughOpen(true)}
+                type="button"
+              >
+                Take the interactive tour
+              </button>
+            </div>
           </div>
 
           <button

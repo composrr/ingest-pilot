@@ -1,5 +1,6 @@
-import { ClipboardList, FolderTree, HardDriveDownload, Settings } from "lucide-react";
+import { BookOpen, ClipboardList, FileText, FolderTree, HardDriveDownload, PlayCircle, Settings } from "lucide-react";
 import type { ReactNode } from "react";
+import { GUIDES, openGuide } from "../lib/tauri";
 
 type HelpPageProps = {
   onOpenIngest: () => void;
@@ -45,6 +46,36 @@ export function HelpPage({
           <h1 className="text-xl font-semibold tracking-normal">Ingest Pilot workflow</h1>
         </div>
       </header>
+
+      <section className="mb-2 overflow-hidden rounded-2xl border border-mist bg-white">
+        <div className="border-b border-mist bg-porcelain px-3 py-2 text-sm font-semibold">
+          Guides &amp; tutorial
+        </div>
+        <div className="grid gap-0 sm:grid-cols-3">
+          <GuideCard
+            action="Watch"
+            body="An 8-minute narrated tour of the whole app, start to finish."
+            highlight
+            icon={<PlayCircle size={18} />}
+            onClick={() => void openGuide(GUIDES.walkthrough)}
+            title="Video walkthrough"
+          />
+          <GuideCard
+            action="Open PDF"
+            body="One page to get going fast — the essentials on a single sheet."
+            icon={<FileText size={18} />}
+            onClick={() => void openGuide(GUIDES.quickstart)}
+            title="Quickstart"
+          />
+          <GuideCard
+            action="Open PDF"
+            body="The full manual — every screen and setting explained in detail."
+            icon={<BookOpen size={18} />}
+            onClick={() => void openGuide(GUIDES.userGuide)}
+            title="User guide"
+          />
+        </div>
+      </section>
 
       <section className="mb-2 overflow-hidden rounded-2xl border border-mist bg-white">
         <div className="border-b border-mist bg-porcelain px-3 py-2 text-sm font-semibold">
@@ -148,6 +179,43 @@ function HelpRow({
       </div>
       <button
         className="h-8 rounded-lg border border-mist bg-white px-3 text-xs font-semibold text-graphite transition hover:bg-porcelain"
+        onClick={onClick}
+        type="button"
+      >
+        {action}
+      </button>
+    </div>
+  );
+}
+
+function GuideCard({
+  action,
+  body,
+  highlight,
+  icon,
+  onClick,
+  title,
+}: {
+  action: string;
+  body: string;
+  highlight?: boolean;
+  icon: ReactNode;
+  onClick: () => void;
+  title: string;
+}) {
+  return (
+    <div className="flex flex-col gap-2 border-b border-mist p-3 last:border-b-0 sm:border-b-0 sm:border-r sm:last:border-r-0">
+      <div className="flex items-center gap-2">
+        <span className={`flex h-8 w-8 items-center justify-center rounded-lg ${highlight ? "bg-signal text-paper" : "bg-porcelain text-graphite"}`}>
+          {icon}
+        </span>
+        <div className="text-sm font-semibold text-ink">{title}</div>
+      </div>
+      <p className="min-h-[2.5rem] text-xs leading-5 text-graphite">{body}</p>
+      <button
+        className={`h-8 rounded-lg px-3 text-xs font-semibold transition ${
+          highlight ? "bg-signal text-paper hover:bg-black" : "border border-mist bg-white text-graphite hover:bg-porcelain"
+        }`}
         onClick={onClick}
         type="button"
       >
