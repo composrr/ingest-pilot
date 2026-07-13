@@ -49,6 +49,7 @@ pub async fn run_ingest(
     use_existing_root: bool,
     job_id: Option<String>,
     root_name_override: Option<String>,
+    file_rename_pattern_override: Option<String>,
 ) -> Result<IngestResult, String> {
     let mut preset =
         get_preset(app.clone(), preset_id)?.ok_or_else(|| "Preset not found.".to_string())?;
@@ -60,6 +61,15 @@ pub async fn run_ingest(
         .filter(|value| !value.trim().is_empty())
     {
         preset.root_folder_pattern = name.clone();
+    }
+    // A per-ingest file-rename pattern from the Ingest screen: overrides the preset's
+    // base file_rename_pattern for this run only. Per-folder rename overrides (if any)
+    // still take precedence in the copier, exactly as with the preset's own pattern.
+    if let Some(pattern) = file_rename_pattern_override
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        preset.file_rename_pattern = pattern.clone();
     }
     let cancel_flag = Arc::new(AtomicBool::new(false));
     if let Some(job_id) = job_id.as_ref() {

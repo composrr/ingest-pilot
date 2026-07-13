@@ -367,6 +367,7 @@ export async function runIngest(
   useExistingRoot: boolean,
   jobId: string,
   rootNameOverride?: string,
+  fileRenamePatternOverride?: string,
 ) {
   return invoke<IngestResult>("run_ingest", {
     presetId,
@@ -380,6 +381,7 @@ export async function runIngest(
     useExistingRoot,
     jobId,
     rootNameOverride: rootNameOverride || null,
+    fileRenamePatternOverride: fileRenamePatternOverride || null,
   });
 }
 

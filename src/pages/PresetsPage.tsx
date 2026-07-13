@@ -62,8 +62,6 @@ export function PresetsPage() {
           : nextPresets[0]?.id ?? null;
       setSelectedId(nextSelectedId);
       setLastAction(`Loaded ${nextPresets.length} preset${nextPresets.length === 1 ? "" : "s"}`);
-      // Signal the always-mounted Ingest screen to re-fetch its preset list/detail.
-      bumpPresetsRev();
     } catch (caught) {
       setError(String(caught));
       setLastAction("Preset load failed");
@@ -93,6 +91,7 @@ export function PresetsPage() {
     try {
       const summaries = await Promise.all(createShippedPresets().map((preset) => savePreset(preset)));
       await refresh(summaries[0]?.id ?? null);
+      bumpPresetsRev();
       setLastAction(`${summaries.length} starter presets saved`);
     } catch (caught) {
       setError(String(caught));
@@ -121,6 +120,7 @@ export function PresetsPage() {
       const savedPreset = await getPreset(summary.id);
       setEditingPreset(null);
       await refresh(summary.id);
+      bumpPresetsRev();
       setSelectedId(summary.id);
       setSelectedPreset(savedPreset);
       setLastAction(`${summary.name} saved`);
@@ -145,6 +145,7 @@ export function PresetsPage() {
 
       const summary = await importPreset(path);
       await refresh(summary.id);
+      bumpPresetsRev();
       setLastAction(`${summary.name} imported`);
     } catch (caught) {
       setError(String(caught));
@@ -186,6 +187,7 @@ export function PresetsPage() {
     try {
       const summary = await duplicatePreset(selectedSummary.id);
       await refresh(summary.id);
+      bumpPresetsRev();
       setLastAction(`${selectedSummary.name} duplicated`);
     } catch (caught) {
       setError(String(caught));

@@ -13,6 +13,8 @@ import {
 import { FloatingHelp } from "../components/FloatingHelp";
 import { RecentIngestsCarousel } from "../components/RecentIngestsCarousel";
 import { SelectMenu } from "../components/SelectMenu";
+import { TokenSuggestInput } from "../components/TokenSuggest";
+import { getTokenDefinitions } from "../lib/tokens";
 import {
   defaultAppSettings,
   getPreset,
@@ -268,6 +270,11 @@ export function IngestPage() {
   const [isCancelling, setIsCancelling] = useState(false);
   const [deleteSidecars, setDeleteSidecars] = useState(false);
   const [renameFiles, setRenameFiles] = useState(true);
+  // Per-ingest file-name pattern, seeded from the selected preset. Editing it here
+  // overrides the preset's file_rename_pattern for this run only (the preset file is
+  // untouched); blank falls back to the preset's own pattern in the backend.
+  const [fileRenamePattern, setFileRenamePattern] = useState("");
+  const [showFileNameEditor, setShowFileNameEditor] = useState(false);
   const [showFilteredItems, setShowFilteredItems] = useState(false);
   const [outputPreview, setOutputPreview] = useState<IngestOutputPreview | null>(null);
   const [selectedRelativePaths, setSelectedRelativePaths] = useState<Set<string>>(new Set());
@@ -878,6 +885,8 @@ export function IngestPage() {
       if (nextPreset) {
         setDeleteSidecars(!nextPreset.preserve_xml_sidecars);
         setRenameFiles(nextPreset.rename_files_default ?? true);
+        setFileRenamePattern(nextPreset.file_rename_pattern ?? "");
+        setShowFileNameEditor(false);
         setDestinationPath(nextPreset.destinations.primary ?? "");
         setSecondaryDestinationPaths(nextPreset.destinations.secondaries ?? []);
         // A preset can carry its own metadata preset; auto-select it so the operator
@@ -1109,6 +1118,7 @@ export function IngestPage() {
           destinationMode === "existing_root" || !isFirstForDestination,
           jobId,
           projectNameOverride.trim() || undefined,
+          renameFiles ? fileRenamePattern.trim() || undefined : undefined,
         );
         results.push(result);
         rootByDestination.set(destination, result.root_path);
@@ -1138,11 +1148,14 @@ export function IngestPage() {
       setError("Select at least one file to copy.");
       return;
     }
-    // Safe-mode guardrails: block before we start rather than fail partway.
+    // Safety guardrails: block before we start rather than fail partway. These read
+    // from the individual settings (Safe Mode is just a convenience that turns the
+    // group on), so the messages point at the specific setting rather than blaming
+    // Safe Mode — which may well be off.
     const safety = appSettings.safety;
     if (safety.min_verified_copies > destinationTargets.length) {
       setError(
-        `Safe Mode requires ${safety.min_verified_copies} verified copies, but only ${destinationTargets.length} destination${destinationTargets.length === 1 ? " is" : "s are"} set. Add more backup destinations, or lower the requirement in Settings → Safety.`,
+        `This ingest is set to require ${safety.min_verified_copies} verified copies, but only ${destinationTargets.length} destination${destinationTargets.length === 1 ? " is" : "s are"} set. Add more backup destinations, or lower "Require verified copies" in Settings → Safety.`,
       );
       return;
     }
@@ -1153,7 +1166,7 @@ export function IngestPage() {
           const freePercent = (space.available_bytes / space.total_bytes) * 100;
           if (freePercent < safety.low_space_stop_percent) {
             setError(
-              `Safe Mode stop: "${destination}" is only ${freePercent.toFixed(1)}% free, below the ${safety.low_space_stop_percent}% limit. Free up space or lower the limit in Settings → Safety.`,
+              `Low-space stop: "${destination}" is only ${freePercent.toFixed(1)}% free, below the ${safety.low_space_stop_percent}% limit. Free up space or lower "Low-space stop" in Settings → Safety.`,
             );
             return;
           }
@@ -1681,11 +1694,14 @@ export function IngestPage() {
     void refreshPresets();
   }, [presetsRev]);
 
-  // Reload the selected preset's routing rules when it changes, or when it was
-  // edited in place in the Presets tab (presetsRev) so a same-id rename/edit shows.
+  // Reload the selected preset's defaults only when the operator picks a different
+  // preset. Deliberately NOT keyed on presetsRev: a full reload here resets the
+  // destination, metadata, and job-variable fields, so re-running it just because a
+  // preset was edited (or the Presets tab was visited) would wipe an in-progress
+  // ingest setup. The preset list/names still refresh via refreshPresets(presetsRev).
   useEffect(() => {
     void loadSelectedPreset(selectedPresetId);
-  }, [selectedPresetId, presetsRev]);
+  }, [selectedPresetId]);
 
   // Card-watcher edge detection: the set of card paths seen on the previous poll, plus
   // a flag so the first poll only primes the baseline (no pop-open on launch).
@@ -1818,6 +1834,7 @@ export function IngestPage() {
       preset,
       projectNameOverride,
       renameFiles,
+      fileRenamePattern,
       scan,
       variableValues,
     })
@@ -1842,7 +1859,7 @@ export function IngestPage() {
       isCurrent = false;
     };
     // settingsRev: recompute the {date}-bearing preview when the date-format setting changes.
-  }, [destinationMode, destinationPath, preset, projectNameOverride, renameFiles, scan, variableValues, settingsRev]);
+  }, [destinationMode, destinationPath, preset, projectNameOverride, renameFiles, fileRenamePattern, scan, variableValues, settingsRev]);
 
   useEffect(() => {
     const paths = uniquePaths([...sourcePaths, ...destinationTargets]).filter((path) => path.trim().length > 0);
@@ -2448,7 +2465,7 @@ export function IngestPage() {
                 <label className="flex min-h-8 items-center justify-between gap-3 rounded-lg bg-white px-2 py-1.5">
                   <span className="min-w-0">
                     <span className="block text-xs font-semibold text-ink">Rename files</span>
-                    <span className="block truncate text-[11px] text-graphite">Apply the preset filename pattern.</span>
+                    <span className="block truncate text-[11px] text-graphite">Apply a filename pattern as files copy.</span>
                   </span>
                   <input
                     checked={renameFiles}
@@ -2457,6 +2474,52 @@ export function IngestPage() {
                     type="checkbox"
                   />
                 </label>
+
+                {renameFiles ? (
+                  <div className="rounded-lg bg-white px-2 py-1.5">
+                    <button
+                      className="flex w-full items-center justify-between gap-2 text-left"
+                      onClick={() => setShowFileNameEditor((current) => !current)}
+                      type="button"
+                    >
+                      <span className="min-w-0">
+                        <span className="block text-xs font-semibold text-ink">File name</span>
+                        <span className="block truncate text-[11px] text-graphite">
+                          {fileRenamePattern.trim() || "{original_name}{ext}"}
+                        </span>
+                      </span>
+                      <span className="shrink-0 text-[11px] font-semibold text-signal">
+                        {showFileNameEditor ? "Done" : "Change"}
+                      </span>
+                    </button>
+                    {showFileNameEditor ? (
+                      <div className="mt-2 space-y-1.5">
+                        <TokenSuggestInput
+                          ariaLabel="File name pattern"
+                          className="h-8 w-full rounded-lg border border-mist bg-white px-2 text-xs outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+                          onChange={setFileRenamePattern}
+                          placeholder="{camera}_{clip#} — type $ for tokens"
+                          tokens={getTokenDefinitions("filename", ingestParameters)}
+                          value={fileRenamePattern}
+                        />
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="min-w-0 truncate text-[11px] text-graphite">
+                            Example: <span className="font-semibold text-ink">{outputPreview?.fileName ?? "—"}</span>
+                          </span>
+                          {preset && fileRenamePattern !== (preset.file_rename_pattern ?? "") ? (
+                            <button
+                              className="shrink-0 text-[11px] font-semibold text-graphite underline decoration-dotted hover:text-ink"
+                              onClick={() => setFileRenamePattern(preset.file_rename_pattern ?? "")}
+                              type="button"
+                            >
+                              Reset to preset
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
             </details>
 
@@ -5357,6 +5420,7 @@ async function buildOutputPreview({
   preset,
   projectNameOverride,
   renameFiles,
+  fileRenamePattern,
   scan,
   variableValues,
 }: {
@@ -5365,6 +5429,7 @@ async function buildOutputPreview({
   preset: Preset;
   projectNameOverride?: string;
   renameFiles: boolean;
+  fileRenamePattern?: string;
   scan: SourceScan | null;
   variableValues: Record<string, string>;
 }): Promise<IngestOutputPreview> {
@@ -5413,7 +5478,7 @@ async function buildOutputPreview({
   const folderName = folderNames[folderNames.length - 1] ?? "Footage";
   const folderPath = folderNames.reduce((path, name) => joinPreviewPath(path, name), "");
   const targetFolder = targetFolderPath[targetFolderPath.length - 1] ?? null;
-  const patternPreview = await previewPattern(filePatternForFolder(preset, targetFolder), {
+  const patternPreview = await previewPattern(filePatternForFolder(preset, targetFolder, fileRenamePattern), {
     preset_name: preset.name,
     variable_values: variableValues,
     camera: cameraHintForPreview(sampleFile),
@@ -5492,14 +5557,17 @@ function routeFolderPathForKindAndExtension(preset: Preset, kind: ScanFileKind, 
   return findDeepestFolderPathByRole(preset.folder_tree, role);
 }
 
-function filePatternForFolder(preset: Preset, folder: FolderNode | null) {
+function filePatternForFolder(preset: Preset, folder: FolderNode | null, basePatternOverride?: string) {
   if (folder) {
     const override = preset.per_folder_rename_overrides[folder.id];
     if (override?.trim()) {
       return override;
     }
   }
-  return preset.file_rename_pattern.trim() || "{original_name}{ext}";
+  // A per-ingest override replaces the preset's base pattern (per-folder overrides
+  // above still win), mirroring how the backend applies file_rename_pattern_override.
+  const base = basePatternOverride?.trim() ? basePatternOverride : preset.file_rename_pattern;
+  return base.trim() || "{original_name}{ext}";
 }
 
 function cameraHintForPreview(file: ScannedFile | null) {

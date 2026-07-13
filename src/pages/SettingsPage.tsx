@@ -1433,7 +1433,18 @@ function SafetyEditor({
         low_space_stop_percent: value.low_space_stop_percent > 0 ? value.low_space_stop_percent : 5,
       });
     } else {
-      onChange({ ...value, safe_mode: false });
+      // Turning Safe Mode off relaxes the group back to normal, so the strict
+      // gates it raised (e.g. the 2-verified-copies requirement) don't linger and
+      // block ingests when the user believes Safe Mode is off. Individual
+      // guardrails can still be re-enabled one at a time below.
+      onChange({
+        ...value,
+        safe_mode: false,
+        never_delete_source: false,
+        always_write_offload_proof: false,
+        min_verified_copies: 1,
+        low_space_stop_percent: 0,
+      });
     }
   }
 
