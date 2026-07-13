@@ -10,6 +10,24 @@ and user-facing  -  this is what people read in the update popup.
 
 ## [Unreleased]
 
+## [0.1.16]
+
+### Added
+- **Rename files right on the Ingest screen.** Under **Rename files** there's now a
+  **File name** box — click **Change** to edit the filename pattern for this ingest
+  (type `$` for tokens like `{camera}`, `{clip#}`, `{date}`, or your preset's
+  variables). A live example shows the result, and **Reset to preset** puts it back.
+  It only affects the current run; your preset is untouched.
+
+### Fixed
+- **Switching tabs no longer clears your setup.** Visiting Presets, Naming, or
+  another tab and coming back to Ingest kept wiping the destination, metadata, and
+  variable fields. Your in-progress setup now stays put.
+- **"Requires 2 verified copies" with Safe Mode off.** Turning Safe Mode on raised
+  the required-copies count but turning it off never lowered it, so ingests kept
+  getting blocked. Safe Mode off now relaxes the whole group, and the warning names
+  the exact Settings → Safety control instead of blaming Safe Mode.
+
 ## [0.1.14]
 
 ### Added
