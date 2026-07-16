@@ -46,7 +46,7 @@ export function UpdateModal({ update, onDismiss }: UpdateModalProps) {
       <section className="flex max-h-[88vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-mist bg-paper shadow-panel">
         <div className="flex shrink-0 items-center justify-between border-b border-mist bg-white px-4 py-3">
           <div className="flex items-center gap-2">
-            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-signal text-paper">
+            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-signal text-primaryfg">
               <Sparkles size={17} />
             </span>
             <div>
@@ -127,7 +127,7 @@ export function UpdateModal({ update, onDismiss }: UpdateModalProps) {
             Later
           </button>
           <button
-            className="inline-flex h-9 items-center gap-2 rounded-lg bg-signal px-3 text-sm font-semibold text-paper transition hover:bg-black disabled:opacity-60"
+            className="inline-flex h-9 items-center gap-2 rounded-lg bg-signal px-3 text-sm font-semibold text-primaryfg transition hover:bg-black disabled:opacity-60"
             disabled={busy}
             onClick={() => void install()}
             type="button"

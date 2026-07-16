@@ -13,6 +13,7 @@ import type {
   DroppedTemplateItems,
   IngestHistoryJob,
   IngestResult,
+  MultiIngestResult,
   ScaffoldResult,
   ScannedFile,
   SourceScan,
@@ -189,6 +190,60 @@ function sampleCopiedFiles(): CopiedFile[] {
     }));
 }
 
+// Design-mode result for the concurrent multi-destination engine: one IngestResult per
+// destination (each with its own root + copied files). Mirrors the Rust `run_ingest_multi`
+// shape — including the failure case (fewer roots than destinations passed, with a
+// matching `failures[]` entry) — so the rewired UI merges roots/failures, renders the
+// delivery failure banner, and flips history to needs_review exactly as it will against
+// the real backend. `failLast` drops the final destination as a failure (needs >= 2 dests
+// so at least one copy still succeeds).
+function sampleMultiResult(destinationPaths: string[], failLast: boolean): MultiIngestResult {
+  const scan = sampleScan("D:/A001_SONY");
+  const media = scan.files.filter((f) => f.kind !== "ignored" && f.kind !== "sidecar");
+  const dests = destinationPaths.length > 0 ? destinationPaths : ["E:/MediaServer"];
+  const failedIndex = failLast && dests.length >= 2 ? dests.length - 1 : -1;
+  const roots: IngestResult[] = dests
+    .map((dest, index) => ({ dest, index }))
+    .filter(({ index }) => index !== failedIndex)
+    .map(({ dest }) => {
+    const root = `${dest.replace(/[\\/]+$/, "")}/20260628_BaptismStory_Johnson`;
+    const copied: CopiedFile[] = media.map((f, i) => ({
+      source_path: f.path,
+      destination_path: `${root}/Footage/${f.file_name}`,
+      kind: f.kind,
+      size_bytes: f.size_bytes,
+      thumbnail_path: null,
+      source_hash: `xxh3:${(i + 1).toString(16).padStart(16, "0")}`,
+      destination_hash: `xxh3:${(i + 1).toString(16).padStart(16, "0")}`,
+      verified: true,
+    }));
+    return {
+      root_path: root,
+      files_copied: copied.length,
+      sidecars_copied: 1,
+      skipped_files: 0,
+      verified_files: copied.length,
+      verification_failed: 0,
+      bytes_copied: copied.reduce((s, f) => s + f.size_bytes, 0),
+      mhl_path: `${root}/IngestPilot.mhl`,
+      report_path: `${root}/IngestPilot_Report.html`,
+      copied_files: copied,
+      skipped: [],
+    };
+  });
+  const failures =
+    failedIndex >= 0
+      ? [
+          {
+            index: failedIndex,
+            path: dests[failedIndex],
+            error: "Destination drive disconnected during copy.",
+          },
+        ]
+      : [];
+  return { roots, failures };
+}
+
 function sampleHistory(): IngestHistoryJob[] {
   return [
     {
@@ -234,6 +289,9 @@ function sampleHistory(): IngestHistoryJob[] {
 
 let history: IngestHistoryJob[] = sampleHistory();
 let settings: AppSettings | null = null;
+// Counts multi-destination runs so design mode deterministically exercises the failure UI:
+// every 3rd run drops one destination as a failure (success stays the common case).
+let multiRunCount = 0;
 
 // 1x1 transparent-ish gray placeholder for thumbnails in design mode.
 const PLACEHOLDER_THUMB =
@@ -410,6 +468,17 @@ export async function invoke<T = unknown>(command: string, args?: Record<string,
         skipped: [],
       };
       return result as T;
+    }
+    case "run_ingest_multi": {
+      // Share the run's job_id so the simulated progress + file-verified events
+      // (tauri-event.ts) match this run's listeners.
+      designJobState.id = (a.jobId as string) ?? "";
+      multiRunCount += 1;
+      const failLast = multiRunCount % 3 === 0; // every 3rd run reaches the failure UI
+      // Keep the run screen up long enough to watch the per-destination rows advance and
+      // the live verified feed populate.
+      await new Promise((resolve) => setTimeout(resolve, 20000));
+      return sampleMultiResult((a.destinationPaths as string[]) ?? [], failLast) as T;
     }
     case "cancel_ingest":
       return undefined as T;

@@ -150,6 +150,7 @@ mod tests {
             destination_hash: "h".to_string(),
             verified: true,
             duration_ms: Some(1000),
+            thumbnail_kind: crate::ingest::copier::ThumbnailKind::None,
         }
     }
 

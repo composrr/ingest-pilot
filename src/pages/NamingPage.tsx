@@ -216,7 +216,7 @@ export function NamingPage() {
           </button>
           <button
             className={`inline-flex h-8 items-center gap-1 rounded-lg px-3 text-xs font-semibold transition ${
-              dirty ? "bg-signal text-paper hover:brightness-105" : "border border-mist text-graphite"
+              dirty ? "bg-signal text-primaryfg hover:brightness-105" : "border border-mist text-graphite"
             }`}
             disabled={!dirty}
             onClick={() => void save()}
@@ -539,7 +539,7 @@ function TemplateEditor({
           </div>
           <div className="mt-2 flex items-center gap-1.5">
             <button
-              className="inline-flex h-8 flex-1 items-center justify-center gap-1 rounded-lg bg-signal px-2 text-xs font-semibold text-paper transition hover:brightness-105"
+              className="inline-flex h-8 flex-1 items-center justify-center gap-1 rounded-lg bg-signal px-2 text-xs font-semibold text-primaryfg transition hover:brightness-105"
               onClick={() => void createPreset()}
               type="button"
             >

@@ -230,6 +230,12 @@ pub struct ReportDefaults {
     /// Where generated artifacts land (root / subfolder / custom path).
     #[serde(default)]
     pub output_location: ReportOutputLocation,
+    /// Longest edge (px) of generated report thumbnails.
+    #[serde(default = "default_thumbnail_max_edge")]
+    pub thumbnail_max_edge: u32,
+    /// JPEG quality (1–100) for generated report thumbnails.
+    #[serde(default = "default_thumbnail_jpeg_quality")]
+    pub thumbnail_jpeg_quality: u8,
 }
 
 impl Default for ReportDefaults {
@@ -240,8 +246,18 @@ impl Default for ReportDefaults {
             open_report_when_done: false,
             notes_template: String::new(),
             output_location: ReportOutputLocation::default(),
+            thumbnail_max_edge: default_thumbnail_max_edge(),
+            thumbnail_jpeg_quality: default_thumbnail_jpeg_quality(),
         }
     }
+}
+
+fn default_thumbnail_max_edge() -> u32 {
+    480
+}
+
+fn default_thumbnail_jpeg_quality() -> u8 {
+    80
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

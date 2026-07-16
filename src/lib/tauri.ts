@@ -32,6 +32,8 @@ export const defaultAppSettings: AppSettings = {
     open_report_when_done: false,
     notes_template: "",
     output_location: { mode: "root", subfolder: "_Admin", custom_path: "", move_mhl: false },
+    thumbnail_max_edge: 480,
+    thumbnail_jpeg_quality: 80,
   },
   camera_watcher: {
     auto_detect_cards: true,
@@ -135,6 +137,10 @@ export type DiskSpace = {
   total_bytes: number;
 };
 
+// How a report thumbnail was produced (mirrors Rust `ThumbnailKind`), so the UI can
+// distinguish a real preview from the intentional per-format placeholder.
+export type ThumbnailKind = "embedded" | "sidecar" | "ffmpeg" | "placeholder" | "none";
+
 export type CopiedFile = {
   source_path: string;
   destination_path: string;
@@ -145,6 +151,7 @@ export type CopiedFile = {
   destination_hash: string;
   verified: boolean;
   duration_ms?: number | null;
+  thumbnail_kind?: ThumbnailKind;
 };
 
 export type SkippedFile = {
@@ -166,6 +173,24 @@ export type IngestResult = {
   skipped: SkippedFile[];
 };
 
+// Per-destination progress within a concurrent multi-destination copy (mirrors Rust
+// `DestinationProgress`). Populated only by `run_ingest_multi`; empty for the classic
+// single-destination path.
+export type DestinationProgress = {
+  index: number;
+  path: string;
+  label: string;
+  phase: string;
+  bytes_done: number;
+  bytes_total: number;
+  verified_bytes: number;
+  verified_files: number;
+  failed_files: number;
+  bytes_per_second: number;
+  remaining_ms?: number | null;
+  free_space_bytes?: number | null;
+};
+
 export type IngestProgress = {
   job_id: string;
   phase: string;
@@ -179,6 +204,38 @@ export type IngestProgress = {
   elapsed_ms: number;
   bytes_per_second: number;
   remaining_ms?: number | null;
+  // Additive multi-destination fields (default 0/[] from Rust `#[serde(default)]`), so
+  // existing single-destination consumers keep working unchanged.
+  destination_count?: number;
+  destinations?: DestinationProgress[];
+};
+
+// Emitted on the `file-verified` event, once per file per destination as it finishes
+// verifying — the live per-file integrity feed (mirrors Rust `FileVerified`).
+export type FileVerified = {
+  job_id: string;
+  destination_index: number;
+  destination_path: string;
+  source_path: string;
+  relative_path: string;
+  size_bytes: number;
+  verified: boolean;
+  source_hash: string;
+  destination_hash: string;
+  algo: string;
+};
+
+export type DestinationFailure = {
+  index: number;
+  path: string;
+  error: string;
+};
+
+// Result of `run_ingest_multi`: one IngestResult per destination that completed (in
+// destination order) plus any per-destination failures (mirrors Rust `MultiIngestResult`).
+export type MultiIngestResult = {
+  roots: IngestResult[];
+  failures: DestinationFailure[];
 };
 
 export type IngestHistoryJob = {
@@ -374,6 +431,41 @@ export async function runIngest(
     sourcePath,
     variableValues,
     destinationOverride: destinationOverride || null,
+    preserveSidecars,
+    renameFiles,
+    cameraOverride: cameraOverride || null,
+    includedRelativePaths,
+    useExistingRoot,
+    jobId,
+    rootNameOverride: rootNameOverride || null,
+    fileRenamePatternOverride: fileRenamePatternOverride || null,
+  });
+}
+
+// Concurrent multi-destination copy: one call copies `sourcePath` to every
+// `destinationPaths` entry at once (the tee happens in Rust). Emits the extended
+// `ingest-progress` (with `destinations[]`) plus per-file `file-verified` events, both
+// stamped with `jobId`. Phase C2 rewires the UI onto this; the current UI still uses
+// `runIngest`.
+export async function runIngestMulti(
+  presetId: string,
+  sourcePath: string,
+  variableValues: Record<string, string>,
+  destinationPaths: string[],
+  preserveSidecars: boolean,
+  renameFiles: boolean,
+  cameraOverride: string | undefined,
+  includedRelativePaths: string[],
+  useExistingRoot: boolean,
+  jobId: string,
+  rootNameOverride?: string,
+  fileRenamePatternOverride?: string,
+) {
+  return invoke<MultiIngestResult>("run_ingest_multi", {
+    presetId,
+    sourcePath,
+    variableValues,
+    destinationPaths,
     preserveSidecars,
     renameFiles,
     cameraOverride: cameraOverride || null,

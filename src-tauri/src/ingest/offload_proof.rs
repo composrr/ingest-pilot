@@ -2,9 +2,14 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
-use printpdf::{BuiltinFont, Mm, PdfDocument};
+use printpdf::{
+    BuiltinFont, ColorBits, ColorSpace, Image, ImageTransform, ImageXObject, Mm, PdfDocument, Px,
+};
 
 use crate::ingest::copier::CopiedFile;
+
+/// Cap on how many thumbnails the proof embeds (keeps the PDF small and the layout tidy).
+const MAX_PDF_THUMBS: usize = 6;
 
 pub struct OffloadProofInput<'a> {
     pub root_path: &'a str,
@@ -89,6 +94,54 @@ pub fn write_offload_proof(input: OffloadProofInput<'_>) -> Result<PathBuf, Stri
         y -= 7.0;
     }
 
+    // Preview strip: embed up to MAX_PDF_THUMBS thumbnails (resolved from each file's
+    // root-relative `thumbnail_path`). Decoded + downscaled with the `image` crate and
+    // placed as raw RGB ImageXObjects so we don't depend on printpdf's image version.
+    // Decode *before* the cap so a run whose first entries are non-embeddable (e.g. a
+    // passthrough .webp/.gif thumbnail the jpeg/png-only decoder rejects) still fills the
+    // strip with the first MAX_PDF_THUMBS decodable previews rather than rendering empty.
+    let root = Path::new(input.root_path);
+    let previews: Vec<(ImageXObject, u32, u32)> = input
+        .copied_files
+        .iter()
+        .filter_map(|file| file.thumbnail_path.as_ref())
+        .map(|relative| root.join(relative.replace('\\', "/")))
+        .filter(|path| path.is_file())
+        .filter_map(|path| load_thumbnail_xobject(&path, 200))
+        .take(MAX_PDF_THUMBS)
+        .collect();
+    if !previews.is_empty() {
+        y -= 3.0;
+        current.use_text("Preview", 11.0, Mm(18.0), Mm(y), &bold);
+        y -= 4.0;
+        let cell_w = 30.0_f32; // horizontal pitch per thumbnail, mm
+        let cell_h = 18.0_f32; // image box height, mm
+        let strip_top = y; // images hang down from here
+        for (index, (xobject, pixel_w, pixel_h)) in previews.into_iter().enumerate() {
+            let dpi = 300.0_f32;
+            let image_w_pt = (pixel_w as f32) / dpi * 72.0;
+            let image_h_pt = (pixel_h as f32) / dpi * 72.0;
+            let target_w_pt = (cell_w - 3.0) * 72.0 / 25.4;
+            let target_h_pt = cell_h * 72.0 / 25.4;
+            let scale = (target_w_pt / image_w_pt).min(target_h_pt / image_h_pt);
+            let draw_h_mm = image_h_pt * scale / 72.0 * 25.4;
+            let x_mm = 18.0 + (index as f32) * cell_w;
+            let y_mm = strip_top - draw_h_mm;
+            Image::from(xobject).add_to_layer(
+                current.clone(),
+                ImageTransform {
+                    translate_x: Some(Mm(x_mm)),
+                    translate_y: Some(Mm(y_mm)),
+                    scale_x: Some(scale),
+                    scale_y: Some(scale),
+                    dpi: Some(dpi),
+                    ..Default::default()
+                },
+            );
+        }
+        y = strip_top - cell_h - 3.0;
+    }
+
     y -= 3.0;
     current.use_text("Files", 11.0, Mm(18.0), Mm(y), &bold);
     y -= 6.0;
@@ -134,6 +187,27 @@ pub fn write_offload_proof(input: OffloadProofInput<'_>) -> Result<PathBuf, Stri
     ))
     .map_err(|error| error.to_string())?;
     Ok(out_path)
+}
+
+/// Decode a thumbnail file (jpeg/png), downscale to fit within `box_px`, and build a
+/// raw-RGB `ImageXObject` for printpdf. Returns the xobject plus its pixel dimensions.
+/// Any decode failure (e.g. a passthrough .webp thumbnail) yields None → skipped.
+fn load_thumbnail_xobject(path: &Path, box_px: u32) -> Option<(ImageXObject, u32, u32)> {
+    let image = image::open(path).ok()?.thumbnail(box_px, box_px);
+    let rgb = image.to_rgb8();
+    let (width, height) = (rgb.width(), rgb.height());
+    let xobject = ImageXObject {
+        width: Px(width as usize),
+        height: Px(height as usize),
+        color_space: ColorSpace::Rgb,
+        bits_per_component: ColorBits::Bit8,
+        interpolate: false,
+        image_data: rgb.into_raw(),
+        image_filter: None,
+        smask: None,
+        clipping_bbox: None,
+    };
+    Some((xobject, width, height))
 }
 
 fn short_hash(hash: &str) -> String {

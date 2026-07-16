@@ -32,3 +32,12 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 printpdf = "0.7"
 windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }
+# Thumbnail extraction. `rawler` is pure Rust (no bundled binaries) and gives us
+# the embedded JPEG preview of stills-RAW (.arw/.dng/.cr2/.nef/…). `image` decodes
+# + downscales the extracted/poster JPEGs; trimmed to jpeg/png so we don't pull the
+# heavy AVIF/WebP encoders. `rayon` bounds the parallel thumbnail attach loop.
+rawler = "0.7.2"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
+rayon = "1.12.0"
+# Fallback embedded-thumbnail locator when rawler yields nothing.
+kamadak-exif = "0.6.1"

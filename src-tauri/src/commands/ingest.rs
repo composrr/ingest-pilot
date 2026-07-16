@@ -1,8 +1,9 @@
 use crate::commands::presets::get_preset;
 use crate::core::folder_tree::{scaffold_project as scaffold, ScaffoldResult};
 use crate::ingest::copier::{
-    attach_report_thumbnails, recopy_and_verify, run_ingest as run_ingest_copy, CopiedFile,
-    IngestProgress, IngestResult, SkippedFile,
+    attach_report_thumbnails, recopy_and_verify, run_ingest as run_ingest_copy,
+    run_ingest_multi as run_ingest_multi_copy, CopiedFile, FileVerified, IngestProgress,
+    IngestResult, MultiIngestResult, SkippedFile, ThumbnailConfig,
 };
 use crate::core::metadata_preset::MetadataPreset;
 use crate::ingest::metadata_manifest::{write_metadata_manifest, FolderMetadataOverride};
@@ -20,6 +21,19 @@ use tauri::{AppHandle, Emitter, State};
 #[derive(Default)]
 pub struct IngestJobs {
     jobs: Mutex<BTreeMap<String, Arc<AtomicBool>>>,
+}
+
+/// Build the report thumbnail config from saved settings (falling back to defaults if
+/// settings can't be read). Shared by the report and offload-proof commands.
+fn report_thumbnail_config(app: &AppHandle) -> ThumbnailConfig {
+    match crate::commands::settings::get_settings(app.clone()) {
+        Ok(settings) => ThumbnailConfig {
+            include: settings.report_defaults.include_thumbnails,
+            max_edge: settings.report_defaults.thumbnail_max_edge,
+            jpeg_quality: settings.report_defaults.thumbnail_jpeg_quality,
+        },
+        Err(_) => ThumbnailConfig::default(),
+    }
 }
 
 #[tauri::command]
@@ -119,6 +133,96 @@ pub async fn run_ingest(
     result
 }
 
+/// Concurrent multi-destination ingest: copies one source to every destination at once
+/// (one thread per drive, each reusing the verified-copy path). Mirrors `run_ingest`'s
+/// job-registry + cancel wiring, but its emit closures fan out the extended
+/// `ingest-progress` (now carrying `destinations[]`) plus a per-file `file-verified`
+/// event, and it returns a `MultiIngestResult` (one root per destination + any failures).
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn run_ingest_multi(
+    app: AppHandle,
+    jobs: State<'_, IngestJobs>,
+    preset_id: String,
+    source_path: String,
+    variable_values: BTreeMap<String, String>,
+    destination_paths: Vec<String>,
+    preserve_sidecars: bool,
+    rename_files: bool,
+    camera_override: Option<String>,
+    included_relative_paths: Option<Vec<String>>,
+    use_existing_root: bool,
+    job_id: Option<String>,
+    root_name_override: Option<String>,
+    file_rename_pattern_override: Option<String>,
+) -> Result<MultiIngestResult, String> {
+    let preset =
+        get_preset(app.clone(), preset_id)?.ok_or_else(|| "Preset not found.".to_string())?;
+
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    if let Some(job_id) = job_id.as_ref() {
+        jobs.jobs
+            .lock()
+            .map_err(|_| "Ingest job registry is unavailable.".to_string())?
+            .insert(job_id.clone(), cancel_flag.clone());
+    }
+
+    let emit_job_id = job_id.clone().unwrap_or_default();
+    let cancel_for_copy = cancel_flag.clone();
+    let should_emit_progress = job_id.is_some();
+    let app_for_progress = app.clone();
+
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let app_progress = app_for_progress.clone();
+        let app_verified = app_for_progress.clone();
+        let progress_job_id = emit_job_id.clone();
+        let verified_job_id = emit_job_id.clone();
+
+        let mut emit_progress = move |mut progress: IngestProgress| {
+            progress.job_id = progress_job_id.clone();
+            let _ = app_progress.emit("ingest-progress", progress);
+        };
+        let mut emit_verified = move |mut event: FileVerified| {
+            event.job_id = verified_job_id.clone();
+            let _ = app_verified.emit("file-verified", event);
+        };
+
+        let (progress_callback, verified_callback): (
+            Option<&mut dyn FnMut(IngestProgress)>,
+            Option<&mut dyn FnMut(FileVerified)>,
+        ) = if should_emit_progress {
+            (Some(&mut emit_progress), Some(&mut emit_verified))
+        } else {
+            (None, None)
+        };
+
+        run_ingest_multi_copy(
+            &preset,
+            source_path,
+            variable_values,
+            destination_paths,
+            preserve_sidecars,
+            rename_files,
+            camera_override,
+            included_relative_paths,
+            use_existing_root,
+            root_name_override,
+            file_rename_pattern_override,
+            Some(cancel_for_copy.as_ref()),
+            progress_callback,
+            verified_callback,
+        )
+    })
+    .await
+    .map_err(|error| format!("Ingest worker failed: {error}"))?;
+
+    if let Some(job_id) = job_id.as_ref() {
+        let _ = jobs.jobs.lock().map(|mut current| current.remove(job_id));
+    }
+
+    result
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct RetryFailedItem {
     pub source_path: String,
@@ -150,6 +254,7 @@ pub async fn retry_failed_copies(items: Vec<RetryFailedItem>) -> Result<Vec<Copi
 /// Build a printable PDF offload integrity proof at the project root.
 #[tauri::command]
 pub async fn generate_offload_proof(
+    app: AppHandle,
     root_path: String,
     preset_name: String,
     source_paths: Vec<String>,
@@ -163,7 +268,20 @@ pub async fn generate_offload_proof(
     generated_at: String,
     output_dir: Option<String>,
 ) -> Result<String, String> {
+    let thumbnail_config = report_thumbnail_config(&app);
     tauri::async_runtime::spawn_blocking(move || {
+        let mut copied_files = copied_files;
+        // Ensure thumbnails exist so the PDF can embed them. Idempotent with the HTML
+        // report pass: assets are content-addressed and already-resolved files are
+        // skipped, so this is cheap when the report ran first. Never fatal.
+        let _ = attach_report_thumbnails(
+            &PathBuf::from(&root_path),
+            &mut copied_files,
+            &source_paths.join(";"),
+            thumbnail_config,
+            None,
+            None,
+        );
         let path = write_offload_proof(OffloadProofInput {
             root_path: &root_path,
             output_dir: output_dir.as_deref(),
@@ -300,6 +418,7 @@ pub async fn generate_ingest_report(
 ) -> Result<String, String> {
     let app_for_progress = app.clone();
     let emit_job_id = job_id.unwrap_or_default();
+    let thumbnail_config = report_thumbnail_config(&app);
 
     tauri::async_runtime::spawn_blocking(move || {
         let mut copied_files = copied_files;
@@ -308,13 +427,16 @@ pub async fn generate_ingest_report(
             let _ = app_for_progress.emit("report-progress", progress);
         };
 
-        attach_report_thumbnails(
+        // Best-effort: thumbnails are optional, so never let their generation (an Err or
+        // a contained panic surfaced as Err) block writing the HTML report the user needs.
+        let _ = attach_report_thumbnails(
             &PathBuf::from(&root_path),
             &mut copied_files,
             &source_path,
+            thumbnail_config,
             None,
             Some(&mut emit_progress),
-        )?;
+        );
 
         // One combined report (lists every destination + each file's copy per destination).
         let report_path = write_html_report_to(

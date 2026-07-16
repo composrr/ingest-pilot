@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet><style>body{margin:0;background:#121314}a{color:#a8aaad}a:hover{color:#ececed}</style></helmet>
+<div style="width:920px;margin:0 auto;padding:48px 40px 64px;font-family:'Segoe UI',system-ui,-apple-system,sans-serif;color:#ececed">
+  <div style="display:flex;align-items:center;gap:12px">
+    <div style="width:36px;height:36px;border-radius:9px;background:#e8e9ea;display:grid;place-items:center"><svg width="17" height="17" viewBox="0 0 16 16"><path d="M8 1.4l1.7 4.9 4.9 1.7-4.9 1.7L8 14.6 6.3 9.7 1.4 8l4.9-1.7z" fill="#121314"></path></svg></div>
+    <div>
+      <h1 style="font-size:22px;font-weight:700;margin:0;letter-spacing:-0.2px">Dark theme — True Graphite</h1>
+      <div style="font-size:13px;color:#a8aaad;margin-top:2px">Ingest Pilot · colors only, no layout or functionality changes · committed option <a href="/Home Options.dc.html#7a" style="color:#a8aaad">7a</a></div>
+    </div>
+  </div>
+  <div style="font-size:13.5px;line-height:1.6;color:#a8aaad;margin-top:20px;background:#1c1d1f;border:1px solid #2b2d30;border-radius:10px;padding:14px 18px">
+    Implementation: swap each existing light-theme color for its token below — one-to-one by role. Files: <span style="font-family:ui-monospace,Consolas,monospace;color:#ececed">dark-theme.css</span> (CSS custom properties) and <span style="font-family:ui-monospace,Consolas,monospace;color:#ececed">dark-theme.json</span>. Near-neutral gray ramp (a whisper of cool); the primary action is deliberately muted — never a bright/inverted button.
+  </div>
+  <sc-for list="{{ groups }}" as="g" hint-placeholder-count="6">
+    <div style="margin-top:32px">
+      <div style="font-size:11px;font-weight:700;letter-spacing:0.09em;color:#707377">{{ g.title }}</div>
+      <div style="display:flex;flex-direction:column;margin-top:10px;border:1px solid #2b2d30;border-radius:10px;overflow:hidden">
+        <sc-for list="{{ g.tokens }}" as="tk" hint-placeholder-count="4">
+          <div style="display:grid;grid-template-columns:64px 220px 110px 1fr;gap:16px;align-items:center;padding:11px 16px;background:#171819;border-top:1px solid #26272a">
+            <div style="height:34px;border-radius:7px;background:{{ tk.hex }};border:1px solid {{ tk.swatchBorder }}"></div>
+            <span style="font-family:ui-monospace,Consolas,monospace;font-size:12.5px;color:#ececed">{{ tk.name }}</span>
+            <span style="font-family:ui-monospace,Consolas,monospace;font-size:12.5px;color:#a8aaad">{{ tk.hex }}</span>
+            <span style="font-size:12.5px;color:#a8aaad">{{ tk.use }}</span>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+  </sc-for>
+  <div style="margin-top:36px">
+    <div style="font-size:11px;font-weight:700;letter-spacing:0.09em;color:#707377">REFERENCE RENDER</div>
+    <div style="margin-top:10px;border:1px solid #2b2d30;border-radius:10px;overflow:hidden;width:840px">
+      <div style="transform:scale(0.6148);transform-origin:top left;width:1366px;height:860px">
+        <dc-import name="../HomeThemePreview" variant="truegraphite" label="True Graphite" sub="Ingest Pilot" hint-size="1366px,860px"></dc-import>
+      </div>
+      <div style="height:529px;margin-top:-860px;position:relative;pointer-events:none"></div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  renderVals() {
+    const B = "#2b2d30", L = "rgba(0,0,0,0.2)";
+    const groups = [
+      { title: "SURFACES (DARKEST → LIGHTEST)", tokens: [
+        { name: "--ip-chrome", hex: "#0b0c0d", use: "Window title bar", swatchBorder: B },
+        { name: "--ip-app", hex: "#121314", use: "App background — sidebar sits directly on this", swatchBorder: B },
+        { name: "--ip-panel", hex: "#171819", use: "Main content panel", swatchBorder: B },
+        { name: "--ip-card", hex: "#1c1d1f", use: "Cards, tiles, table container", swatchBorder: B },
+        { name: "--ip-well", hex: "#222325", use: "Icon wells, chips, secondary buttons", swatchBorder: B }
+      ]},
+      { title: "BORDERS", tokens: [
+        { name: "--ip-border-panel", hex: "#26272a", use: "Panel outline, table row dividers", swatchBorder: B },
+        { name: "--ip-border-card", hex: "#2b2d30", use: "Card + well outlines", swatchBorder: B },
+        { name: "--ip-border-hover", hex: "#3e4044", use: "Card border on hover", swatchBorder: B }
+      ]},
+      { title: "TEXT", tokens: [
+        { name: "--ip-text", hex: "#ececed", use: "Headings, primary labels", swatchBorder: L },
+        { name: "--ip-text-2", hex: "#a8aaad", use: "Secondary text, inactive nav items", swatchBorder: L },
+        { name: "--ip-text-3", hex: "#707377", use: "Captions, timestamps, column headers", swatchBorder: L },
+        { name: "--ip-chrome-text", hex: "#c2c4c7", use: "Title-bar app name", swatchBorder: L },
+        { name: "--ip-chrome-icon", hex: "#787c81", use: "Title-bar window controls", swatchBorder: L }
+      ]},
+      { title: "PRIMARY ACTION (MUTED — NEVER BRIGHT/INVERTED)", tokens: [
+        { name: "--ip-primary-bg", hex: "#36383b", use: "Primary buttons + hero tile background", swatchBorder: B },
+        { name: "--ip-primary-text", hex: "#ececed", use: "Text on primary", swatchBorder: L },
+        { name: "--ip-primary-icon", hex: "#e4e5e7", use: "Icons on primary", swatchBorder: L }
+      ]},
+      { title: "BRAND MARK", tokens: [
+        { name: "--ip-logo-bg", hex: "#e8e9ea", use: "Logo tile (stays light in dark mode)", swatchBorder: L },
+        { name: "--ip-logo-star", hex: "#121314", use: "Star glyph on logo tile", swatchBorder: B }
+      ]},
+      { title: "STATUS", tokens: [
+        { name: "--ip-ok", hex: "#79c39b", use: "\u201cVerified\u201d text", swatchBorder: L },
+        { name: "--ip-ok-dot", hex: "#5dad83", use: "OK status dots", swatchBorder: L },
+        { name: "--ip-warn", hex: "#d8ab5a", use: "Warning text (e.g. \u201c2 skipped\u201d)", swatchBorder: L },
+        { name: "--ip-warn-dot", hex: "#cf9b3e", use: "Warning dots", swatchBorder: L }
+      ]},
+      { title: "NAV STATES", tokens: [
+        { name: "--ip-nav-active-bg", hex: "#1c1d1f", use: "Active nav item background", swatchBorder: B },
+        { name: "--ip-nav-active-border", hex: "#2b2d30", use: "Active nav item border", swatchBorder: B }
+      ]}
+    ];
+    return { groups: groups };
+  }
+}
+</script>
+</body>
+</html>

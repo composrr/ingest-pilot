@@ -60,7 +60,7 @@ export function Dashboard({ onOpenHelp, onStartIngest, onOpenPresets, onOpenScaf
           <h1 className="text-2xl font-bold tracking-tight text-ink">Home</h1>
         </div>
         <button
-          className="inline-flex h-9 items-center gap-2 rounded-xl bg-signal px-4 text-sm font-semibold text-paper transition hover:bg-black"
+          className="inline-flex h-9 items-center gap-2 rounded-xl bg-signal px-4 text-sm font-semibold text-primaryfg transition hover:bg-black"
           onClick={onStartIngest}
           type="button"
         >
@@ -83,7 +83,7 @@ export function Dashboard({ onOpenHelp, onStartIngest, onOpenPresets, onOpenScaf
                 <div className="mt-0.5 text-[12.5px] text-graphite">Copy, rename, verify, report</div>
               </div>
               <button
-                className="inline-flex h-9 items-center rounded-xl bg-signal px-[18px] text-[13px] font-semibold text-paper transition hover:bg-black"
+                className="inline-flex h-9 items-center rounded-xl bg-signal px-[18px] text-[13px] font-semibold text-primaryfg transition hover:bg-black"
                 onClick={onStartIngest}
                 type="button"
               >

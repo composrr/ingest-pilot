@@ -89,6 +89,8 @@ export function SettingsPage() {
   const setLastAction = useAppStore((state) => state.setLastAction);
   const bumpSettingsRev = useAppStore((state) => state.bumpSettingsRev);
   const setPendingUpdate = useAppStore((state) => state.setPendingUpdate);
+  const theme = useAppStore((state) => state.theme);
+  const setTheme = useAppStore((state) => state.setTheme);
   const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "uptodate" | "error">("idle");
   const [updateError, setUpdateError] = useState<string | null>(null);
 
@@ -233,7 +235,7 @@ export function SettingsPage() {
             Reset
           </button>
           <button
-            className={`inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold text-paper transition disabled:opacity-40 ${
+            className={`inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold text-primaryfg transition disabled:opacity-40 ${
               justSaved ? "bg-emerald-600 hover:bg-emerald-600" : "bg-signal hover:bg-black"
             }`}
             disabled={isSaving}
@@ -251,7 +253,7 @@ export function SettingsPage() {
           <button
             key={tab.id}
             className={`h-7 rounded-lg px-3 text-xs font-semibold transition ${
-              activeTab === tab.id ? "bg-signal text-paper" : "text-graphite hover:bg-porcelain"
+              activeTab === tab.id ? "bg-signal text-primaryfg" : "text-graphite hover:bg-porcelain"
             }`}
             onClick={() => setActiveTab(tab.id)}
             type="button"
@@ -275,6 +277,22 @@ export function SettingsPage() {
 
       <div>
         <TabPanel active={activeTab} tab="ingest">
+          <SettingsSection
+            help="Ingest Pilot ships dark by default — built for dim edit bays and DIT carts. Switch to light any time; the choice is remembered on this machine."
+            title="Appearance"
+          >
+            <CompactSelectRow
+              description="Dark suits color-critical and low-light environments; light suits bright offices."
+              label="Theme"
+              onChange={(value) => setTheme(value === "light" ? "light" : "dark")}
+              options={[
+                { label: "Dark", value: "dark" },
+                { label: "Light", value: "light" },
+              ]}
+              value={theme}
+            />
+          </SettingsSection>
+
           <SettingsSection
             help="These defaults apply when opening Ingest Media. Presets can still override some behavior."
             title="Ingest Defaults"
@@ -407,11 +425,34 @@ export function SettingsPage() {
             />
             <ToggleRow
               checked={settings.report_defaults.include_thumbnails}
-              description="Use available thumbnails in reports when they can be matched."
+              description="Generate thumbnails for the HTML report and PDF offload proof (RAW stills, video posters, and matched sidecars)."
               label="Include thumbnails"
               onChange={(include_thumbnails) =>
                 updateSettings({ report_defaults: { ...settings.report_defaults, include_thumbnails } })
               }
+            />
+            <SliderRow
+              description="Longest edge of generated report thumbnails, in pixels. Larger looks sharper but grows the report assets."
+              label="Thumbnail resolution"
+              max={1080}
+              min={240}
+              step={40}
+              onChange={(thumbnail_max_edge) =>
+                updateSettings({ report_defaults: { ...settings.report_defaults, thumbnail_max_edge } })
+              }
+              value={settings.report_defaults.thumbnail_max_edge}
+            />
+            <SliderRow
+              description="JPEG quality for generated report thumbnails (higher is sharper and larger)."
+              label="Thumbnail quality"
+              max={100}
+              min={40}
+              step={5}
+              unit=""
+              onChange={(thumbnail_jpeg_quality) =>
+                updateSettings({ report_defaults: { ...settings.report_defaults, thumbnail_jpeg_quality } })
+              }
+              value={settings.report_defaults.thumbnail_jpeg_quality}
             />
             <ToggleRow
               checked={settings.report_defaults.open_report_when_done}
@@ -792,6 +833,8 @@ function SliderRow({
   max,
   min,
   onChange,
+  step = 4,
+  unit = "px",
   value,
 }: {
   description: string;
@@ -799,6 +842,8 @@ function SliderRow({
   max: number;
   min: number;
   onChange: (value: number) => void;
+  step?: number;
+  unit?: string;
   value: number;
 }) {
   return (
@@ -808,8 +853,8 @@ function SliderRow({
         <span className="block truncate text-[11px] text-graphite">{description}</span>
       </span>
       <span className="flex items-center gap-2">
-        <input className="w-full accent-signal" max={max} min={min} onChange={(event) => onChange(Number(event.target.value))} step={4} type="range" value={value} />
-        <span className="w-10 text-right text-[11px] font-semibold text-graphite">{value}px</span>
+        <input className="w-full accent-signal" max={max} min={min} onChange={(event) => onChange(Number(event.target.value))} step={step} type="range" value={value} />
+        <span className="w-10 text-right text-[11px] font-semibold text-graphite">{value}{unit}</span>
       </span>
     </div>
   );

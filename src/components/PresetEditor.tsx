@@ -424,7 +424,7 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
             Cancel
           </button>
           <button
-            className="inline-flex h-8 items-center gap-2 rounded-xl bg-signal px-3 text-xs font-semibold text-paper transition hover:bg-black"
+            className="inline-flex h-8 items-center gap-2 rounded-xl bg-signal px-3 text-xs font-semibold text-primaryfg transition hover:bg-black"
             onClick={saveDraft}
             type="button"
           >
@@ -804,7 +804,7 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
                 Cancel
               </button>
               <button
-                className="inline-flex h-8 items-center rounded-lg bg-signal px-3 text-xs font-semibold text-paper transition hover:bg-black disabled:opacity-40"
+                className="inline-flex h-8 items-center rounded-lg bg-signal px-3 text-xs font-semibold text-primaryfg transition hover:bg-black disabled:opacity-40"
                 disabled={!namingSaveName.trim()}
                 onClick={() => void saveAsNamingPreset()}
                 type="button"
@@ -825,7 +825,7 @@ export function PresetEditor({ initialPreset, onCancel, onSave }: PresetEditorPr
                 <p className="text-xs text-graphite">Create or edit metadata schemas and their field options. Selecting one attaches it to this preset.</p>
               </div>
               <button
-                className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-signal px-3 text-sm font-semibold text-paper transition hover:bg-black"
+                className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-signal px-3 text-sm font-semibold text-primaryfg transition hover:bg-black"
                 onClick={() => {
                   setIsMetadataManagerOpen(false);
                   refreshMetadataSummaries();

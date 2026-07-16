@@ -1,0 +1,42 @@
+{
+  "name": "Ingest Pilot — True Graphite (dark)",
+  "note": "Colors only. Map each token to the equivalent light-theme role; no layout or functionality changes.",
+  "surfaces": {
+    "chrome": "#0b0c0d",
+    "app": "#121314",
+    "panel": "#171819",
+    "card": "#1c1d1f",
+    "well": "#222325"
+  },
+  "borders": {
+    "panel": "#26272a",
+    "card": "#2b2d30",
+    "cardHover": "#3e4044"
+  },
+  "text": {
+    "primary": "#ececed",
+    "secondary": "#a8aaad",
+    "tertiary": "#707377",
+    "chromeText": "#c2c4c7",
+    "chromeIcon": "#787c81"
+  },
+  "primaryAction": {
+    "bg": "#36383b",
+    "text": "#ececed",
+    "icon": "#e4e5e7"
+  },
+  "logo": {
+    "bg": "#e8e9ea",
+    "star": "#121314"
+  },
+  "status": {
+    "ok": "#79c39b",
+    "okDot": "#5dad83",
+    "warn": "#d8ab5a",
+    "warnDot": "#cf9b3e"
+  },
+  "nav": {
+    "activeBg": "#1c1d1f",
+    "activeBorder": "#2b2d30"
+  }
+}

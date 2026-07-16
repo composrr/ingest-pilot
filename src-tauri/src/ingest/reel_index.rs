@@ -17,6 +17,7 @@ struct ReelRow {
     hash: String,
     source_path: String,
     destination_path: String,
+    thumbnail_path: Option<String>,
 }
 
 fn rows(copied_files: &[CopiedFile]) -> Vec<ReelRow> {
@@ -37,6 +38,7 @@ fn rows(copied_files: &[CopiedFile]) -> Vec<ReelRow> {
             hash: file.destination_hash.clone(),
             source_path: file.source_path.clone(),
             destination_path: file.destination_path.clone(),
+            thumbnail_path: file.thumbnail_path.clone(),
         })
         .collect()
 }
@@ -59,11 +61,11 @@ pub fn write_reel_index(
 
     let (ext, content) = if as_csv {
         let mut text = String::from(
-            "filename,camera,kind,size_bytes,duration_ms,verified,hash,source_path,destination_path\n",
+            "filename,camera,kind,size_bytes,duration_ms,verified,hash,source_path,destination_path,thumbnail_path\n",
         );
         for row in &rows {
             text.push_str(&format!(
-                "{},{},{},{},{},{},{},{},{}\n",
+                "{},{},{},{},{},{},{},{},{},{}\n",
                 csv_field(&row.filename),
                 csv_field(&row.camera),
                 row.kind,
@@ -73,6 +75,7 @@ pub fn write_reel_index(
                 row.hash,
                 csv_field(&row.source_path),
                 csv_field(&row.destination_path),
+                csv_field(row.thumbnail_path.as_deref().unwrap_or_default()),
             ));
         }
         ("csv", text)
@@ -111,6 +114,7 @@ mod tests {
             destination_hash: "h".to_string(),
             verified: true,
             duration_ms: Some(1000),
+            thumbnail_kind: crate::ingest::copier::ThumbnailKind::None,
         }
     }
 

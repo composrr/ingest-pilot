@@ -252,7 +252,7 @@ export function PresetsPage() {
             Import
           </ToolbarButton>
           <button
-            className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-signal px-2.5 text-xs font-semibold text-paper transition hover:bg-black"
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-signal px-2.5 text-xs font-semibold text-primaryfg transition hover:bg-black"
             onClick={() => void addStarterPresets()}
             type="button"
           >
@@ -429,7 +429,7 @@ function EmptyPresetList({ onAddStarter }: { onAddStarter: () => void }) {
         Add a starter preset or import an example file.
       </p>
       <button
-        className="inline-flex h-9 items-center gap-2 rounded-xl bg-signal px-3 text-sm font-semibold text-paper transition hover:bg-black"
+        className="inline-flex h-9 items-center gap-2 rounded-xl bg-signal px-3 text-sm font-semibold text-primaryfg transition hover:bg-black"
         onClick={onAddStarter}
         type="button"
       >

@@ -7,13 +7,14 @@ use crate::ingest::scanner::{scan_source, ScanFileKind, ScannedFile};
 use crate::ingest::verifier::verify_copy;
 use chrono::Local;
 use serde::{Deserialize, Serialize};
+use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -52,6 +53,138 @@ pub struct IngestProgress {
     pub elapsed_ms: u128,
     pub bytes_per_second: u64,
     pub remaining_ms: Option<u128>,
+    /// Number of destinations this run is copying to. `0`/empty for the classic
+    /// single-destination path so the pre-C2 UI (which ignores these) keeps working.
+    /// Additive + `#[serde(default)]` so events serialized before this field still parse.
+    #[serde(default)]
+    pub destination_count: u32,
+    /// Per-destination progress snapshots (concurrent multi-destination copy). Empty for
+    /// the single-destination path; the aggregate fields above stay populated regardless.
+    #[serde(default)]
+    pub destinations: Vec<DestinationProgress>,
+}
+
+/// Live progress for one destination drive within a concurrent multi-destination copy.
+/// All integer fields so it can derive `Eq` alongside `IngestProgress`.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct DestinationProgress {
+    /// 0-based index into the caller's destination list.
+    pub index: u32,
+    /// The destination the user chose (drive/folder root of this copy).
+    pub path: String,
+    /// Short display label for the destination (drive/volume/folder name).
+    pub label: String,
+    /// Current phase for this destination (mirrors the single-dest `IngestProgress.phase`).
+    pub phase: String,
+    pub bytes_done: u64,
+    pub bytes_total: u64,
+    pub verified_bytes: u64,
+    pub verified_files: usize,
+    pub failed_files: usize,
+    pub bytes_per_second: u64,
+    pub remaining_ms: Option<u64>,
+    pub free_space_bytes: Option<u64>,
+}
+
+/// One `file-verified` payload: emitted once per file per destination as it finishes
+/// verifying, giving the UI a live integrity feed. `job_id` is stamped by the command
+/// layer (like `IngestProgress.job_id`), so the copier leaves it empty.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct FileVerified {
+    pub job_id: String,
+    pub destination_index: u32,
+    pub destination_path: String,
+    pub source_path: String,
+    pub relative_path: String,
+    pub size_bytes: u64,
+    pub verified: bool,
+    pub source_hash: String,
+    pub destination_hash: String,
+    /// Checksum algorithm used for source-vs-destination verification.
+    pub algo: String,
+}
+
+/// A destination whose copy thread failed (drive pulled, unwritable path, panic). The
+/// multi-destination run captures these per-destination and lets the others finish
+/// rather than aborting the whole job.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DestinationFailure {
+    pub index: u32,
+    pub path: String,
+    pub error: String,
+}
+
+/// Result of a concurrent multi-destination ingest: one `IngestResult` per destination
+/// that completed (in destination order) plus any per-destination failures.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MultiIngestResult {
+    pub roots: Vec<IngestResult>,
+    pub failures: Vec<DestinationFailure>,
+}
+
+/// Static per-destination display metadata computed once (path label + free space), so
+/// the ~10 Hz aggregate emitter doesn't re-query the OS on every tick.
+#[derive(Debug, Clone)]
+struct DestinationMeta {
+    index: u32,
+    path: String,
+    label: String,
+    free_space_bytes: Option<u64>,
+}
+
+/// How a report thumbnail was produced, so the HTML/PDF can style genuine
+/// previews vs the intentional per-format placeholder. Additive + `#[serde(default)]`
+/// so history/report JSON written before this field still deserializes.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ThumbnailKind {
+    /// A real image lifted straight out of the file (browser image, raw embedded
+    /// preview, or exiftool-extracted preview).
+    Embedded,
+    /// A companion thumbnail image copied from a sidecar/THMBNL folder.
+    Sidecar,
+    /// A poster frame grabbed from video via ffmpeg.
+    Ffmpeg,
+    /// Extraction was attempted but nothing worked — the report renders a styled
+    /// per-format card (e.g. "ARW" / "R3D") instead of a blank box.
+    Placeholder,
+    /// No thumbnail and none attempted (non-media file, or legacy JSON).
+    #[default]
+    None,
+}
+
+/// Tunables for report thumbnail extraction, sourced from `ReportDefaults`.
+#[derive(Debug, Clone, Copy)]
+pub struct ThumbnailConfig {
+    /// Master switch (`ReportDefaults.include_thumbnails`); when false the attach
+    /// loop early-returns and every file stays `ThumbnailKind::None`.
+    pub include: bool,
+    /// Longest edge of the generated JPEG, in pixels.
+    pub max_edge: u32,
+    /// JPEG quality (1–100) for the re-encoded thumbnail.
+    pub jpeg_quality: u8,
+}
+
+impl Default for ThumbnailConfig {
+    fn default() -> Self {
+        Self {
+            include: true,
+            max_edge: 480,
+            jpeg_quality: 80,
+        }
+    }
+}
+
+impl ThumbnailConfig {
+    /// Clamp caller-supplied values into safe ranges (a 0-edge or 0-quality would
+    /// make the `image` encoder unhappy).
+    pub fn sanitized(self) -> Self {
+        Self {
+            include: self.include,
+            max_edge: self.max_edge.clamp(64, 4096),
+            jpeg_quality: self.jpeg_quality.clamp(1, 100),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -67,6 +200,10 @@ pub struct CopiedFile {
     /// Media duration in milliseconds (footage/audio only, when ffmpeg is available).
     #[serde(default)]
     pub duration_ms: Option<u64>,
+    /// Provenance of `thumbnail_path` (or why it's absent). Diagnostic + drives the
+    /// report placeholder styling.
+    #[serde(default)]
+    pub thumbnail_kind: ThumbnailKind,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -90,6 +227,9 @@ struct CopiedRoute {
     output_stem: String,
 }
 
+/// Single-destination ingest (public, stable signature — the classic path used by the
+/// `run_ingest` command, the retry flow, and every existing test). Delegates to
+/// `run_ingest_inner` with no per-file `file_verified` hook.
 #[allow(clippy::too_many_arguments)]
 pub fn run_ingest(
     preset: &Preset,
@@ -102,7 +242,42 @@ pub fn run_ingest(
     included_relative_paths: Option<Vec<String>>,
     use_existing_root: bool,
     cancel_flag: Option<&AtomicBool>,
+    progress: Option<&mut dyn FnMut(IngestProgress)>,
+) -> Result<IngestResult, String> {
+    run_ingest_inner(
+        preset,
+        source_path,
+        variable_values,
+        destination_override,
+        preserve_sidecars,
+        rename_files,
+        camera_override,
+        included_relative_paths,
+        use_existing_root,
+        cancel_flag,
+        progress,
+        None,
+    )
+}
+
+/// Core single-destination ingest. `file_verified` is an OPTIONAL hook fired once per
+/// file right after `copy_file_to_folder` records it (carrying the freshly-copied
+/// `CopiedFile` and this run's `root_path`); the concurrent multi-destination path uses
+/// it to stream a live per-file integrity feed. `None` for every classic caller.
+#[allow(clippy::too_many_arguments)]
+fn run_ingest_inner(
+    preset: &Preset,
+    source_path: String,
+    variable_values: BTreeMap<String, String>,
+    destination_override: Option<String>,
+    preserve_sidecars: bool,
+    rename_files: bool,
+    camera_override: Option<String>,
+    included_relative_paths: Option<Vec<String>>,
+    use_existing_root: bool,
+    cancel_flag: Option<&AtomicBool>,
     mut progress: Option<&mut dyn FnMut(IngestProgress)>,
+    mut file_verified: Option<&mut dyn FnMut(&CopiedFile, &Path)>,
 ) -> Result<IngestResult, String> {
     check_cancelled(cancel_flag)?;
     let scaffold = if use_existing_root {
@@ -240,6 +415,14 @@ pub fn run_ingest(
             verified_files,
             started_at,
         );
+        // Live per-file hook: the copy just recorded exactly one CopiedFile, so
+        // `copied_files.last()` is this file. Used by the multi-destination path to emit
+        // a `file-verified` event as each file finishes verifying.
+        if let Some(callback) = file_verified.as_deref_mut() {
+            if let Some(copied_file) = result.copied_files.last() {
+                callback(copied_file, &root_path);
+            }
+        }
         media_routes.insert(file.relative_path.clone(), copied);
         clip_number += 1;
     }
@@ -319,6 +502,11 @@ pub fn run_ingest(
             verified_files,
             started_at,
         );
+        if let Some(callback) = file_verified.as_deref_mut() {
+            if let Some(copied_file) = result.copied_files.last() {
+                callback(copied_file, &root_path);
+            }
+        }
         result.sidecars_copied += 1;
     }
 
@@ -351,6 +539,425 @@ pub fn run_ingest(
     );
 
     Ok(result)
+}
+
+/// Concurrent multi-destination ingest: copies the same source to N destinations at once,
+/// one thread per destination, each REUSING the proven single-destination verified-copy
+/// path (`run_ingest_inner`). Per-destination routing/rename/re-ingest-skip/verify and the
+/// per-root MHL all stay correct because every destination independently runs the full
+/// pipeline against a read-only shared source and its own disjoint output root.
+///
+/// Tradeoff (accepted for this phase): the source is read once PER destination (N reads),
+/// not a single read teed to N writers. A single-read tee is deliberately out of scope —
+/// per-destination reuse of the battle-tested path is lower risk and preserves every edge
+/// case (per-dest folder routing, re-ingest skip, unique-name resolution, sidecar pairing).
+///
+/// Progress: each destination thread streams its `IngestProgress` + per-file
+/// `file-verified` info over a channel to this (calling) thread, which aggregates them
+/// into a combined `IngestProgress` (with `destinations[]`) throttled to ~10 Hz and
+/// forwards each `file-verified` immediately. A failing destination is captured and the
+/// others finish; a cancel short-circuits to an error like the single-dest path.
+#[allow(clippy::too_many_arguments)]
+pub fn run_ingest_multi(
+    preset: &Preset,
+    source_path: String,
+    variable_values: BTreeMap<String, String>,
+    destination_overrides: Vec<String>,
+    preserve_sidecars: bool,
+    rename_files: bool,
+    camera_override: Option<String>,
+    included_relative_paths: Option<Vec<String>>,
+    use_existing_root: bool,
+    root_name_override: Option<String>,
+    file_rename_pattern_override: Option<String>,
+    cancel_flag: Option<&AtomicBool>,
+    mut per_dest_progress: Option<&mut dyn FnMut(IngestProgress)>,
+    mut file_verified: Option<&mut dyn FnMut(FileVerified)>,
+) -> Result<MultiIngestResult, String> {
+    // Apply per-ingest overrides to a local preset clone (mirrors the single-dest command
+    // layer). The caller's preset is left untouched; every destination thread shares this
+    // read-only clone by reference.
+    let mut preset = preset.clone();
+    if let Some(name) = root_name_override
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        preset.root_folder_pattern = name.clone();
+    }
+    if let Some(pattern) = file_rename_pattern_override
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        preset.file_rename_pattern = pattern.clone();
+    }
+    let preset = &preset;
+
+    // DEDUP by canonical key, preserving order. Two entries that resolve to the SAME
+    // root (a drive picked twice, a trailing-separator variant, or a case variant on
+    // Windows) would otherwise spawn two threads writing the same files into the same
+    // root: `scaffold_project` derives the root deterministically with no uniquification,
+    // and `unique_destination_path` is a non-atomic exists()-then-create — so concurrent
+    // writers to one root would clobber each other's bytes mid-copy, let `verify_copy`
+    // hash a half-written file (spurious fail OR a false-positive attestation on clobbered
+    // bytes), and write the MHL twice (last-writer-wins, possibly not matching disk). We
+    // keep only the FIRST of each duplicate group so no two roots are ever the same path.
+    let mut seen_destination_keys = std::collections::HashSet::new();
+    let destinations: Vec<String> = destination_overrides
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .filter(|value| seen_destination_keys.insert(canonical_destination_key(value)))
+        .collect();
+    if destinations.is_empty() {
+        return Err("Choose at least one destination before ingesting.".to_string());
+    }
+    let destination_count = destinations.len();
+
+    // Static per-destination metadata (label + free space) computed once so the throttled
+    // aggregate emitter never re-queries the OS on every tick.
+    let dest_meta: Vec<DestinationMeta> = destinations
+        .iter()
+        .enumerate()
+        .map(|(index, path)| DestinationMeta {
+            index: index as u32,
+            path: path.clone(),
+            label: destination_label(path),
+            free_space_bytes: free_space_bytes(path),
+        })
+        .collect();
+
+    // Latest per-destination snapshot; only ever touched by the drain loop on THIS thread,
+    // so no locking is required.
+    let mut latest: Vec<Option<IngestProgress>> = vec![None; destination_count];
+    let started_at = std::time::Instant::now();
+    // Force the first Progress event through immediately (throttle window already elapsed).
+    let mut last_emit = started_at
+        .checked_sub(std::time::Duration::from_millis(1_000))
+        .unwrap_or(started_at);
+
+    enum MultiEvent {
+        Progress {
+            index: usize,
+            progress: IngestProgress,
+        },
+        Verified(FileVerified),
+    }
+
+    let join_results: Vec<std::thread::Result<Result<IngestResult, String>>> =
+        std::thread::scope(|scope| {
+            let (tx, rx) = std::sync::mpsc::channel::<MultiEvent>();
+            let handles: Vec<_> = destinations
+                .iter()
+                .enumerate()
+                .map(|(index, destination)| {
+                    let tx_progress = tx.clone();
+                    let tx_verified = tx.clone();
+                    let destination = destination.clone();
+                    let source_path = source_path.clone();
+                    let variable_values = variable_values.clone();
+                    let camera_override = camera_override.clone();
+                    let included_relative_paths = included_relative_paths.clone();
+                    scope.spawn(move || {
+                        let mut progress_cb = move |progress: IngestProgress| {
+                            let _ = tx_progress.send(MultiEvent::Progress { index, progress });
+                        };
+                        let mut verified_cb = move |copied: &CopiedFile, root: &Path| {
+                            // relative_path = where the file landed within this dest's root.
+                            let relative_path = Path::new(&copied.destination_path)
+                                .strip_prefix(root)
+                                .map(|rel| rel.to_string_lossy().replace('\\', "/"))
+                                .unwrap_or_else(|_| copied.destination_path.clone());
+                            let _ = tx_verified.send(MultiEvent::Verified(FileVerified {
+                                job_id: String::new(),
+                                destination_index: index as u32,
+                                destination_path: root.to_string_lossy().to_string(),
+                                source_path: copied.source_path.clone(),
+                                relative_path,
+                                size_bytes: copied.size_bytes,
+                                verified: copied.verified,
+                                source_hash: copied.source_hash.clone(),
+                                destination_hash: copied.destination_hash.clone(),
+                                algo: "XXH3-128".to_string(),
+                            }));
+                        };
+                        run_ingest_inner(
+                            preset,
+                            source_path,
+                            variable_values,
+                            Some(destination),
+                            preserve_sidecars,
+                            rename_files,
+                            camera_override,
+                            included_relative_paths,
+                            use_existing_root,
+                            cancel_flag,
+                            Some(&mut progress_cb),
+                            Some(&mut verified_cb),
+                        )
+                    })
+                })
+                .collect();
+            // Drop our own sender so `rx` closes once every worker's clones drop.
+            drop(tx);
+
+            // Drain on THIS thread: aggregate + throttle progress; forward each
+            // file-verified immediately (~1/file/dest, no throttle needed).
+            for event in rx {
+                match event {
+                    MultiEvent::Progress { index, progress } => {
+                        if let Some(slot) = latest.get_mut(index) {
+                            *slot = Some(progress);
+                        }
+                        let now = std::time::Instant::now();
+                        if now.duration_since(last_emit) >= std::time::Duration::from_millis(100) {
+                            last_emit = now;
+                            if let Some(callback) = per_dest_progress.as_deref_mut() {
+                                callback(aggregate_multi_progress(&dest_meta, &latest, started_at));
+                            }
+                        }
+                    }
+                    MultiEvent::Verified(payload) => {
+                        if let Some(callback) = file_verified.as_deref_mut() {
+                            callback(payload);
+                        }
+                    }
+                }
+            }
+
+            handles.into_iter().map(|handle| handle.join()).collect()
+        });
+
+    // Always emit a final aggregate so the bar reflects the terminal state even if the
+    // last per-dest event fell inside the throttle window.
+    if let Some(callback) = per_dest_progress.as_deref_mut() {
+        callback(aggregate_multi_progress(&dest_meta, &latest, started_at));
+    }
+
+    // A cancel short-circuits to an error, matching single-dest `run_ingest`.
+    if cancel_flag
+        .map(|flag| flag.load(Ordering::SeqCst))
+        .unwrap_or(false)
+    {
+        return Err("Ingest cancelled.".to_string());
+    }
+
+    // Split successes/failures in destination order. A panicked thread becomes a failure
+    // too, so one bad drive can never take down the whole job.
+    let mut roots = Vec::new();
+    let mut failures = Vec::new();
+    for (index, outcome) in join_results.into_iter().enumerate() {
+        let meta = &dest_meta[index];
+        match outcome {
+            Ok(Ok(result)) => roots.push(result),
+            Ok(Err(error)) => failures.push(DestinationFailure {
+                index: index as u32,
+                path: meta.path.clone(),
+                error,
+            }),
+            Err(_) => failures.push(DestinationFailure {
+                index: index as u32,
+                path: meta.path.clone(),
+                error: "Destination copy thread panicked.".to_string(),
+            }),
+        }
+    }
+
+    Ok(MultiIngestResult { roots, failures })
+}
+
+/// Fold the latest per-destination `IngestProgress` snapshots into one combined
+/// `IngestProgress` for the `ingest-progress` event: byte/file/verify counters summed
+/// across destinations (so the overall bar runs 0→100% as all drives finish), aggregate
+/// throughput = sum of per-dest speeds, and the headline phase/current_file taken from the
+/// least-progressed (laggard) destination.
+fn aggregate_multi_progress(
+    dest_meta: &[DestinationMeta],
+    latest: &[Option<IngestProgress>],
+    started_at: std::time::Instant,
+) -> IngestProgress {
+    let destination_count = dest_meta.len();
+    let mut destinations = Vec::with_capacity(destination_count);
+    let mut files_done = 0_usize;
+    let mut bytes_done = 0_u64;
+    let mut verified_bytes = 0_u64;
+    let mut verified_files = 0_usize;
+    let mut bytes_per_second = 0_u64;
+    // Representative per-destination totals. Every destination copies the SAME selected
+    // files, so the denominator is one destination's total × destination_count — NOT the
+    // sum of only the destinations that have reported so far. Summing reported totals makes
+    // the overall percent jump BACKWARD when a slow drive emits its first event (its 0/N
+    // suddenly enlarges the denominator). We take the max reported total as the
+    // representative (the very first "Preparing" tick already carries the full total).
+    let mut rep_total_files = 0_usize;
+    let mut rep_total_bytes = 0_u64;
+    // Laggard = smallest (bytes_done, files_done) AMONG REPORTED destinations only. An
+    // unreported (None) destination must never win with (0,0) and stall the headline at
+    // "Preparing" — including at the forced final emit, where a failed/never-reporting
+    // destination would otherwise make the terminal event read "Preparing" while the
+    // successful drives are done. Failures are surfaced separately in
+    // `MultiIngestResult.failures`.
+    let mut laggard: Option<((u64, usize), String, String)> = None;
+
+    for (meta, slot) in dest_meta.iter().zip(latest.iter()) {
+        let snapshot = slot.as_ref();
+        let d_bytes_done = snapshot.map(|p| p.bytes_done).unwrap_or(0);
+        let d_bytes_total = snapshot.map(|p| p.total_bytes).unwrap_or(0);
+        let d_verified_bytes = snapshot.map(|p| p.verified_bytes).unwrap_or(0);
+        let d_verified_files = snapshot.map(|p| p.verified_files).unwrap_or(0);
+        let d_files_done = snapshot.map(|p| p.files_done).unwrap_or(0);
+        let d_total_files = snapshot.map(|p| p.total_files).unwrap_or(0);
+        let d_bps = snapshot.map(|p| p.bytes_per_second).unwrap_or(0);
+        let d_phase = snapshot
+            .map(|p| p.phase.clone())
+            .unwrap_or_else(|| "Preparing".to_string());
+        let d_current = snapshot.map(|p| p.current_file.clone()).unwrap_or_default();
+        let d_remaining = snapshot.and_then(|p| p.remaining_ms).map(|ms| ms as u64);
+
+        destinations.push(DestinationProgress {
+            index: meta.index,
+            path: meta.path.clone(),
+            label: meta.label.clone(),
+            phase: d_phase.clone(),
+            bytes_done: d_bytes_done,
+            bytes_total: d_bytes_total,
+            verified_bytes: d_verified_bytes,
+            verified_files: d_verified_files,
+            // Per-dest failed count isn't carried on IngestProgress mid-run; the final
+            // per-root IngestResult.verification_failed is the source of truth. Kept 0 here.
+            failed_files: 0,
+            bytes_per_second: d_bps,
+            remaining_ms: d_remaining,
+            free_space_bytes: meta.free_space_bytes,
+        });
+
+        files_done += d_files_done;
+        bytes_done += d_bytes_done;
+        verified_bytes += d_verified_bytes;
+        verified_files += d_verified_files;
+        rep_total_files = rep_total_files.max(d_total_files);
+        rep_total_bytes = rep_total_bytes.max(d_bytes_total);
+
+        // Only in-progress destinations contribute to aggregate throughput: a finished
+        // drive's stale last-reported bps would inflate the aggregate speed and make
+        // remaining_ms optimistic mid-run.
+        let is_complete = snapshot.map(|p| p.phase == "Complete").unwrap_or(false);
+        if snapshot.is_some() && !is_complete {
+            bytes_per_second += d_bps;
+        }
+
+        // Laggard only among destinations that have actually reported.
+        if snapshot.is_some() {
+            let key = (d_bytes_done, d_files_done);
+            let is_new_laggard = laggard
+                .as_ref()
+                .map(|(current, _, _)| key < *current)
+                .unwrap_or(true);
+            if is_new_laggard {
+                laggard = Some((key, d_phase, d_current));
+            }
+        }
+    }
+
+    let total_files = rep_total_files.saturating_mul(destination_count);
+    let total_bytes = rep_total_bytes.saturating_mul(destination_count as u64);
+
+    let (phase, current_file) = laggard
+        .map(|(_, phase, current)| (phase, current))
+        .unwrap_or_else(|| ("Preparing".to_string(), String::new()));
+
+    let elapsed_ms = started_at.elapsed().as_millis();
+    let remaining_ms = if bytes_per_second > 0 && total_bytes > bytes_done {
+        Some(((total_bytes - bytes_done) as u128 * 1000) / bytes_per_second as u128)
+    } else {
+        None
+    };
+
+    IngestProgress {
+        job_id: String::new(),
+        phase,
+        current_file,
+        files_done,
+        total_files,
+        bytes_done,
+        total_bytes,
+        verified_bytes,
+        verified_files,
+        elapsed_ms,
+        bytes_per_second,
+        remaining_ms,
+        destination_count: destination_count as u32,
+        destinations,
+    }
+}
+
+/// Canonical identity key for a destination, used to collapse entries that point at the
+/// SAME root before spawning per-destination copy threads. When the path exists we defer
+/// to `std::fs::canonicalize` (resolves `.`/`..`, symlinks, trailing separators, and — on
+/// case-insensitive Windows volumes — case differences). When it doesn't exist yet we fall
+/// back to a normalized string (trailing separators stripped, lower-cased on Windows).
+fn canonical_destination_key(path: &str) -> String {
+    let key = std::fs::canonicalize(path)
+        .ok()
+        .map(|resolved| resolved.to_string_lossy().to_string())
+        .unwrap_or_else(|| {
+            path.trim_end_matches(['/', '\\']).to_string()
+        });
+    if cfg!(windows) {
+        key.to_lowercase()
+    } else {
+        key
+    }
+}
+
+/// Short display label for a destination path (drive/volume/folder name). Best-effort:
+/// the final path component, falling back to the whole path (e.g. a bare drive root).
+fn destination_label(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| path.to_string())
+}
+
+/// Best-effort free bytes available on the volume backing `path`. Windows-first (mirrors
+/// `commands::system`); returns None on other platforms or on any query failure.
+#[cfg(windows)]
+fn free_space_bytes(path: &str) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+
+    let target = Path::new(path);
+    // A not-yet-created destination folder: query the nearest existing ancestor volume.
+    let query = target
+        .ancestors()
+        .find(|ancestor| ancestor.exists())
+        .unwrap_or(target);
+    let mut wide: Vec<u16> = query
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut available_bytes = 0_u64;
+    let mut total_bytes = 0_u64;
+    let mut total_free_bytes = 0_u64;
+    let ok = unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_mut_ptr(),
+            &mut available_bytes,
+            &mut total_bytes,
+            &mut total_free_bytes,
+        )
+    };
+    if ok == 0 {
+        None
+    } else {
+        Some(available_bytes)
+    }
+}
+
+#[cfg(not(windows))]
+fn free_space_bytes(_path: &str) -> Option<u64> {
+    None
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -468,6 +1075,10 @@ fn emit_progress(
             elapsed_ms,
             bytes_per_second,
             remaining_ms,
+            // Single-destination path: no per-destination breakdown. The multi path
+            // fills these in `aggregate_multi_progress`.
+            destination_count: 0,
+            destinations: Vec::new(),
         });
     }
 }
@@ -587,6 +1198,7 @@ fn copy_file_to_folder(
                     } else {
                         None
                     },
+                    thumbnail_kind: ThumbnailKind::None,
                 });
                 return Ok(CopiedRoute {
                     folder: folder.clone(),
@@ -659,6 +1271,7 @@ fn copy_file_to_folder(
         } else {
             None
         },
+        thumbnail_kind: ThumbnailKind::None,
     });
 
     Ok(CopiedRoute {
@@ -701,6 +1314,7 @@ pub fn recopy_and_verify(
         } else {
             None
         },
+        thumbnail_kind: ThumbnailKind::None,
     })
 }
 
@@ -888,9 +1502,17 @@ pub fn attach_report_thumbnails(
     root_path: &Path,
     copied_files: &mut [CopiedFile],
     source_path: &str,
+    config: ThumbnailConfig,
     cancel_flag: Option<&AtomicBool>,
     mut progress: Option<&mut dyn FnMut(IngestProgress)>,
 ) -> Result<(), String> {
+    let config = config.sanitized();
+    // Honor the `include_thumbnails` report setting: skip all extraction and leave
+    // every file `ThumbnailKind::None`.
+    if !config.include {
+        return Ok(());
+    }
+
     let started_at = std::time::Instant::now();
     let total = copied_files
         .iter()
@@ -899,8 +1521,6 @@ pub fn attach_report_thumbnails(
     let asset_dir = root_path.join("IngestPilot_Report_Assets").join("thumbs");
     let thumbnail_source_files = report_thumbnail_sources(source_path);
     let thumbnail_sources = thumbnail_source_files.iter().collect::<Vec<_>>();
-    let mut used_thumbnail_sources = BTreeSet::<String>::new();
-    let mut done = 0_usize;
 
     emit_progress(
         &mut progress,
@@ -915,43 +1535,170 @@ pub fn attach_report_thumbnails(
         started_at,
     );
 
-    for file in copied_files {
-        check_cancelled(cancel_flag)?;
-        if is_report_thumbnail_progress_candidate(file.kind) {
-            done += 1;
-            let current_file = file.destination_path.clone();
-            attach_report_thumbnail_for_file(
+    // `max_emitted` guards the multi-sender channel in pass 2 from delivering `done`
+    // values out of order: we never emit a files_done that would move the bar backward.
+    let mut max_emitted = 0_usize;
+
+    // ---- Pass 1: cheap tiers, SERIAL, in copied_files order -------------------------
+    // Browser-image passthrough + companion-sidecar match/reserve/copy. Running this
+    // single-threaded makes the loose "first unused source" fallback in
+    // `matching_thumbnail_source` deterministic (independent of worker scheduling) and
+    // lets pass 2 stay completely lock-free (no shared dedup set).
+    let mut used_thumbnail_sources = BTreeSet::<String>::new();
+    let mut done = 0_usize;
+    for file in copied_files.iter_mut() {
+        if check_cancelled(cancel_flag).is_err() {
+            return Ok(());
+        }
+        let is_candidate = is_report_thumbnail_progress_candidate(file.kind);
+        // Contain any panic so one bad file can never unwind the batch (which would deny
+        // the user their HTML report). Thumbnails are strictly best-effort.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = attach_cheap_thumbnail_tier(
                 root_path,
                 &asset_dir,
                 &thumbnail_sources,
                 &mut used_thumbnail_sources,
                 file,
-                cancel_flag,
-            )?;
-            emit_progress(
-                &mut progress,
-                "Generating report thumbnails",
-                &current_file,
-                done,
-                total,
-                done as u64,
-                total as u64,
-                done as u64,
-                done,
-                started_at,
             );
-        } else {
-            attach_report_thumbnail_for_file(
-                root_path,
-                &asset_dir,
-                &thumbnail_sources,
-                &mut used_thumbnail_sources,
-                file,
-                cancel_flag,
-            )?;
+        }));
+        // A candidate resolved here is done; pass 2 skips it, so count it now. Candidates
+        // left unresolved are counted by pass 2.
+        if is_candidate && file.thumbnail_path.is_some() {
+            done += 1;
+            if done > max_emitted {
+                max_emitted = done;
+                emit_progress(
+                    &mut progress,
+                    "Generating report thumbnails",
+                    &file.destination_path,
+                    done,
+                    total,
+                    done as u64,
+                    total as u64,
+                    done as u64,
+                    done,
+                    started_at,
+                );
+            }
         }
     }
 
+    // ---- Pass 2: expensive generator tiers, PARALLEL (lock-free) --------------------
+    // rawler/exiftool/ffmpeg/placeholder for every file still lacking a thumbnail. These
+    // touch no shared state. Extraction shells out to exiftool/ffmpeg and reads the card,
+    // so a *bounded* pool keeps subprocess/disk pressure in check. Workers push one tick
+    // per finished media file down a channel; the main thread drains it and re-emits the
+    // unchanged `report-progress` event so the UI is unaffected.
+    let done_counter = AtomicUsize::new(done);
+    let threads = std::thread::available_parallelism()
+        .map(|value| value.get())
+        .unwrap_or(4)
+        .clamp(4, 8);
+
+    match rayon::ThreadPoolBuilder::new().num_threads(threads).build() {
+        Ok(pool) => {
+            std::thread::scope(|scope| -> Result<(), String> {
+                let (tx, rx) = std::sync::mpsc::channel::<(String, usize)>();
+                let asset_dir = &asset_dir;
+                let counter = &done_counter;
+                let config = &config;
+                let files: &mut [CopiedFile] = copied_files;
+                let worker = scope.spawn(move || {
+                    pool.install(|| {
+                        files.par_iter_mut().for_each_with(tx, |tx, file| {
+                            if check_cancelled(cancel_flag).is_err() {
+                                return;
+                            }
+                            let is_candidate =
+                                is_report_thumbnail_progress_candidate(file.kind);
+                            let was_unresolved = file.thumbnail_path.is_none();
+                            // Contain panics from the image/rawler decode+encode chain so
+                            // one bad file can never abort the parallel batch.
+                            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                                || {
+                                    let _ = attach_generator_thumbnail_tier(
+                                        root_path,
+                                        asset_dir,
+                                        file,
+                                        config,
+                                        cancel_flag,
+                                    );
+                                },
+                            ));
+                            // Count only candidates this pass owns (entered without a
+                            // thumbnail); the cheap pass already counted the rest.
+                            if is_candidate && was_unresolved {
+                                let done = counter.fetch_add(1, Ordering::Relaxed) + 1;
+                                let _ = tx.send((file.destination_path.clone(), done));
+                            }
+                        });
+                    });
+                });
+                for (current_file, done) in rx {
+                    if done > max_emitted {
+                        max_emitted = done;
+                        emit_progress(
+                            &mut progress,
+                            "Generating report thumbnails",
+                            &current_file,
+                            done,
+                            total,
+                            done as u64,
+                            total as u64,
+                            done as u64,
+                            done,
+                            started_at,
+                        );
+                    }
+                }
+                worker
+                    .join()
+                    .map_err(|_| "Report thumbnail worker panicked.".to_string())
+            })?;
+        }
+        Err(_) => {
+            // Pool construction failed (rare) — fall back to a serial generator pass.
+            for file in copied_files.iter_mut() {
+                if check_cancelled(cancel_flag).is_err() {
+                    break;
+                }
+                let is_candidate = is_report_thumbnail_progress_candidate(file.kind);
+                let was_unresolved = file.thumbnail_path.is_none();
+                let current_file = file.destination_path.clone();
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _ = attach_generator_thumbnail_tier(
+                        root_path,
+                        &asset_dir,
+                        file,
+                        &config,
+                        cancel_flag,
+                    );
+                }));
+                if is_candidate && was_unresolved {
+                    let done = done_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                    if done > max_emitted {
+                        max_emitted = done;
+                        emit_progress(
+                            &mut progress,
+                            "Generating report thumbnails",
+                            &current_file,
+                            done,
+                            total,
+                            done as u64,
+                            total as u64,
+                            done as u64,
+                            done,
+                            started_at,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // Always finish on a complete tick so the bar reads 100% even if the last channel
+    // message arrived out of order (or was skipped by the max_emitted guard).
     emit_progress(
         &mut progress,
         "Report thumbnails complete",
@@ -983,15 +1730,29 @@ fn report_thumbnail_sources(source_path: &str) -> Vec<ScannedFile> {
         .collect()
 }
 
-fn attach_report_thumbnail_for_file(
+fn source_stem_lower(file: &CopiedFile) -> String {
+    Path::new(&file.source_path)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_lowercase()
+}
+
+/// Pass-1 tiers (SERIAL, deterministic): browser-image passthrough + companion sidecar.
+/// `used_thumbnail_sources` is a plain set because this only runs single-threaded, which
+/// also makes the loose fallback in `matching_thumbnail_source` stable run-to-run.
+fn attach_cheap_thumbnail_tier(
     root_path: &Path,
     asset_dir: &Path,
     thumbnail_sources: &[&ScannedFile],
     used_thumbnail_sources: &mut BTreeSet<String>,
     file: &mut CopiedFile,
-    cancel_flag: Option<&AtomicBool>,
 ) -> Result<(), String> {
-    check_cancelled(cancel_flag)?;
+    // Idempotent: if an earlier pass (e.g. the HTML report before the PDF proof)
+    // already resolved a thumbnail for this file, keep it.
+    if file.thumbnail_path.is_some() {
+        return Ok(());
+    }
     let destination_path = PathBuf::from(&file.destination_path);
     // In a merged multi-destination report this runs once per root, but copied_files
     // span every destination. Only thumbnail the copies that live under this root —
@@ -1006,36 +1767,39 @@ fn attach_report_thumbnail_for_file(
         .map(|value| format!(".{}", value.to_lowercase()))
         .unwrap_or_default();
 
+    // Tier 1 — browser-native image: the copied file *is* its own preview.
     if is_browser_image_extension(&extension) {
         file.thumbnail_path = Some(relative_to_root(root_path, &destination_path)?);
+        file.thumbnail_kind = ThumbnailKind::Embedded;
         return Ok(());
     }
 
+    // Companion sidecar + the generator tiers only make sense for visual media; leave
+    // documents/audio/unknown untouched (and don't let them consume companion thumbnails
+    // via the loose fallback matcher).
     if !matches!(file.kind, ScanFileKind::Footage | ScanFileKind::Photo) {
         return Ok(());
     }
 
-    let stem = Path::new(&file.source_path)
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default()
-        .to_lowercase();
-    if let Some(thumbnail_source) =
+    // Tier 2 — companion sidecar thumbnail (a THMBNL/PRVW-folder image next to the clip).
+    if let Some(source) =
         matching_thumbnail_source(file, thumbnail_sources, used_thumbnail_sources)
     {
+        let source_path = source.path.clone();
+        used_thumbnail_sources.insert(source_path.clone());
         fs::create_dir_all(asset_dir)
             .map_err(|error| format!("{}: {error}", asset_dir.display()))?;
-        used_thumbnail_sources.insert(thumbnail_source.path.clone());
-        let thumbnail_source_path = PathBuf::from(&thumbnail_source.path);
+        let thumbnail_source_path = PathBuf::from(&source_path);
         let thumbnail_extension = thumbnail_source_path
             .extension()
             .and_then(|value| value.to_str())
-            .map(|value| format!(".{}", value.to_lowercase()))
-            .unwrap_or_else(|| ".jpg".to_string());
-        let thumbnail_target = unique_destination_path(
-            asset_dir,
-            &format!("{}{}", sanitize_asset_name(&stem), thumbnail_extension),
-        );
+            .map(|value| value.to_lowercase())
+            .unwrap_or_else(|| "jpg".to_string());
+        let thumbnail_target = asset_dir.join(content_addressed_asset_name(
+            &source_stem_lower(file),
+            &file.source_hash,
+            &thumbnail_extension,
+        ));
         fs::copy(&thumbnail_source_path, &thumbnail_target).map_err(|error| {
             format!(
                 "{} -> {}: {error}",
@@ -1044,17 +1808,96 @@ fn attach_report_thumbnail_for_file(
             )
         })?;
         file.thumbnail_path = Some(relative_to_root(root_path, &thumbnail_target)?);
+        file.thumbnail_kind = ThumbnailKind::Sidecar;
+    }
+    Ok(())
+}
+
+/// Pass-2 tiers (PARALLEL, lock-free): rawler embedded preview → exiftool preview →
+/// ffmpeg poster → placeholder. Only does work for files still lacking a thumbnail;
+/// touches no shared state, so it is safe to run concurrently across `copied_files`.
+fn attach_generator_thumbnail_tier(
+    root_path: &Path,
+    asset_dir: &Path,
+    file: &mut CopiedFile,
+    config: &ThumbnailConfig,
+    cancel_flag: Option<&AtomicBool>,
+) -> Result<(), String> {
+    check_cancelled(cancel_flag)?;
+    // Skip files already resolved by pass 1 (browser/sidecar) or a prior report pass.
+    if file.thumbnail_path.is_some() {
+        return Ok(());
+    }
+    let destination_path = PathBuf::from(&file.destination_path);
+    if !destination_path.starts_with(root_path) {
+        return Ok(());
+    }
+    if !matches!(file.kind, ScanFileKind::Footage | ScanFileKind::Photo) {
+        return Ok(());
+    }
+    let extension = destination_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| format!(".{}", value.to_lowercase()))
+        .unwrap_or_default();
+    let stem = source_stem_lower(file);
+
+    // Tier 3 — stills-RAW embedded preview (pure Rust, cross-platform). The key fix for
+    // Sony A7IV .ARW and other camera raws. On failure we drop straight to the
+    // placeholder — ffmpeg can't help with raw stills.
+    if is_stills_raw_extension(&extension) {
+        if let Some(generated) = generate_raw_embedded_thumbnail(
+            &destination_path,
+            asset_dir,
+            &stem,
+            &file.source_hash,
+            config,
+        ) {
+            file.thumbnail_path = Some(relative_to_root(root_path, &generated)?);
+            file.thumbnail_kind = ThumbnailKind::Embedded;
+            return Ok(());
+        }
+        file.thumbnail_kind = ThumbnailKind::Placeholder;
         return Ok(());
     }
 
+    // Tier 4 — cinema-RAW (RED .R3D, Blackmagic .BRAW, …) via exiftool's embedded
+    // preview. Stock ffmpeg can't demux these, so we skip it entirely.
+    if is_cinema_raw_extension(&extension) {
+        if let Some(generated) = generate_exiftool_thumbnail(
+            &destination_path,
+            asset_dir,
+            &stem,
+            &file.source_hash,
+            config,
+        ) {
+            file.thumbnail_path = Some(relative_to_root(root_path, &generated)?);
+            file.thumbnail_kind = ThumbnailKind::Embedded;
+            return Ok(());
+        }
+        file.thumbnail_kind = ThumbnailKind::Placeholder;
+        return Ok(());
+    }
+
+    // Tier 5 — standard video poster frame via ffmpeg.
     if matches!(file.kind, ScanFileKind::Footage) {
-        if let Some(generated_thumbnail) =
-            generate_ffmpeg_thumbnail(&destination_path, asset_dir, &stem)
-        {
-            file.thumbnail_path = Some(relative_to_root(root_path, &generated_thumbnail)?);
+        if let Some(generated) = generate_ffmpeg_thumbnail(
+            &destination_path,
+            asset_dir,
+            &stem,
+            &file.source_hash,
+            config,
+        ) {
+            file.thumbnail_path = Some(relative_to_root(root_path, &generated)?);
+            file.thumbnail_kind = ThumbnailKind::Ffmpeg;
+            return Ok(());
         }
     }
 
+    // Tier 6 — nothing worked (e.g. a .heic/.tif still, an exotic codec, or missing
+    // ffmpeg/exiftool): mark it a placeholder so the report renders an intentional
+    // per-format card instead of a blank box.
+    file.thumbnail_kind = ThumbnailKind::Placeholder;
     Ok(())
 }
 
@@ -1062,14 +1905,23 @@ fn generate_ffmpeg_thumbnail(
     video_path: &Path,
     asset_dir: &Path,
     source_stem: &str,
+    source_hash: &str,
+    config: &ThumbnailConfig,
 ) -> Option<PathBuf> {
     let ffmpeg = ffmpeg_path()?;
     fs::create_dir_all(asset_dir).ok()?;
+    // Content-addressed name (stem + first hash bytes) so parallel workers never race
+    // on a shared "next free path", and a re-run reuses the already-generated frame.
+    let thumbnail_target = asset_dir.join(format!(
+        "{}_{}_ffmpeg.jpg",
+        sanitize_asset_name(source_stem),
+        short_source_hash(source_hash),
+    ));
+    if thumbnail_target.exists() {
+        return Some(thumbnail_target);
+    }
+    let scale = format!("scale='min({0},iw)':-2", config.max_edge.max(64));
     for timestamp in ["00:00:02", "00:00:00.5", "00:00:00"] {
-        let thumbnail_target = unique_destination_path(
-            asset_dir,
-            &format!("{}_ffmpeg.jpg", sanitize_asset_name(source_stem)),
-        );
         let mut command = Command::new(&ffmpeg);
         hide_subprocess_window(&mut command);
         let output = command
@@ -1084,7 +1936,7 @@ fn generate_ffmpeg_thumbnail(
                 "-i",
             ])
             .arg(video_path)
-            .args(["-frames:v", "1", "-vf", "scale=360:-2"])
+            .args(["-frames:v", "1", "-vf", &scale, "-qscale:v", "3"])
             .arg(&thumbnail_target)
             .output()
             .ok()?;
@@ -1096,6 +1948,339 @@ fn generate_ffmpeg_thumbnail(
     }
 
     None
+}
+
+/// First 8 alphanumeric chars of the source hash (or `nohash`), used to
+/// content-address generated thumbnail assets.
+fn short_source_hash(source_hash: &str) -> String {
+    let short: String = source_hash
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .take(8)
+        .collect();
+    if short.is_empty() {
+        "nohash".to_string()
+    } else {
+        short
+    }
+}
+
+/// `<sanitized-stem>_<hash8>.<ext>` — deterministic per (file, content) so the
+/// attach loop is race-free under parallelism and idempotent across report/PDF passes.
+fn content_addressed_asset_name(stem: &str, source_hash: &str, extension: &str) -> String {
+    format!(
+        "{}_{}.{}",
+        sanitize_asset_name(stem),
+        short_source_hash(source_hash),
+        extension
+    )
+}
+
+fn is_stills_raw_extension(extension: &str) -> bool {
+    matches!(
+        extension,
+        ".arw" | ".dng" | ".cr2" | ".cr3" | ".nef" | ".rw2" | ".orf" | ".raw"
+    )
+}
+
+fn is_cinema_raw_extension(extension: &str) -> bool {
+    matches!(extension, ".r3d" | ".braw" | ".crm" | ".cine")
+}
+
+/// Read the EXIF `Orientation` tag (1–8) from a file's primary IFD.
+///
+/// Returns `None` when the file has no readable EXIF, no orientation tag, or an
+/// out-of-range value — every caller treats `None` as orientation 1 (no transform),
+/// so an unreadable sidecar can never rotate a thumbnail the wrong way.
+fn exif_orientation(path: &Path) -> Option<u16> {
+    let file = fs::File::open(path).ok()?;
+    let mut reader = std::io::BufReader::new(&file);
+    let exif = exif::Reader::new().read_from_container(&mut reader).ok()?;
+    exif_orientation_value(&exif)
+}
+
+/// Same as [`exif_orientation`], but for an in-memory image (e.g. the JPEG exiftool
+/// hands back on stdout, which usually carries its own EXIF block).
+fn exif_orientation_from_bytes(bytes: &[u8]) -> Option<u16> {
+    let mut cursor = std::io::Cursor::new(bytes);
+    let exif = exif::Reader::new().read_from_container(&mut cursor).ok()?;
+    exif_orientation_value(&exif)
+}
+
+fn exif_orientation_value(exif: &exif::Exif) -> Option<u16> {
+    let value = exif
+        .get_field(exif::Tag::Orientation, exif::In::PRIMARY)
+        .and_then(|field| field.value.get_uint(0))?;
+    // Only 1–8 are meaningful; anything else is corrupt and means "leave it alone".
+    (1..=8).contains(&value).then_some(value as u16)
+}
+
+/// Bake an EXIF orientation into the pixels so the image reads upright without the tag.
+///
+/// We must do this because the thumbnail writer re-encodes a bare JPEG and drops the
+/// original EXIF block — nothing downstream would ever rotate the image otherwise.
+/// `None` (and the no-op value 1) pass the image through untouched.
+fn apply_exif_orientation(
+    image: image::DynamicImage,
+    orientation: Option<u16>,
+) -> image::DynamicImage {
+    match orientation.unwrap_or(1) {
+        2 => image.fliph(),
+        3 => image.rotate180(),
+        4 => image.flipv(),
+        5 => image.rotate90().fliph(),
+        6 => image.rotate90(),
+        7 => image.rotate270().fliph(),
+        8 => image.rotate270(),
+        // 1, plus any value we rejected above: already upright.
+        _ => image,
+    }
+}
+
+/// Decode arbitrary already-embedded JPEG/PNG bytes, bake in `orientation`, and
+/// re-encode a downscaled JPEG thumbnail into the asset dir. Returns the written path.
+///
+/// Orientation is applied here — before the downscale in
+/// `write_downscaled_jpeg_from_dynamic` — so the fit-to-box happens against the
+/// upright aspect ratio.
+fn write_downscaled_jpeg_from_bytes(
+    bytes: &[u8],
+    asset_dir: &Path,
+    source_stem: &str,
+    source_hash: &str,
+    config: &ThumbnailConfig,
+    orientation: Option<u16>,
+) -> Option<PathBuf> {
+    let image = image::load_from_memory(bytes).ok()?;
+    let image = apply_exif_orientation(image, orientation);
+    write_downscaled_jpeg_from_dynamic(image, asset_dir, source_stem, source_hash, config)
+}
+
+/// Downscale a decoded image to `config.max_edge` (long edge) and write it as a
+/// quality-`config.jpeg_quality` JPEG into the asset dir. Content-addressed name.
+fn write_downscaled_jpeg_from_dynamic(
+    image: image::DynamicImage,
+    asset_dir: &Path,
+    source_stem: &str,
+    source_hash: &str,
+    config: &ThumbnailConfig,
+) -> Option<PathBuf> {
+    use image::GenericImageView;
+
+    fs::create_dir_all(asset_dir).ok()?;
+    let target = asset_dir.join(content_addressed_asset_name(source_stem, source_hash, "jpg"));
+    if target.exists() {
+        return Some(target);
+    }
+    let max = config.max_edge.max(64);
+    let (width, height) = image.dimensions();
+    let resized = if width > max || height > max {
+        // `thumbnail` fits within a max×max box preserving aspect ratio (fast filter).
+        image.thumbnail(max, max)
+    } else {
+        image
+    };
+    let rgb = resized.to_rgb8();
+    let (rgb_width, rgb_height) = (rgb.width(), rgb.height());
+    let mut buffer = Vec::new();
+    {
+        let mut encoder =
+            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, config.jpeg_quality);
+        encoder
+            .encode(
+                rgb.as_raw(),
+                rgb_width,
+                rgb_height,
+                image::ExtendedColorType::Rgb8,
+            )
+            .ok()?;
+    }
+    // Encode fully into memory then write once, so a failure can't leave a truncated
+    // JPEG that a later idempotent pass would treat as a valid cached thumbnail.
+    let temp = target.with_extension("jpg.part");
+    fs::write(&temp, &buffer).ok()?;
+    if fs::rename(&temp, &target).is_err() {
+        let _ = fs::remove_file(&temp);
+        return None;
+    }
+    Some(target)
+}
+
+/// Stills-RAW (.arw/.dng/.cr2/…): extract the embedded JPEG preview with `rawler`
+/// (pure Rust — no bundled binaries, works on every platform) and downscale it. We
+/// deliberately do NOT full-demosaic; the embedded preview is what shooters expect.
+fn generate_raw_embedded_thumbnail(
+    raw_path: &Path,
+    asset_dir: &Path,
+    source_stem: &str,
+    source_hash: &str,
+    config: &ThumbnailConfig,
+) -> Option<PathBuf> {
+    let target = asset_dir.join(content_addressed_asset_name(source_stem, source_hash, "jpg"));
+    if target.exists() {
+        return Some(target);
+    }
+    let preview = extract_raw_preview_image(raw_path)?;
+    // Cameras store the embedded preview in SENSOR orientation and record the rotation
+    // in the EXIF `Orientation` tag; re-encoding below drops that tag, so bake it into
+    // the pixels here. This covers BOTH `extract_raw_preview_image` paths (rawler and
+    // the kamadak THUMBNAIL-IFD fallback) — neither returns a pre-rotated image, so
+    // there is no double-rotation. Applied BEFORE the downscale so `thumbnail(max, max)`
+    // fits against the upright aspect ratio and a portrait frame stays portrait rather
+    // than being letterboxed into a landscape box.
+    let preview = apply_exif_orientation(preview, exif_orientation(raw_path));
+    write_downscaled_jpeg_from_dynamic(preview, asset_dir, source_stem, source_hash, config)
+}
+
+fn extract_raw_preview_image(raw_path: &Path) -> Option<image::DynamicImage> {
+    if let Some(preview) = rawler_preview_image(raw_path) {
+        return Some(preview);
+    }
+    // Fallback: slice the embedded thumbnail IFD out of the TIFF-based raw ourselves.
+    kamadak_embedded_thumbnail(raw_path)
+}
+
+/// Ask rawler for the embedded preview (falling back to its smaller thumbnail).
+/// Wrapped in `catch_unwind` because some malformed files can panic inside a decoder,
+/// and a panic in a rayon worker would otherwise abort the whole attach loop.
+fn rawler_preview_image(raw_path: &Path) -> Option<image::DynamicImage> {
+    use rawler::decoders::RawDecodeParams;
+    use rawler::rawsource::RawSource;
+
+    let raw_path = raw_path.to_path_buf();
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let source = RawSource::new(&raw_path).ok()?;
+        let decoder = rawler::get_decoder(&source).ok()?;
+        let params = RawDecodeParams::default();
+        if let Ok(Some(image)) = decoder.preview_image(&source, &params) {
+            return Some(image);
+        }
+        if let Ok(Some(image)) = decoder.thumbnail_image(&source, &params) {
+            return Some(image);
+        }
+        None
+    }))
+    .ok()
+    .flatten()
+}
+
+/// Best-effort EXIF fallback: read the THUMBNAIL IFD's JPEG offset/length and slice
+/// the embedded JPEG straight out of the (TIFF-based) raw file.
+fn kamadak_embedded_thumbnail(raw_path: &Path) -> Option<image::DynamicImage> {
+    use exif::{In, Reader, Tag};
+
+    let file = fs::File::open(raw_path).ok()?;
+    let mut reader = std::io::BufReader::new(&file);
+    let exif = Reader::new().read_from_container(&mut reader).ok()?;
+    let offset = exif
+        .get_field(Tag::JPEGInterchangeFormat, In::THUMBNAIL)
+        .and_then(|field| field.value.get_uint(0))? as usize;
+    let length = exif
+        .get_field(Tag::JPEGInterchangeFormatLength, In::THUMBNAIL)
+        .and_then(|field| field.value.get_uint(0))? as usize;
+    if length == 0 {
+        return None;
+    }
+    let bytes = fs::read(raw_path).ok()?;
+    let end = offset.checked_add(length)?;
+    let slice = bytes.get(offset..end)?;
+    // Sanity-check the JPEG SOI marker before handing it to the decoder.
+    if slice.first() != Some(&0xFF) || slice.get(1) != Some(&0xD8) {
+        return None;
+    }
+    image::load_from_memory(slice).ok()
+}
+
+/// Cinema-RAW (.r3d/.braw/.crm/.cine): shell out to exiftool for the embedded preview.
+/// If exiftool isn't bundled/on PATH this returns None and the caller falls through to
+/// the placeholder tier (never an error).
+fn generate_exiftool_thumbnail(
+    raw_path: &Path,
+    asset_dir: &Path,
+    source_stem: &str,
+    source_hash: &str,
+    config: &ThumbnailConfig,
+) -> Option<PathBuf> {
+    let target = asset_dir.join(content_addressed_asset_name(source_stem, source_hash, "jpg"));
+    if target.exists() {
+        return Some(target);
+    }
+    let exiftool = exiftool_path()?;
+    fs::create_dir_all(asset_dir).ok()?;
+    for tag in ["-PreviewImage", "-JpgFromRaw", "-ThumbnailImage"] {
+        let mut command = Command::new(&exiftool);
+        hide_subprocess_window(&mut command);
+        let output = match command.args(["-b", tag]).arg(raw_path).output() {
+            Ok(output) => output,
+            Err(_) => return None,
+        };
+        if output.status.success() && !output.stdout.is_empty() {
+            // The extracted preview often carries its own EXIF block. That tag describes
+            // the preview we actually decoded, so it wins; only when the payload is a
+            // bare JPEG do we fall back to the container's orientation.
+            let orientation =
+                exif_orientation_from_bytes(&output.stdout).or_else(|| exif_orientation(raw_path));
+            if let Some(path) = write_downscaled_jpeg_from_bytes(
+                &output.stdout,
+                asset_dir,
+                source_stem,
+                source_hash,
+                config,
+                orientation,
+            ) {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+/// Discover exiftool, mirroring `ffmpeg_path()`: `INGEST_PILOT_EXIFTOOL` env → the
+/// bundled resource dir → PATH. Returns None (not an error) when not found.
+fn exiftool_path() -> Option<PathBuf> {
+    if let Ok(path) = env::var("INGEST_PILOT_EXIFTOOL") {
+        let path = PathBuf::from(path);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+
+    for root in ffmpeg_search_roots() {
+        for candidate in [
+            root.join("exiftool.exe"),
+            root.join("exiftool"),
+            root.join("resources")
+                .join("tools")
+                .join("exiftool")
+                .join("exiftool.exe"),
+            root.join("resources")
+                .join("tools")
+                .join("exiftool")
+                .join("exiftool"),
+            root.join("resources").join("exiftool.exe"),
+            root.join("resources").join("exiftool"),
+        ] {
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    if exiftool_is_available("exiftool") {
+        Some(PathBuf::from("exiftool"))
+    } else {
+        None
+    }
+}
+
+fn exiftool_is_available(command: &str) -> bool {
+    let mut command = Command::new(command);
+    hide_subprocess_window(&mut command);
+    command
+        .arg("-ver")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
 }
 
 /// Best-effort media duration via `ffmpeg -i` (parses the "Duration:" line from
@@ -1533,6 +2718,106 @@ mod tests {
         assert_eq!(parse_ffmpeg_duration_ms(sample), Some(123_500));
         assert_eq!(parse_ffmpeg_duration_ms("Duration: N/A, bitrate: N/A"), None);
         assert_eq!(parse_ffmpeg_duration_ms("no duration here"), None);
+    }
+
+    /// A 4×2 landscape image with a red marker top-left and a green one top-right, so
+    /// every transform below is distinguishable from every other (a symmetric image
+    /// could not tell a flip from a rotation).
+    fn orientation_test_image() -> image::DynamicImage {
+        let mut buffer = image::RgbImage::from_pixel(4, 2, image::Rgb([0, 0, 0]));
+        buffer.put_pixel(0, 0, image::Rgb([255, 0, 0]));
+        buffer.put_pixel(3, 0, image::Rgb([0, 255, 0]));
+        image::DynamicImage::ImageRgb8(buffer)
+    }
+
+    #[test]
+    fn rotates_portrait_preview_for_exif_orientation_six() {
+        use image::GenericImageView;
+
+        // 6 is what a camera writes for a portrait frame shot on a landscape sensor —
+        // the exact case behind the "portrait .ARW renders landscape" bug.
+        let rotated = apply_exif_orientation(orientation_test_image(), Some(6));
+
+        // The landscape 4×2 sensor preview must come out portrait 2×4.
+        assert_eq!(rotated.dimensions(), (2, 4));
+        // Rotating clockwise sends (x, y) -> (height - 1 - y, x): the top-left red
+        // marker lands top-right, and the top-right green marker lands bottom-right.
+        assert_eq!(rotated.get_pixel(1, 0).0, [255, 0, 0, 255]);
+        assert_eq!(rotated.get_pixel(1, 3).0, [0, 255, 0, 255]);
+    }
+
+    #[test]
+    fn leaves_image_untouched_for_orientation_one_or_none() {
+        use image::GenericImageView;
+
+        let original = orientation_test_image();
+        // `None` is the "no readable EXIF" path and must behave exactly like 1.
+        for orientation in [None, Some(1)] {
+            let result = apply_exif_orientation(original.clone(), orientation);
+            assert_eq!(result.dimensions(), (4, 2));
+            assert_eq!(result.as_bytes(), original.as_bytes());
+        }
+    }
+
+    #[test]
+    fn maps_each_exif_orientation_to_its_transform() {
+        use image::GenericImageView;
+
+        // (tag, expected dimensions, where the top-left red marker must land)
+        let cases = [
+            (1, (4, 2), (0, 0)), // identity
+            (2, (4, 2), (3, 0)), // horizontal flip
+            (3, (4, 2), (3, 1)), // 180
+            (4, (4, 2), (0, 1)), // vertical flip
+            (5, (2, 4), (0, 0)), // transpose  (rotate90 + fliph)
+            (6, (2, 4), (1, 0)), // rotate 90 CW
+            (7, (2, 4), (1, 3)), // transverse (rotate270 + fliph)
+            (8, (2, 4), (0, 3)), // rotate 270 CW
+        ];
+
+        for (tag, dimensions, (red_x, red_y)) in cases {
+            let result = apply_exif_orientation(orientation_test_image(), Some(tag));
+            assert_eq!(result.dimensions(), dimensions, "dimensions for tag {tag}");
+            assert_eq!(
+                result.get_pixel(red_x, red_y).0,
+                [255, 0, 0, 255],
+                "red marker position for tag {tag}"
+            );
+        }
+
+        // Only 5–8 transpose the frame; a portrait result must never come from 1–4.
+        for tag in [1, 2, 3, 4] {
+            let result = apply_exif_orientation(orientation_test_image(), Some(tag));
+            assert_eq!(result.dimensions(), (4, 2), "tag {tag} must not transpose");
+        }
+    }
+
+    #[test]
+    fn treats_out_of_range_orientation_as_no_op() {
+        use image::GenericImageView;
+
+        // Corrupt tags must degrade to "leave it alone", never to a wrong rotation.
+        for orientation in [Some(0), Some(9), Some(65535)] {
+            let result = apply_exif_orientation(orientation_test_image(), orientation);
+            assert_eq!(result.dimensions(), (4, 2));
+            assert_eq!(result.get_pixel(0, 0).0, [255, 0, 0, 255]);
+        }
+    }
+
+    #[test]
+    fn reads_no_orientation_from_missing_or_non_exif_files() {
+        let workspace = unique_temp_dir("ingest_pilot_orientation_test");
+        fs::create_dir_all(&workspace).expect("workspace");
+
+        // Absent file, and a file that is not an image at all: both must be None so the
+        // caller falls back to "no transform" instead of failing the thumbnail.
+        assert_eq!(exif_orientation(&workspace.join("nope.arw")), None);
+        let junk = workspace.join("junk.arw");
+        fs::write(&junk, b"not an image").expect("junk file");
+        assert_eq!(exif_orientation(&junk), None);
+        assert_eq!(exif_orientation_from_bytes(b"not an image"), None);
+
+        fs::remove_dir_all(&workspace).ok();
     }
 
     #[test]
@@ -2103,6 +3388,7 @@ mod tests {
             &PathBuf::from(&result.root_path),
             &mut result.copied_files,
             &source.to_string_lossy(),
+            ThumbnailConfig::default(),
             None,
             None,
         )
@@ -2200,6 +3486,7 @@ mod tests {
             &PathBuf::from(&result.root_path),
             &mut result.copied_files,
             &source.to_string_lossy(),
+            ThumbnailConfig::default(),
             None,
             None,
         )
@@ -2243,14 +3530,380 @@ mod tests {
             .expect("ffmpeg can run");
         assert!(status.success());
 
-        let thumbnail = generate_ffmpeg_thumbnail(&video_path, &asset_dir, "A001")
-            .expect("thumbnail generated");
+        let thumbnail = generate_ffmpeg_thumbnail(
+            &video_path,
+            &asset_dir,
+            "A001",
+            "abc12345def",
+            &ThumbnailConfig::default(),
+        )
+        .expect("thumbnail generated");
         assert!(thumbnail.exists());
         assert!(thumbnail
             .file_name()
             .and_then(|value| value.to_str())
             .unwrap_or_default()
             .contains("_ffmpeg"));
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn routes_extensions_to_expected_thumbnail_tiers() {
+        // Stills-RAW (Sony A7IV etc.) go to the pure-Rust rawler tier.
+        assert!(is_stills_raw_extension(".arw"));
+        assert!(is_stills_raw_extension(".dng"));
+        assert!(is_stills_raw_extension(".cr3"));
+        assert!(is_stills_raw_extension(".nef"));
+        // Cinema-RAW (RED / Blackmagic) go to the exiftool tier, never ffmpeg.
+        assert!(is_cinema_raw_extension(".r3d"));
+        assert!(is_cinema_raw_extension(".braw"));
+        // The two sets are disjoint and don't claim standard formats.
+        assert!(!is_stills_raw_extension(".r3d"));
+        assert!(!is_cinema_raw_extension(".arw"));
+        assert!(!is_stills_raw_extension(".mp4"));
+        assert!(!is_cinema_raw_extension(".mp4"));
+        assert!(!is_stills_raw_extension(".jpg"));
+    }
+
+    #[test]
+    fn content_addressed_asset_names_are_deterministic_and_sanitized() {
+        let a = content_addressed_asset_name("A7C_1234", "9f8e7d6c5b4a3021", "jpg");
+        let b = content_addressed_asset_name("A7C_1234", "9f8e7d6c5b4a3021", "jpg");
+        assert_eq!(a, b, "same file + content => same asset name (race-free)");
+        assert_eq!(a, "A7C_1234_9f8e7d6c.jpg");
+        // Path-hostile characters in the stem are scrubbed.
+        assert_eq!(
+            content_addressed_asset_name("a/b:c*", "00", "jpg"),
+            "a_b_c__00.jpg"
+        );
+        // An empty hash still yields a stable, valid name.
+        assert_eq!(
+            content_addressed_asset_name("clip", "", "jpg"),
+            "clip_nohash.jpg"
+        );
+    }
+
+    /// A minimal preset with no variables and an empty folder tree (media lands directly
+    /// in the root), used by the multi-destination tests.
+    fn loose_preset(id: &str, primary: &str) -> Preset {
+        Preset {
+            schema_version: 1,
+            id: id.to_string(),
+            name: "Multi".to_string(),
+            description: None,
+            icon: None,
+            color: None,
+            variables: vec![],
+            root_folder_pattern: "Proj".to_string(),
+            folder_tree: vec![],
+            file_rename_pattern: "{original_name}{ext}".to_string(),
+            clip_number_padding: 3,
+            per_folder_rename_overrides: BTreeMap::new(),
+            destinations: PresetDestinations {
+                primary: primary.to_string(),
+                secondaries: vec![],
+                sub_path_pattern: String::new(),
+            },
+            file_type_routing_overrides: BTreeMap::new(),
+            preserve_xml_sidecars: true,
+            rename_files_default: true,
+            metadata_preset_id: None,
+            metadata_values: BTreeMap::new(),
+            created_at: "2026-04-24T00:00:00Z".to_string(),
+            updated_at: "2026-04-24T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn run_ingest_multi_copies_to_all_destinations() {
+        let workspace = unique_temp_dir("ingest_pilot_multi_all_test");
+        let source = workspace.join("source");
+        fs::create_dir_all(&source).expect("source dir");
+        fs::write(source.join("A.MP4"), vec![1; 32]).expect("media a");
+        fs::write(source.join("B.MP4"), vec![2; 48]).expect("media b");
+
+        // Three existing destination roots; copies land directly in each (empty tree).
+        let dests: Vec<PathBuf> = (0..3).map(|i| workspace.join(format!("dest{i}"))).collect();
+        for dest in &dests {
+            fs::create_dir_all(dest).expect("dest dir");
+        }
+        let destination_overrides: Vec<String> = dests
+            .iter()
+            .map(|dest| dest.to_string_lossy().to_string())
+            .collect();
+
+        let preset = loose_preset("preset_multi", &destination_overrides[0]);
+
+        let result = run_ingest_multi(
+            &preset,
+            source.to_string_lossy().to_string(),
+            BTreeMap::new(),
+            destination_overrides.clone(),
+            true,
+            true,
+            None,
+            None,
+            true, // use existing roots (each dest IS the root)
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("multi ingest succeeds");
+
+        assert_eq!(result.roots.len(), 3, "one IngestResult per destination");
+        assert!(result.failures.is_empty(), "no destination should fail");
+
+        for dest in &dests {
+            assert!(dest.join("A.mp4").exists(), "A copied to {}", dest.display());
+            assert!(dest.join("B.mp4").exists(), "B copied to {}", dest.display());
+        }
+        for root in &result.roots {
+            assert_eq!(root.files_copied, 2, "each root copies both media files");
+            assert_eq!(root.verified_files, 2, "each root verifies both files");
+            assert_eq!(root.verification_failed, 0);
+            assert!(PathBuf::from(&root.mhl_path).exists(), "each root writes its MHL");
+        }
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn run_ingest_multi_dedups_destinations_pointing_at_the_same_root() {
+        let workspace = unique_temp_dir("ingest_pilot_multi_dedup_test");
+        let source = workspace.join("source");
+        fs::create_dir_all(&source).expect("source dir");
+        fs::write(source.join("A.MP4"), vec![7; 40]).expect("media");
+
+        let dest = workspace.join("dest");
+        fs::create_dir_all(&dest).expect("dest dir");
+        let dest_str = dest.to_string_lossy().to_string();
+
+        // Same root reached three ways: exact duplicate, trailing-separator variant, and
+        // (on Windows) a case variant. All must collapse to a SINGLE root/copy — never two
+        // threads clobbering the same file.
+        let mut destination_overrides = vec![
+            dest_str.clone(),
+            format!("{dest_str}{}", std::path::MAIN_SEPARATOR),
+            dest_str.clone(),
+        ];
+        #[cfg(windows)]
+        destination_overrides.push(dest_str.to_uppercase());
+
+        let preset = loose_preset("preset_multi_dedup", &dest_str);
+
+        let result = run_ingest_multi(
+            &preset,
+            source.to_string_lossy().to_string(),
+            BTreeMap::new(),
+            destination_overrides,
+            true,
+            true,
+            None,
+            None,
+            true,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("multi ingest succeeds");
+
+        assert_eq!(
+            result.roots.len(),
+            1,
+            "duplicate destinations collapse to a single root"
+        );
+        assert!(result.failures.is_empty());
+        assert_eq!(result.roots[0].files_copied, 1);
+        // Exactly one copy of A on disk (no clobbered sibling/duplicate).
+        let a_copies = fs::read_dir(&dest)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .to_ascii_lowercase()
+                    .starts_with('a')
+            })
+            .count();
+        assert_eq!(a_copies, 1, "one destination => one copy, not two");
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn run_ingest_multi_failing_destination_does_not_abort_others() {
+        let workspace = unique_temp_dir("ingest_pilot_multi_fail_test");
+        let source = workspace.join("source");
+        fs::create_dir_all(&source).expect("source dir");
+        fs::write(source.join("A.MP4"), vec![9; 24]).expect("media");
+
+        let good1 = workspace.join("good1");
+        let good2 = workspace.join("good2");
+        fs::create_dir_all(&good1).expect("good1");
+        fs::create_dir_all(&good2).expect("good2");
+        // A regular FILE used as a "destination": `existing_root_scaffold` rejects it
+        // ("... is not a folder."), so this destination's thread errors while the two
+        // real folders still complete.
+        let bad = workspace.join("bad_dest_is_a_file");
+        fs::write(&bad, vec![0; 4]).expect("bad dest file");
+
+        let destination_overrides = vec![
+            good1.to_string_lossy().to_string(),
+            bad.to_string_lossy().to_string(),
+            good2.to_string_lossy().to_string(),
+        ];
+        let preset = loose_preset("preset_multi_fail", &destination_overrides[0]);
+
+        let result = run_ingest_multi(
+            &preset,
+            source.to_string_lossy().to_string(),
+            BTreeMap::new(),
+            destination_overrides,
+            true,
+            true,
+            None,
+            None,
+            true,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("multi ingest returns a result even with one bad drive");
+
+        assert_eq!(result.roots.len(), 2, "the two good drives complete");
+        assert_eq!(result.failures.len(), 1, "the bad drive is captured as a failure");
+        assert_eq!(result.failures[0].index, 1, "failure keeps its destination index");
+        assert_eq!(
+            result.failures[0].path,
+            bad.to_string_lossy().to_string(),
+            "failure carries the offending destination path"
+        );
+        assert!(good1.join("A.mp4").exists());
+        assert!(good2.join("A.mp4").exists());
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn run_ingest_multi_streams_per_destination_progress_and_verified_feed() {
+        let workspace = unique_temp_dir("ingest_pilot_multi_feed_test");
+        let source = workspace.join("source");
+        fs::create_dir_all(&source).expect("source dir");
+        fs::write(source.join("A.MP4"), vec![3; 16]).expect("media a");
+        fs::write(source.join("B.MP4"), vec![4; 16]).expect("media b");
+
+        let dests: Vec<PathBuf> = (0..2).map(|i| workspace.join(format!("dest{i}"))).collect();
+        for dest in &dests {
+            fs::create_dir_all(dest).expect("dest dir");
+        }
+        let destination_overrides: Vec<String> = dests
+            .iter()
+            .map(|dest| dest.to_string_lossy().to_string())
+            .collect();
+        let preset = loose_preset("preset_multi_feed", &destination_overrides[0]);
+
+        let mut progress_events: Vec<IngestProgress> = Vec::new();
+        let mut verified_events: Vec<FileVerified> = Vec::new();
+        {
+            let mut on_progress = |progress: IngestProgress| progress_events.push(progress);
+            let mut on_verified = |event: FileVerified| verified_events.push(event);
+            let result = run_ingest_multi(
+                &preset,
+                source.to_string_lossy().to_string(),
+                BTreeMap::new(),
+                destination_overrides,
+                true,
+                true,
+                None,
+                None,
+                true,
+                None,
+                None,
+                None,
+                Some(&mut on_progress),
+                Some(&mut on_verified),
+            )
+            .expect("multi ingest succeeds");
+            assert_eq!(result.roots.len(), 2);
+        }
+
+        // One file-verified per file per destination (2 files x 2 dests), each stamped
+        // with the checksum algo and verified true.
+        assert_eq!(
+            verified_events.len(),
+            4,
+            "one file-verified per file per destination"
+        );
+        assert!(verified_events.iter().all(|event| event.algo == "XXH3-128"));
+        assert!(verified_events.iter().all(|event| event.verified));
+        assert!(verified_events
+            .iter()
+            .any(|event| event.destination_index == 0));
+        assert!(verified_events
+            .iter()
+            .any(|event| event.destination_index == 1));
+
+        // At least one aggregate progress event carried the per-destination breakdown.
+        assert!(
+            progress_events
+                .iter()
+                .any(|progress| progress.destination_count == 2 && progress.destinations.len() == 2),
+            "aggregate progress exposes both destinations"
+        );
+        // The terminal aggregate sums per-destination counters (2 files x 2 dests).
+        let final_progress = progress_events.last().expect("a final aggregate event");
+        assert_eq!(final_progress.files_done, 4);
+        assert_eq!(final_progress.verified_files, 4);
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn run_ingest_multi_cancel_short_circuits() {
+        let workspace = unique_temp_dir("ingest_pilot_multi_cancel_test");
+        let source = workspace.join("source");
+        fs::create_dir_all(&source).expect("source dir");
+        fs::write(source.join("A.MP4"), vec![5; 16]).expect("media");
+
+        let dests: Vec<PathBuf> = (0..2).map(|i| workspace.join(format!("dest{i}"))).collect();
+        for dest in &dests {
+            fs::create_dir_all(dest).expect("dest dir");
+        }
+        let destination_overrides: Vec<String> = dests
+            .iter()
+            .map(|dest| dest.to_string_lossy().to_string())
+            .collect();
+        let preset = loose_preset("preset_multi_cancel", &destination_overrides[0]);
+
+        // Pre-cancelled: every destination thread observes the shared flag and bails out.
+        let cancel = AtomicBool::new(true);
+        let result = run_ingest_multi(
+            &preset,
+            source.to_string_lossy().to_string(),
+            BTreeMap::new(),
+            destination_overrides,
+            true,
+            true,
+            None,
+            None,
+            true,
+            None,
+            None,
+            Some(&cancel),
+            None,
+            None,
+        );
+
+        assert!(result.is_err(), "a cancelled multi ingest returns an error");
+        assert!(result.unwrap_err().to_lowercase().contains("cancel"));
 
         let _ = fs::remove_dir_all(workspace);
     }

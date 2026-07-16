@@ -254,7 +254,7 @@ export function ScaffoldPage() {
             </div>
 
             <button
-              className="inline-flex h-9 w-full items-center justify-center gap-1.5 rounded-lg bg-signal px-3 text-sm font-semibold text-paper transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-40"
+              className="inline-flex h-9 w-full items-center justify-center gap-1.5 rounded-lg bg-signal px-3 text-sm font-semibold text-primaryfg transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-40"
               disabled={!canCreate}
               onClick={() => void createFolders()}
               type="button"
@@ -669,7 +669,7 @@ function MultiSelectParameter({
                   type="button"
                 >
                   <span className={`flex h-4 w-4 items-center justify-center rounded border ${
-                    checked ? "border-signal bg-signal text-paper" : "border-mist bg-white"
+                    checked ? "border-signal bg-signal text-primaryfg" : "border-mist bg-white"
                   }`}>
                     {checked ? <Check size={11} strokeWidth={3} /> : null}
                   </span>

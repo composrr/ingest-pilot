@@ -357,7 +357,7 @@ export function MetadataPresetsManager({
               <div className="flex items-center gap-2">
                 {status ? <span className="text-xs font-semibold text-emerald-600">{status}</span> : null}
                 <button
-                  className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-signal px-3 text-sm font-semibold text-paper transition hover:bg-black"
+                  className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-signal px-3 text-sm font-semibold text-primaryfg transition hover:bg-black"
                   onClick={() => void save()}
                   type="button"
                 >
@@ -535,7 +535,7 @@ export function MetadataPresetsManager({
                   Cancel
                 </button>
                 <button
-                  className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-signal px-3 text-xs font-semibold text-paper transition hover:bg-black disabled:opacity-40"
+                  className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-signal px-3 text-xs font-semibold text-primaryfg transition hover:bg-black disabled:opacity-40"
                   disabled={importBusy || importSelected.size === 0}
                   onClick={() => void runImport()}
                   type="button"

@@ -12,3 +12,9 @@ Thumbs.db
 # Updater signing keys — never commit these (keep them in ~/.tauri or CI secrets)
 *.key
 *.pem
+
+# Bundled third-party tools (~130MB) — fetched, not committed.
+# Run `scripts/fetch-tools.ps1` after cloning; CI runs it before `tauri build`.
+# See docs/design/BUNDLING.md.
+/src-tauri/binaries
+/src-tauri/resources/tools

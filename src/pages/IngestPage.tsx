@@ -2,7 +2,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { Check, ChevronDown, ChevronUp, FolderOpen, Image, Layers, List, Plus, RefreshCw, Search, Users, Wand2, X } from "lucide-react";
+import { Activity, Check, ChevronDown, ChevronUp, Clock, Film, FolderOpen, HardDrive, Image, Layers, List, Plus, RefreshCw, Search, ShieldCheck, Users, Wand2, X } from "lucide-react";
 import { type Dispatch, type SetStateAction, useEffect, useMemo, useRef, useState } from "react";
 import {
   defaultsForParameters,
@@ -34,7 +34,7 @@ import {
   listMetadataPresets,
   saveMetadataPreset,
   generateOffloadProof,
-  runIngest,
+  runIngestMulti,
   retryFailedCopies,
   saveHistoryJob,
   getNamingCatalog,
@@ -46,6 +46,10 @@ import {
   detectCameraSources,
   type CameraSource,
   type CopiedFile,
+  type DestinationFailure,
+  type DestinationProgress,
+  type FileVerified,
+  type MultiIngestResult,
   type DiskSpace,
   type FolderMetadataOverride,
   type IconikField,
@@ -236,6 +240,16 @@ type RunSource = {
 // can be passed straight to elementFromPoint.
 type DropZone = "queue" | "destinations" | "sources";
 
+// Canonical identity key for a destination, mirroring the realistic cases the Rust
+// `run_ingest_multi` collapses before spawning per-destination copy threads: it trims
+// whitespace, strips trailing path separators, and lowercases (Windows-case-insensitive).
+// Deduping the destination list with this key keeps the list we pass 1:1 with Rust's
+// post-dedup list (so roots/failures index alignment holds) and makes the safety gate +
+// Destinations count reflect real distinct drives rather than trailing-slash/case variants.
+function canonicalDestinationKey(path: string): string {
+  return path.trim().replace(/[\\/]+$/, "").toLowerCase();
+}
+
 // Parent folder of a path (handles both / and \ separators); null if at a root.
 function parentDirectory(path: string): string | null {
   const trimmed = path.replace(/[\\/]+$/, "");
@@ -284,6 +298,20 @@ export function IngestPage() {
   const [reportBuild, setReportBuild] = useState<ReportBuildState>({ status: "idle", progress: null });
   const [isFileSelectorOpen, setIsFileSelectorOpen] = useState(false);
   const [spaceByPath, setSpaceByPath] = useState<Record<string, DiskSpace | null>>({});
+  // Per-destination progress rows for the concurrent multi-destination copy. Sampled
+  // from `ingest-progress`'s `destinations[]` alongside the aggregate speed chart.
+  const [destinationProgress, setDestinationProgress] = useState<DestinationProgress[]>([]);
+  // Live per-file integrity feed (newest first, capped) driven by `file-verified`. Each
+  // entry carries a stable monotonic id so prepending a new batch doesn't re-key the list.
+  const [verifiedFeed, setVerifiedFeed] = useState<VerifiedFeedEntry[]>([]);
+  // AUTHORITATIVE, UNCAPPED integrity tally (see the refs below). Independent of the capped
+  // display feed so an early checksum failure can never scroll out of view and flip the
+  // run's red state back to green. Drives every failure indicator on the run screen.
+  const [verifiedFailedTotal, setVerifiedFailedTotal] = useState(0);
+  const [verifiedFailedByDest, setVerifiedFailedByDest] = useState<Map<number, number>>(new Map());
+  // Destinations whose copy thread failed this run (drive pulled, unwritable path, panic).
+  // Surfaced on the delivery screen + history status; a failed drive is never swallowed.
+  const [destinationFailures, setDestinationFailures] = useState<DestinationFailure[]>([]);
   const [recentJobs, setRecentJobs] = useState<IngestHistoryJob[]>([]);
   const [variableSuggestions, setVariableSuggestions] = useState<Record<string, string[]>>({});
   const [historicalBps, setHistoricalBps] = useState(0);
@@ -330,6 +358,17 @@ export function IngestPage() {
   const latestProgressRef = useRef<IngestProgress | null>(null);
   const sampleTimerRef = useRef<number | null>(null);
   const runStartRef = useRef<number>(0);
+  // file-verified arrives ~1/file/dest — a flood on large small-file cards. The listener
+  // is a pure ref-writer (like the progress listener); the fixed-cadence sample timer
+  // flushes the buffer into `verifiedFeed`, so we re-render at a steady rate, not per file.
+  const verifiedFeedBufferRef = useRef<VerifiedFeedEntry[]>([]);
+  const verifiedFeedIdRef = useRef(0);
+  // Source of truth for the integrity tally (mirrored into state on the sample timer). Each
+  // (file,dest) fires `file-verified` exactly once with a unique id, so a plain increment on
+  // `!verified` is exact — no double counting — and never evicted like the capped feed.
+  const verifiedFailedTotalRef = useRef(0);
+  const verifiedFailedByDestRef = useRef<Map<number, number>>(new Map());
+  const verifiedFailedDirtyRef = useRef(false);
   const setLastAction = useAppStore((state) => state.setLastAction);
   const setRequestedView = useAppStore((state) => state.setRequestedView);
   const metadataRev = useAppStore((state) => state.metadataRev);
@@ -337,10 +376,27 @@ export function IngestPage() {
   const settingsRev = useAppStore((state) => state.settingsRev);
   const sourcePath = sourcePaths[0] ?? "";
   const scan = useMemo(() => aggregateSourceScans(sourceScans), [sourceScans]);
-  const destinationTargets = useMemo(
-    () => [destinationPath, ...secondaryDestinationPaths].filter((path) => path.trim().length > 0),
-    [destinationPath, secondaryDestinationPaths],
-  );
+  // Distinct destination drives, order-preserving. Deduped by the same canonical key Rust
+  // uses (trim + trailing-separator + Windows-case) so the list stays 1:1 with the backend's
+  // post-dedup list and the safety gate / Destinations count reflect real distinct copies —
+  // two paths that canonicalize to one can't silently pass "require N verified copies".
+  const destinationTargets = useMemo(() => {
+    const seen = new Set<string>();
+    const targets: string[] = [];
+    for (const path of [destinationPath, ...secondaryDestinationPaths]) {
+      const trimmed = path.trim();
+      if (trimmed.length === 0) {
+        continue;
+      }
+      const key = canonicalDestinationKey(trimmed);
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      targets.push(trimmed);
+    }
+    return targets;
+  }, [destinationPath, secondaryDestinationPaths]);
 
   const ingestParameters = useMemo(
     () => mergeGlobalAndPresetParameters(globalParameters, preset?.variables ?? []),
@@ -943,6 +999,16 @@ export function IngestPage() {
     if (typeof path !== "string") {
       return;
     }
+    // Reject a backup that canonicalizes to a destination already chosen (a trailing-slash
+    // or case variant of the primary / another backup) — it would be a phantom second copy.
+    const key = canonicalDestinationKey(path);
+    const others = [destinationPathRef.current, ...secondaryDestinationsRef.current].filter(
+      (existing, existingIndex) => Boolean(existing) && existingIndex !== (typeof index === "number" ? index + 1 : -1),
+    );
+    if (others.some((existing) => canonicalDestinationKey(existing) === key)) {
+      setError(`"${pathDisplayName(path)}" is already a destination — pick a different drive for a real second copy.`);
+      return;
+    }
     setSecondaryDestinationPaths((current) => {
       if (typeof index === "number") {
         return current.map((destination, destinationIndex) => (destinationIndex === index ? path : destination));
@@ -1024,11 +1090,21 @@ export function IngestPage() {
     setIngestProgress(null);
     setSpeedSeries([]);
     setInstantaneousBps(0);
+    setDestinationProgress([]);
+    setVerifiedFeed([]);
+    setVerifiedFailedTotal(0);
+    setVerifiedFailedByDest(new Map());
+    setDestinationFailures([]);
     progressBufferRef.current = [];
+    verifiedFeedBufferRef.current = [];
+    verifiedFeedIdRef.current = 0;
+    verifiedFailedTotalRef.current = 0;
+    verifiedFailedByDestRef.current = new Map();
+    verifiedFailedDirtyRef.current = false;
     latestProgressRef.current = null;
     runStartRef.current = performance.now();
     // Listener is a pure ref-writer — never setState here (events flood every 256 KB).
-    const unlisten = await listen<IngestProgress>("ingest-progress", (event) => {
+    const unlistenProgress = await listen<IngestProgress>("ingest-progress", (event) => {
       if (event.payload.job_id !== jobId) {
         return;
       }
@@ -1036,8 +1112,10 @@ export function IngestPage() {
       const tMs = performance.now() - runStartRef.current;
       const buffer = progressBufferRef.current;
       const previous = buffer[buffer.length - 1];
-      // Multi-segment runs restart bytes_done at 0 per runIngest call; a drop means a
-      // new segment, so reset the buffer to avoid a negative speed spike at the seam.
+      // Each source is one runIngestMulti call whose aggregate bytes_done runs 0→total
+      // (all destinations tee together). Across sources the next call restarts at 0, so a
+      // drop marks a SOURCE transition — reset the buffer to avoid a negative speed spike
+      // at the seam. (Within a source all destinations advance together, no per-dest reset.)
       if (previous && event.payload.bytes_done < previous.bytesDone) {
         buffer.length = 0;
       }
@@ -1047,14 +1125,50 @@ export function IngestPage() {
         buffer.shift();
       }
     });
+    // Live per-file integrity feed. Pure ref-writer (never setState here — a big small-file
+    // card fires one event per file per destination); the sample timer flushes the buffer.
+    const unlistenVerified = await listen<FileVerified>("file-verified", (event) => {
+      if (event.payload.job_id !== jobId) {
+        return;
+      }
+      verifiedFeedBufferRef.current.push({ id: verifiedFeedIdRef.current, data: event.payload });
+      verifiedFeedIdRef.current += 1;
+      // Authoritative uncapped tally — count the failure the instant it arrives, before the
+      // display feed can evict it. Mark dirty so the sample timer mirrors it into state.
+      if (!event.payload.verified) {
+        const dest = event.payload.destination_index;
+        verifiedFailedTotalRef.current += 1;
+        verifiedFailedByDestRef.current.set(dest, (verifiedFailedByDestRef.current.get(dest) ?? 0) + 1);
+        verifiedFailedDirtyRef.current = true;
+      }
+    });
     // Sample the refs at a fixed cadence so the whole run screen renders at a steady
     // rate regardless of how fast the card streams.
     sampleTimerRef.current = window.setInterval(() => {
+      // Flush any buffered file-verified events into the feed (newest first, capped). Done
+      // first + unconditionally so the feed drains even between progress ticks.
+      const pending = verifiedFeedBufferRef.current;
+      if (pending.length > 0) {
+        verifiedFeedBufferRef.current = [];
+        pending.reverse(); // buffer is oldest→newest; feed shows newest first
+        setVerifiedFeed((previous) => {
+          const next = [...pending, ...previous];
+          return next.length > VERIFIED_FEED_CAP ? next.slice(0, VERIFIED_FEED_CAP) : next;
+        });
+      }
+      // Mirror the authoritative failed tally into state whenever a new failure landed. A
+      // fresh Map copy is required so React re-renders the per-destination ✗ counters.
+      if (verifiedFailedDirtyRef.current) {
+        verifiedFailedDirtyRef.current = false;
+        setVerifiedFailedTotal(verifiedFailedTotalRef.current);
+        setVerifiedFailedByDest(new Map(verifiedFailedByDestRef.current));
+      }
       const latest = latestProgressRef.current;
       if (!latest) {
         return;
       }
       setIngestProgress(latest);
+      setDestinationProgress(latest.destinations ?? []);
       const bps = windowedSpeed(progressBufferRef.current, SPEED_WINDOW_MS);
       setInstantaneousBps(bps);
       const t = performance.now() - runStartRef.current;
@@ -1069,7 +1183,8 @@ export function IngestPage() {
       });
     }, SAMPLE_INTERVAL_MS);
     return () => {
-      unlisten();
+      unlistenProgress();
+      unlistenVerified();
       if (sampleTimerRef.current !== null) {
         window.clearInterval(sampleTimerRef.current);
         sampleTimerRef.current = null;
@@ -1077,54 +1192,111 @@ export function IngestPage() {
     };
   }
 
-  // Copies the given sources into every destination under one job id, returning the
-  // per-(destination × source) results plus the resolved project root for each
-  // destination. The root map lets the queue runner funnel later cards into the same
-  // project folder a first card created, instead of spawning a new root per card.
+  // Copies the given sources into every destination under one job id. Each SOURCE is
+  // teed to ALL destinations concurrently inside Rust via one runIngestMulti call;
+  // multiple sources still loop sequentially (per-source scan boundaries). Returns the
+  // flattened per-root IngestResults, the resolved project root for each destination,
+  // and any per-destination failures. The root map lets the queue runner funnel later
+  // cards into the same project folder a first card created, instead of a new root each.
   async function copySourcesToDestinations(
     jobId: string,
     activeSources: RunSource[],
     options: { rootByDestination?: Map<string, string>; segmentBase?: number; segmentTotal?: number } = {},
-  ): Promise<{ results: IngestResult[]; rootByDestination: Map<string, string> }> {
+  ): Promise<{ results: IngestResult[]; rootByDestination: Map<string, string>; failures: DestinationFailure[] }> {
     const rootByDestination = options.rootByDestination ?? new Map<string, string>();
-    const total = options.segmentTotal ?? destinationTargets.length * Math.max(1, activeSources.length);
+    const existingRootMode = destinationMode === "existing_root";
+    // One runIngestMulti call per source now, so the segment counter is per-source.
+    const total = options.segmentTotal ?? Math.max(1, activeSources.length);
     const results: IngestResult[] = [];
+    const failures: DestinationFailure[] = [];
     let segmentIndex = options.segmentBase ?? 0;
-    for (const destination of destinationTargets) {
-      for (let sourceIndex = 0; sourceIndex < activeSources.length; sourceIndex += 1) {
-        const entry = activeSources[sourceIndex];
-        if (entry.includedRelativePaths.length === 0) {
-          continue;
+    for (let sourceIndex = 0; sourceIndex < activeSources.length; sourceIndex += 1) {
+      const entry = activeSources[sourceIndex];
+      if (entry.includedRelativePaths.length === 0) {
+        continue;
+      }
+      // Reuse the project roots an earlier source/card already created for these
+      // destinations; otherwise scaffold fresh under each chosen destination (or copy
+      // straight into them when the user picked "copy into existing root"). A destination
+      // that failed earlier has no root and is dropped from later sources — it stays
+      // failed rather than spawning a fresh partial root.
+      const perDestination = destinationTargets.map((destination) => ({
+        destination,
+        root: rootByDestination.get(destination),
+      }));
+      const reusing = perDestination.some((item) => item.root !== undefined);
+      const targets = reusing ? perDestination.filter((item) => item.root !== undefined) : perDestination;
+      if (targets.length === 0) {
+        continue;
+      }
+      const destinationPaths = reusing
+        ? targets.map((item) => item.root as string)
+        : targets.map((item) => item.destination);
+      const useExistingRoot = reusing || existingRootMode;
+
+      segmentIndex += 1;
+      setCurrentSegment({
+        label:
+          destinationTargets.length > 1
+            ? `${pathDisplayName(entry.sourcePath)} → ${destinationTargets.length} destinations`
+            : `${pathDisplayName(entry.sourcePath)} → ${pathDisplayName(destinationTargets[0] ?? "")}`,
+        index: segmentIndex,
+        total,
+      });
+
+      const multi = await runIngestMulti(
+        selectedPresetId,
+        entry.sourcePath,
+        variableValues,
+        destinationPaths,
+        // preserve sidecars = don't delete them; Safe Mode's never-delete-source
+        // forces preservation regardless of the delete-sidecars toggle.
+        !deleteSidecars || appSettings.safety.never_delete_source,
+        renameFiles,
+        entry.cameraAlias?.trim() || undefined,
+        entry.includedRelativePaths,
+        useExistingRoot,
+        jobId,
+        projectNameOverride.trim() || undefined,
+        renameFiles ? fileRenamePattern.trim() || undefined : undefined,
+      );
+
+      results.push(...multi.roots);
+      // Lookup from the canonical key of what we PASSED (a drive on the first source, a
+      // resolved project root on later ones) back to the ORIGINAL drive the user chose. Rust
+      // reports a failure's `path` as the exact string it copied to, so keying by canonical
+      // path re-attributes it to the right drive without depending on index order — robust
+      // even if the backend collapsed two entries our string-dedup missed.
+      const passedToDestination = new Map<string, string>();
+      targets.forEach((target, index) => {
+        passedToDestination.set(canonicalDestinationKey(destinationPaths[index]), target.destination);
+      });
+      // roots come back in destination order (successful destinations only); failures carry
+      // their index into the destinationPaths array we passed. Walk the targets and consume
+      // roots for the ones that didn't fail so each root maps to its original destination.
+      const failedIndices = new Set(multi.failures.map((failure) => failure.index));
+      let rootCursor = 0;
+      targets.forEach((target, index) => {
+        if (failedIndices.has(index)) {
+          return;
         }
-        const knownRoot = rootByDestination.get(destination);
-        const isFirstForDestination = knownRoot === undefined;
-        segmentIndex += 1;
-        setCurrentSegment({
-          label: `${pathDisplayName(entry.sourcePath)} → ${pathDisplayName(destination)}`,
-          index: segmentIndex,
-          total,
+        const root = multi.roots[rootCursor];
+        rootCursor += 1;
+        if (root) {
+          rootByDestination.set(target.destination, root.root_path);
+        }
+      });
+      // Surface each failure against the drive the user chose (never a reused project-root
+      // subfolder), keyed by path so attribution can't drift.
+      for (const failure of multi.failures) {
+        failures.push({
+          index: failure.index,
+          path: passedToDestination.get(canonicalDestinationKey(failure.path)) ?? failure.path,
+          error: failure.error,
         });
-        const result = await runIngest(
-          selectedPresetId,
-          entry.sourcePath,
-          variableValues,
-          isFirstForDestination ? destination : (knownRoot as string),
-          // preserve sidecars = don't delete them; Safe Mode's never-delete-source
-          // forces preservation regardless of the delete-sidecars toggle.
-          !deleteSidecars || appSettings.safety.never_delete_source,
-          renameFiles,
-          entry.cameraAlias?.trim() || undefined,
-          entry.includedRelativePaths,
-          destinationMode === "existing_root" || !isFirstForDestination,
-          jobId,
-          projectNameOverride.trim() || undefined,
-          renameFiles ? fileRenamePattern.trim() || undefined : undefined,
-        );
-        results.push(result);
-        rootByDestination.set(destination, result.root_path);
       }
     }
-    return { results, rootByDestination };
+    return { results, rootByDestination, failures };
   }
 
   async function startIngest() {
@@ -1193,12 +1365,22 @@ export function IngestPage() {
           cameraAlias: cameraAliases[entry.sourcePath],
         }))
         .filter((entry) => entry.includedRelativePaths.length > 0);
-      const { results } = await copySourcesToDestinations(jobId, activeSources);
+      const { results, failures } = await copySourcesToDestinations(jobId, activeSources);
       const result = mergeIngestResults(results);
       setIngestResult(result);
+      setDestinationFailures(failures);
+      // A failed drive OR any unverified file means the run needs a human look before it
+      // can be trusted as a delivered backup.
+      const needsReview = result.verification_failed > 0 || failures.length > 0;
       void autoWriteMetadataManifest(result, [...new Set(results.map((entry) => entry.root_path))]);
+      if (failures.length > 0) {
+        const names = failures.map((failure) => pathDisplayName(failure.path)).join(", ");
+        setError(
+          `${failures.length} destination${failures.length === 1 ? "" : "s"} failed (${names}). The other copies completed — review the delivery summary.`,
+        );
+      }
       setLastAction(
-        `Ingest copied ${result.files_copied} file${result.files_copied === 1 ? "" : "s"} from ${sourceScans.length} source${sourceScans.length === 1 ? "" : "s"} to ${destinationTargets.length} destination${destinationTargets.length === 1 ? "" : "s"}`,
+        `Ingest copied ${result.files_copied} file${result.files_copied === 1 ? "" : "s"} from ${sourceScans.length} source${sourceScans.length === 1 ? "" : "s"} to ${destinationTargets.length} destination${destinationTargets.length === 1 ? "" : "s"}${failures.length > 0 ? ` · ${failures.length} destination${failures.length === 1 ? "" : "s"} failed` : ""}`,
       );
       const completedAt = new Date().toISOString();
       const historyJob = {
@@ -1206,7 +1388,7 @@ export function IngestPage() {
         preset_id: selectedPresetId,
         preset_name: preset.name,
         variable_values: variableValues,
-        status: result.verification_failed > 0 ? "needs_review" : "verified",
+        status: needsReview ? "needs_review" : "verified",
         started_at: startedAt,
         completed_at: completedAt,
         source_paths: sourcePaths,
@@ -1359,8 +1541,20 @@ export function IngestPage() {
       setDestinationPath(primary);
     }
     if (queued.length > 0) {
-      const existing = new Set([primary, ...secondaryDestinationsRef.current].filter(Boolean));
-      const additions = queued.filter((path) => !existing.has(path));
+      // Dedup by canonical key so a trailing-slash / case variant of a drive already chosen
+      // (or dropped twice in the same batch) can't be added as a second "distinct" copy.
+      const seen = new Set(
+        [primary, ...secondaryDestinationsRef.current].filter(Boolean).map(canonicalDestinationKey),
+      );
+      const additions: string[] = [];
+      for (const path of queued) {
+        const key = canonicalDestinationKey(path);
+        if (seen.has(key)) {
+          continue;
+        }
+        seen.add(key);
+        additions.push(path);
+      }
       if (additions.length > 0) {
         setSecondaryDestinationPaths((current) => [...current, ...additions]);
       }
@@ -1430,6 +1624,7 @@ export function IngestPage() {
     const stopTracking = await startProgressTracking(jobId);
     const rootByDestination = new Map<string, string>();
     const allResults: IngestResult[] = [];
+    const allFailures: DestinationFailure[] = [];
     const processedSourcePaths: string[] = [];
     let cancelled = false;
     try {
@@ -1460,9 +1655,10 @@ export function IngestPage() {
           continue;
         }
         patchQueueCard(card.id, { status: "copying", error: null });
-        const totalSegments = destinationTargets.length * queueRef.current.length;
+        // One runIngestMulti call per card now, so segments count cards (not card × dest).
+        const totalSegments = queueRef.current.length;
         try {
-          const { results } = await copySourcesToDestinations(
+          const { results, failures } = await copySourcesToDestinations(
             jobId,
             [
               {
@@ -1472,15 +1668,27 @@ export function IngestPage() {
                 cameraAlias: card.cameraAlias,
               },
             ],
-            { rootByDestination, segmentBase: (index - 1) * destinationTargets.length, segmentTotal: totalSegments },
+            { rootByDestination, segmentBase: index - 1, segmentTotal: totalSegments },
           );
           const merged = mergeIngestResults(results);
           allResults.push(...results);
+          allFailures.push(...failures);
           processedSourcePaths.push(card.sourcePath);
+          const cardIssues =
+            merged.verification_failed > 0 || failures.length > 0
+              ? [
+                  merged.verification_failed > 0 ? `${merged.verification_failed} file(s) not verified` : null,
+                  failures.length > 0
+                    ? `${failures.length} destination${failures.length === 1 ? "" : "s"} failed`
+                    : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")
+              : null;
           patchQueueCard(card.id, {
-            status: merged.verification_failed > 0 ? "error" : "done",
+            status: cardIssues ? "error" : "done",
             result: merged,
-            error: merged.verification_failed > 0 ? `${merged.verification_failed} file(s) not verified` : null,
+            error: cardIssues,
           });
         } catch (caught) {
           const message = String(caught);
@@ -1502,9 +1710,20 @@ export function IngestPage() {
 
       const result = mergeIngestResults(allResults);
       setIngestResult(result);
+      // A destination can fail on more than one card; collapse to one row per drive for
+      // the delivery banner while keeping the first error message seen for it.
+      const uniqueFailures = [...new Map(allFailures.map((failure) => [failure.path, failure])).values()];
+      setDestinationFailures(uniqueFailures);
+      const needsReview = result.verification_failed > 0 || uniqueFailures.length > 0;
       void autoWriteMetadataManifest(result, [...new Set(allResults.map((entry) => entry.root_path))]);
+      if (uniqueFailures.length > 0) {
+        const names = uniqueFailures.map((failure) => pathDisplayName(failure.path)).join(", ");
+        setError(
+          `${uniqueFailures.length} destination${uniqueFailures.length === 1 ? "" : "s"} failed (${names}). The other copies completed — review the delivery summary.`,
+        );
+      }
       setLastAction(
-        `Queue copied ${result.files_copied} file${result.files_copied === 1 ? "" : "s"} from ${processedSourcePaths.length} card${processedSourcePaths.length === 1 ? "" : "s"} to ${destinationTargets.length} destination${destinationTargets.length === 1 ? "" : "s"}`,
+        `Queue copied ${result.files_copied} file${result.files_copied === 1 ? "" : "s"} from ${processedSourcePaths.length} card${processedSourcePaths.length === 1 ? "" : "s"} to ${destinationTargets.length} destination${destinationTargets.length === 1 ? "" : "s"}${uniqueFailures.length > 0 ? ` · ${uniqueFailures.length} destination${uniqueFailures.length === 1 ? "" : "s"} failed` : ""}`,
       );
       const completedAt = new Date().toISOString();
       const historyJob = {
@@ -1512,7 +1731,7 @@ export function IngestPage() {
         preset_id: selectedPresetId,
         preset_name: preset.name,
         variable_values: variableValues,
-        status: result.verification_failed > 0 ? "needs_review" : "verified",
+        status: needsReview ? "needs_review" : "verified",
         started_at: startedAt,
         completed_at: completedAt,
         source_paths: processedSourcePaths,
@@ -1977,6 +2196,11 @@ export function IngestPage() {
         currentSegment={currentSegment}
         selectedBytes={selectedBytes}
         selectedCount={selectedFileCount}
+        destinationProgress={destinationProgress}
+        verifiedFeed={verifiedFeed}
+        verifiedFailedTotal={verifiedFailedTotal}
+        verifiedFailedByDest={verifiedFailedByDest}
+        spaceByPath={spaceByPath}
       />
     );
   }
@@ -2048,9 +2272,11 @@ export function IngestPage() {
               </button>
             ) : null}
             <button
-              className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-signal px-3 text-xs font-semibold text-paper transition hover:bg-black"
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-signal px-3 text-xs font-semibold text-primaryfg transition hover:bg-black"
               onClick={() => {
                 setIngestResult(null);
+                setDestinationFailures([]);
+                setError(null);
                 setQueue([]);
                 setIconikPush({ status: "idle", results: [] });
                 cardScanPromises.current.clear();
@@ -2069,6 +2295,24 @@ export function IngestPage() {
               <SummaryTile label="Failed" value={String(result.verification_failed)} />
               <SummaryTile label="Copied size" value={formatBytes(result.bytes_copied)} />
             </div>
+            {destinationFailures.length > 0 ? (
+              <div className="border-b border-mist bg-red-50/60 px-3 py-2.5">
+                <div className="mb-1.5 text-xs font-semibold text-red-800">
+                  {destinationFailures.length} destination{destinationFailures.length === 1 ? "" : "s"} failed — these copies did not complete
+                </div>
+                <div className="space-y-1">
+                  {destinationFailures.map((failure) => (
+                    <div
+                      key={failure.path}
+                      className="flex items-center justify-between gap-2 rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-xs"
+                    >
+                      <span className="min-w-0 truncate font-semibold text-ink">{pathDisplayName(failure.path)}</span>
+                      <span className="min-w-0 max-w-[60%] truncate font-medium text-red-700">{failure.error}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
             {queue.some((card) => card.result) ? <QueueCardsSummary cards={queue} /> : null}
             <VerificationPanel
               destinations={destinationTargets}
@@ -2076,6 +2320,7 @@ export function IngestPage() {
               onRetry={() => void retryFailedCopiesForResult()}
               result={result}
             />
+            <ClipThumbnailGrid files={result.copied_files} rootPath={result.root_path} />
             <CoverageCard files={result.copied_files} />
             {iconikPush.status !== "idle" ? (
               <IconikPushPanel
@@ -2210,7 +2455,7 @@ export function IngestPage() {
               <button
                 className={`inline-flex h-6 items-center gap-1.5 rounded-full border px-2 text-[11px] font-semibold transition ${
                   queueMode
-                    ? "border-signal bg-signal text-paper"
+                    ? "border-signal bg-signal text-primaryfg"
                     : "border-mist bg-white text-graphite hover:bg-porcelain"
                 }`}
                 onClick={() => {
@@ -2433,7 +2678,7 @@ export function IngestPage() {
             </label>
 
             <button
-              className={`inline-flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-signal px-3 text-sm font-semibold text-paper transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-40 ${
+              className={`inline-flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-signal px-3 text-sm font-semibold text-primaryfg transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-40 ${
                 queueMode ? "hidden" : ""
               }`}
               disabled={!sourcePath || isScanning}
@@ -2538,7 +2783,7 @@ export function IngestPage() {
               </div>
               {queueMode ? (
                 <button
-                  className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-black px-3 text-base font-semibold text-white shadow-sm transition hover:bg-ink disabled:cursor-not-allowed disabled:bg-graphite/35 disabled:text-white/80 disabled:shadow-none"
+                  className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-black px-3 text-base font-semibold text-primaryfg shadow-sm transition hover:bg-ink disabled:cursor-not-allowed disabled:bg-graphite/35 disabled:text-primaryfg/80 disabled:shadow-none"
                   disabled={!canStartQueue}
                   onClick={() => void runQueue()}
                   type="button"
@@ -2547,7 +2792,7 @@ export function IngestPage() {
                 </button>
               ) : (
                 <button
-                  className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-black px-3 text-base font-semibold text-white shadow-sm transition hover:bg-ink disabled:cursor-not-allowed disabled:bg-graphite/35 disabled:text-white/80 disabled:shadow-none"
+                  className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-black px-3 text-base font-semibold text-primaryfg shadow-sm transition hover:bg-ink disabled:cursor-not-allowed disabled:bg-graphite/35 disabled:text-primaryfg/80 disabled:shadow-none"
                   disabled={!canStartIngest}
                   onClick={() => void startIngest()}
                   type="button"
@@ -2734,8 +2979,8 @@ const QUEUE_STATUS_STYLES: Record<QueueCardStatus, { label: string; className: s
   pending: { label: "Pending", className: "bg-porcelain text-graphite" },
   scanning: { label: "Scanning…", className: "bg-lavender/25 text-graphite" },
   ready: { label: "Ready", className: "bg-emerald-50 text-emerald-700" },
-  copying: { label: "Copying…", className: "bg-signal text-paper" },
-  done: { label: "Done", className: "bg-emerald-600 text-paper" },
+  copying: { label: "Copying…", className: "bg-signal text-primaryfg" },
+  done: { label: "Done", className: "bg-emerald-600 text-primaryfg" },
   error: { label: "Issue", className: "bg-red-100 text-red-700" },
 };
 
@@ -3375,7 +3620,7 @@ function NamingAssistant({
                     Cancel
                   </button>
                   <button
-                    className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-signal px-4 text-sm font-semibold text-paper transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-40"
+                    className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-signal px-4 text-sm font-semibold text-primaryfg transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-40"
                     disabled={missingRequired}
                     onClick={() => onApply(deliverable, values)}
                     type="button"
@@ -3397,6 +3642,99 @@ function NamingAssistant({
   );
 }
 
+// Traffic-light status vocabulary shared by the header phase chip and the per-destination
+// dots. Tones use saturated palette colors at low alpha so the same class reads on both the
+// light and dark card surfaces (no theme-specific hexes). `neutral` falls back to tokens.
+type TrafficTone = "neutral" | "amber" | "blue" | "cyan" | "violet" | "green" | "red";
+
+// Tint backgrounds/dots use saturated palette colors at low alpha (theme-safe on both
+// surfaces). Text carries a dark:-400 variant because the -600 shades fail AA contrast on the
+// #1c1d1f / #121314 dark surfaces — the phase/failure states must stay unmistakable there.
+const toneStyles: Record<TrafficTone, { dot: string; chip: string; text: string }> = {
+  neutral: { dot: "bg-graphite/50", chip: "border-mist bg-porcelain", text: "text-graphite" },
+  amber: { dot: "bg-amber-500", chip: "border-amber-500/30 bg-amber-500/10", text: "text-amber-600 dark:text-amber-400" },
+  blue: { dot: "bg-sky-500", chip: "border-sky-500/30 bg-sky-500/10", text: "text-sky-600 dark:text-sky-400" },
+  cyan: { dot: "bg-cyan-500", chip: "border-cyan-500/30 bg-cyan-500/10", text: "text-cyan-600 dark:text-cyan-400" },
+  violet: { dot: "bg-violet-500", chip: "border-violet-500/30 bg-violet-500/10", text: "text-violet-600 dark:text-violet-400" },
+  green: { dot: "bg-emerald-500", chip: "border-emerald-500/30 bg-emerald-500/10", text: "text-emerald-600 dark:text-emerald-400" },
+  red: { dot: "bg-red-500", chip: "border-red-500/40 bg-red-500/15", text: "text-red-600 dark:text-red-400" },
+};
+
+// Map an engine phase string (copier.rs emits these verbatim) to a traffic-light tone. Any
+// live failure forces red regardless of phase.
+function phaseTone(phase: string | undefined, failed: boolean): TrafficTone {
+  if (failed) {
+    return "red";
+  }
+  switch (phase) {
+    case "Preparing":
+      return "amber";
+    case "Copying":
+      return "blue";
+    case "Verifying":
+      return "cyan";
+    case "Copying sidecars":
+    case "Writing verification record":
+      return "violet";
+    case "Complete":
+      return "green";
+    default:
+      return "neutral";
+  }
+}
+
+// The header status chip: a colored dot (pulsing while the run is live) + the phase label.
+function PhaseChip({ phase, failed }: { phase: string | undefined, failed: boolean }) {
+  const tone = phaseTone(phase, failed);
+  const style = toneStyles[tone];
+  const live = !failed && phase !== "Complete";
+  const label = failed ? "Failure detected" : phase ?? "Preparing";
+  return (
+    <span
+      className={`inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[11px] font-semibold ${style.chip} ${style.text}`}
+    >
+      <span className={`relative flex h-2 w-2`}>
+        {live ? <span className={`absolute inline-flex h-full w-full animate-ping rounded-full opacity-60 ${style.dot}`} /> : null}
+        <span className={`relative inline-flex h-2 w-2 rounded-full ${style.dot}`} />
+      </span>
+      {label}
+    </span>
+  );
+}
+
+// A copy/verify progress bar: the copied portion (accent) with the verified portion (solid,
+// trailing) layered on top; turns red when the destination has failed. Theme-safe fills.
+function TwoToneBar({
+  copyPercent,
+  verifyPercent,
+  failed,
+  height = "h-2",
+}: {
+  copyPercent: number;
+  verifyPercent: number;
+  failed?: boolean;
+  height?: string;
+}) {
+  const copying = copyPercent > 0 && copyPercent < 100 && !failed;
+  return (
+    <div className={`relative ${height} overflow-hidden rounded-full bg-app shadow-inner`}>
+      <div className="absolute inset-y-0 left-0 rounded-full bg-lavender/60 transition-all" style={{ width: `${copyPercent}%` }} />
+      {/* Verified portion trails the copy portion; dark-tuned ok token keeps AA on dark. */}
+      <div
+        className={`absolute inset-y-0 left-0 rounded-full transition-all ${failed ? "bg-red-500" : "bg-ok"}`}
+        style={{ width: `${verifyPercent}%` }}
+      />
+      {/* Live highlight at the leading copy edge so an active transfer visibly "breathes". */}
+      {copying ? (
+        <div
+          className="absolute inset-y-0 w-1.5 -translate-x-1/2 rounded-full bg-lavender animate-pulse"
+          style={{ left: `${copyPercent}%` }}
+        />
+      ) : null}
+    </div>
+  );
+}
+
 function IngestRunScreen({
   isCancelling,
   onCancel,
@@ -3406,6 +3744,11 @@ function IngestRunScreen({
   currentSegment,
   selectedBytes,
   selectedCount,
+  destinationProgress,
+  verifiedFeed,
+  verifiedFailedTotal,
+  verifiedFailedByDest,
+  spaceByPath,
 }: {
   isCancelling: boolean;
   onCancel: () => void;
@@ -3415,6 +3758,11 @@ function IngestRunScreen({
   currentSegment: { label: string; index: number; total: number } | null;
   selectedBytes: number;
   selectedCount: number;
+  destinationProgress: DestinationProgress[];
+  verifiedFeed: VerifiedFeedEntry[];
+  verifiedFailedTotal: number;
+  verifiedFailedByDest: Map<number, number>;
+  spaceByPath: Record<string, DiskSpace | null>;
 }) {
   const percent = progress ? progressPercent(progress) : 0;
   // Real windowed throughput (matches the graph), not the backend cumulative average.
@@ -3431,82 +3779,251 @@ function IngestRunScreen({
         ? Math.min(100, Math.round((progress.verified_bytes / progress.total_bytes) * 100))
         : 0;
 
+  // Failure state comes from the parent's AUTHORITATIVE, UNCAPPED tally — never from the
+  // capped display feed, whose oldest entries (which could include an early checksum
+  // failure) are evicted. Per-dest failures aren't carried on `DestinationProgress` mid-run
+  // (the backend keeps failed_files at 0 until the final per-root result), so the tally is
+  // the only reliable mid-run signal of a bad checksum.
+  const totalFailed = verifiedFailedTotal;
+  const runFailed = totalFailed > 0;
+  const totalVerified = progress?.verified_files ?? 0;
+  const destCount = destinationProgress.length || progress?.destination_count || 0;
+  // Only assert the algorithm once an event has actually reported it — no premature label.
+  const algo = verifiedFeed[0]?.data.algo ?? null;
+  // The h1 shows the source segment; fall back to a distinct title so it never echoes the
+  // "Verified ingest" eyebrow above it.
+  const sourceName = currentSegment?.label ?? "Transfer in progress";
+
   return (
     <div className="tool-density flex min-h-full w-full min-w-0 flex-col rounded-[28px] border border-mist bg-paper p-2 shadow-panel xl:p-3">
-      <header className="mb-2 flex items-center justify-between gap-3">
+      <header className="mb-2 flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="mb-0.5 text-[11px] font-semibold text-graphite/70">
+          <p className="mb-0.5 text-[11px] font-semibold uppercase tracking-wide text-graphite/70">
             Verified ingest
             {currentSegment && currentSegment.total > 1
               ? ` · card ${currentSegment.index} of ${currentSegment.total}`
               : ""}
           </p>
-          <h1 className="text-xl font-semibold tracking-normal">{progress?.phase ?? "Preparing ingest"}</h1>
-          {currentSegment ? (
-            <p className="mt-0.5 truncate text-xs font-semibold text-graphite">{currentSegment.label}</p>
-          ) : null}
+          <h1 className="truncate text-xl font-semibold tracking-normal">{sourceName}</h1>
+          <p className="mt-1 flex items-center gap-1.5 truncate text-xs font-semibold text-graphite">
+            <HardDrive size={13} className="shrink-0 text-graphite/70" />
+            {destCount > 0 ? `${destCount} destination${destCount === 1 ? "" : "s"}` : "Preparing destinations"}
+            <span className="text-graphite/40">·</span>
+            {progress?.files_done ?? 0}/{progress?.total_files ?? selectedCount} files
+          </p>
         </div>
-        <button
-          className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-2.5 text-xs font-semibold text-red-800 transition hover:bg-red-100 disabled:opacity-60"
-          disabled={isCancelling}
-          onClick={onCancel}
-          type="button"
-        >
-          <X size={16} />
-          {isCancelling ? "Cancelling..." : "Cancel"}
-        </button>
+        <div className="flex shrink-0 items-center gap-2">
+          <PhaseChip phase={progress?.phase} failed={runFailed} />
+          <button
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-red-500/30 bg-red-500/10 px-2.5 text-xs font-semibold text-red-600 transition hover:bg-red-500/20 disabled:opacity-60 dark:text-red-400"
+            disabled={isCancelling}
+            onClick={onCancel}
+            type="button"
+          >
+            <X size={16} />
+            {isCancelling ? "Cancelling..." : "Cancel"}
+          </button>
+        </div>
       </header>
 
-      <div className="grid min-h-0 flex-1 gap-2 xl:grid-cols-[minmax(0,1fr)_280px]">
-        <section className="overflow-hidden rounded-2xl border border-mist bg-white">
-          <div className="flex h-9 items-center justify-between border-b border-mist px-3">
-            <h2 className="text-sm font-semibold">Copy + verify</h2>
-            <span className="text-xs font-semibold text-graphite">{formatBytes(copiedBytes)} of {formatBytes(totalBytes)}</span>
+      {/* Aggregate stat strip: a big progress readout plus the signature transfer metrics. */}
+      <div className="mb-2 grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6">
+        <div className="rounded-xl border border-mist bg-porcelain/55 px-3 py-2">
+          <p className="text-[11px] font-semibold text-graphite">Progress</p>
+          <div className="mt-0.5 flex items-end gap-1">
+            <span className="text-3xl font-semibold leading-none text-ink">{percent}</span>
+            <span className="pb-0.5 text-sm font-semibold text-graphite">%</span>
           </div>
-          <div className="p-2">
-            <div className="mb-2 grid grid-cols-[minmax(0,1.15fr)_repeat(2,minmax(0,0.75fr))] gap-2 md:grid-cols-[minmax(0,1.2fr)_repeat(4,minmax(0,0.8fr))]">
-              <div className="rounded-xl border border-mist bg-porcelain/55 px-3 py-2">
-                <p className="text-[11px] font-semibold text-graphite">Progress</p>
-                <div className="mt-0.5 flex items-end gap-2">
-                  <span className="text-4xl font-semibold leading-none text-ink">{percent}</span>
-                  <span className="pb-1 text-sm font-semibold text-graphite">%</span>
-                </div>
-              </div>
-              <SummaryTile label="Speed" value={`${speed}/s`} />
-              <SummaryTile label="Remaining" value={remaining} />
-              <SummaryTile label="Copied" value={`${progress?.files_done ?? 0}/${progress?.total_files ?? selectedCount}`} />
-              <SummaryTile label="Elapsed" value={elapsed} />
-            </div>
+        </div>
+        <SummaryTile label="Speed" value={`${speed}/s`} />
+        <SummaryTile label="Remaining" value={remaining} />
+        <SummaryTile label="Copied" value={`${progress?.files_done ?? 0}/${progress?.total_files ?? selectedCount}`} />
+        <SummaryTile
+          label="Verified"
+          value={`${totalVerified}/${progress?.total_files ?? selectedCount}`}
+          tone={runFailed ? "bad" : undefined}
+          sub={runFailed ? `${totalFailed} failed` : undefined}
+        />
+        <SummaryTile label="Elapsed" value={elapsed} />
+      </div>
 
-            <div className="relative h-[300px] overflow-hidden rounded-2xl border border-mist bg-porcelain/35 p-3">
-              <SpeedChart series={speedSeries} />
-              <div className="absolute bottom-4 left-4 right-4">
-                <div className="mb-2 flex items-center justify-between text-xs font-semibold text-graphite">
+      <div className="grid min-h-0 flex-1 gap-2 xl:grid-cols-[minmax(0,1fr)_340px]">
+        {/* Left column: signature throughput chart + the per-destination centerpiece. */}
+        <div className="flex min-h-0 min-w-0 flex-col gap-2">
+          {/* Throughput is a slim supporting strip — the drives below are the centerpiece. */}
+          <section className="shrink-0 overflow-hidden rounded-2xl border border-mist bg-card">
+            <div className="flex h-8 items-center justify-between border-b border-mist px-3">
+              <h2 className="flex items-center gap-1.5 text-sm font-semibold">
+                <Activity size={14} className="text-graphite/70" />
+                Throughput
+              </h2>
+              <span className="text-xs font-semibold tabular-nums text-graphite">{speed}/s</span>
+            </div>
+            <div className="p-2">
+              <div className="relative h-[96px] overflow-hidden rounded-xl border border-mist bg-porcelain/35 p-1.5">
+                <SpeedChart series={speedSeries} />
+              </div>
+              <div className="mt-2">
+                <div className="mb-1 flex items-center justify-between text-[11px] font-semibold text-graphite">
                   <span>{formatBytes(copiedBytes)} copied</span>
                   <span>{formatBytes(totalBytes)} total</span>
                 </div>
-                <div className="h-3 overflow-hidden rounded-full bg-white">
-                  <div className="h-full rounded-full bg-signal transition-all" style={{ width: `${percent}%` }} />
+                <TwoToneBar copyPercent={percent} verifyPercent={verifyPercent} failed={runFailed} height="h-2.5" />
+              </div>
+              {progress?.current_file ? (
+                <div className="mt-2 truncate rounded-lg border border-mist bg-porcelain/50 px-2.5 py-1.5 text-[11px] font-semibold text-graphite">
+                  {progress.current_file}
                 </div>
-              </div>
+              ) : null}
             </div>
+          </section>
 
-            {progress?.current_file ? (
-              <div className="mt-3 truncate rounded-xl border border-mist bg-porcelain/50 px-3 py-2 text-xs font-semibold text-graphite">
-                {progress.current_file}
-              </div>
+          <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-mist bg-card">
+            <div className="flex h-9 shrink-0 items-center justify-between border-b border-mist px-3">
+              <h2 className="flex items-center gap-1.5 text-sm font-semibold">
+                <HardDrive size={14} className="text-graphite/70" />
+                Destinations
+              </h2>
+              <span className="rounded-full bg-porcelain px-2 py-0.5 text-[11px] font-semibold text-graphite">{destCount}</span>
+            </div>
+            <div className="min-h-0 flex-1 space-y-2 overflow-auto p-2">
+              {destinationProgress.length > 0 ? (
+                destinationProgress.map((dest) => (
+                  <DestinationProgressRow
+                    key={dest.index}
+                    dest={dest}
+                    freeFallback={spaceByPath[dest.path]?.available_bytes ?? null}
+                    failedCount={verifiedFailedByDest.get(dest.index) ?? 0}
+                  />
+                ))
+              ) : (
+                <div className="rounded-xl border border-dashed border-mist bg-porcelain/40 px-3 py-6 text-center text-xs font-semibold text-graphite/70">
+                  Waiting for the first destination to report…
+                </div>
+              )}
+            </div>
+          </section>
+        </div>
+
+        {/* Right column: the live per-file verification feed — the "streaming integrity" signal. */}
+        <aside className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-mist bg-card">
+          <div className="flex h-9 shrink-0 items-center justify-between border-b border-mist px-3">
+            <h2 className="flex items-center gap-1.5 text-sm font-semibold">
+              <ShieldCheck size={14} className="text-emerald-500 dark:text-emerald-400" />
+              Live verification
+            </h2>
+            {algo ? (
+              <span className="rounded-md border border-mist bg-porcelain px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wide text-graphite">
+                {algo}
+              </span>
             ) : null}
           </div>
-        </section>
-
-        <aside className="space-y-2">
-          <Gauge label="Copy" value={percent} />
-          <Gauge label="Verify" value={verifyPercent} />
-          <div className="rounded-2xl border border-mist bg-white p-3 text-xs font-semibold text-graphite">
-            Reports and thumbnails build after the transfer completes, so ingest speed stays the priority.
-          </div>
+          {verifiedFeed.length > 0 ? (
+            <div className="min-h-0 flex-1 divide-y divide-mist/60 overflow-auto">
+              {verifiedFeed.map((entry) => (
+                <VerifiedFeedRow key={entry.id} item={entry.data} />
+              ))}
+            </div>
+          ) : (
+            <div className="flex min-h-0 flex-1 items-center justify-center p-4 text-center text-xs font-medium leading-5 text-graphite/70">
+              Each file appears here the instant its copy is re-read and checksum-matched against the source.
+            </div>
+          )}
         </aside>
       </div>
+    </div>
+  );
+}
+
+// One rich per-destination row — the Hedge/Silverstack centerpiece. A traffic-light dot for
+// the drive's phase, the volume label, a live free-space countdown, a two-tone copy/verify
+// bar, MB/s, per-dest ETA, and a ✓verified/✗failed integrity counter. A failed drive reads
+// unmistakably red.
+function DestinationProgressRow({
+  dest,
+  freeFallback,
+  failedCount,
+}: {
+  dest: DestinationProgress;
+  freeFallback: number | null;
+  failedCount: number;
+}) {
+  const copyPercent = dest.bytes_total > 0 ? Math.min(100, Math.round((dest.bytes_done / dest.bytes_total) * 100)) : 0;
+  const verifyPercent =
+    dest.phase === "Complete"
+      ? 100
+      : dest.bytes_total > 0
+        ? Math.min(100, Math.round((dest.verified_bytes / dest.bytes_total) * 100))
+        : 0;
+  const failed = failedCount > 0;
+  const tone = toneStyles[phaseTone(dest.phase, failed)];
+  const live = !failed && dest.phase !== "Complete";
+  // free_space_bytes is a static snapshot captured at ingest start; decrement by what this
+  // drive has written for a live countdown (matches how Hedge shows the drive draining).
+  const startFree = dest.free_space_bytes ?? freeFallback;
+  const liveFree = startFree != null ? Math.max(0, startFree - dest.bytes_done) : null;
+  const eta = dest.remaining_ms != null ? formatDuration(dest.remaining_ms) : null;
+  return (
+    <div
+      className={`rounded-xl border px-2.5 py-2 ${failed ? "border-red-500/40 bg-red-500/10" : "border-mist bg-porcelain/40"}`}
+    >
+      {/* Line 1: drive identity + headline percent — sized above the feed so the eye lands here. */}
+      <div className="mb-1.5 flex items-center justify-between gap-2">
+        <span className="flex min-w-0 items-center gap-1.5">
+          <span className="relative flex h-2.5 w-2.5 shrink-0">
+            {live ? <span className={`absolute inline-flex h-full w-full animate-ping rounded-full opacity-60 ${tone.dot}`} /> : null}
+            <span className={`relative inline-flex h-2.5 w-2.5 rounded-full ${tone.dot}`} />
+          </span>
+          <span className="min-w-0 truncate text-[13px] font-semibold text-ink">{dest.label || pathDisplayName(dest.path)}</span>
+        </span>
+        <span className={`shrink-0 text-[15px] font-bold tabular-nums ${failed ? "text-red-600 dark:text-red-400" : "text-ink"}`}>
+          {copyPercent}%
+        </span>
+      </div>
+      <TwoToneBar copyPercent={copyPercent} verifyPercent={verifyPercent} failed={failed} />
+      <div className="mt-1.5 flex items-center justify-between gap-2 text-[11px] font-medium text-graphite/80">
+        <span className="flex shrink-0 items-center gap-1.5 tabular-nums">
+          <span className="font-semibold text-emerald-600 dark:text-emerald-400">✓{dest.verified_files}</span>
+          {failed ? <span className="font-semibold text-red-600 dark:text-red-400">✗{failedCount}</span> : null}
+        </span>
+        <span className="shrink-0 font-semibold tabular-nums text-graphite">{formatBytes(dest.bytes_per_second)}/s</span>
+      </div>
+      <div className="mt-1 flex items-center justify-between gap-2 text-[10px] font-medium text-graphite/70">
+        <span className="flex items-center gap-1">
+          <HardDrive size={11} className="text-graphite/50" />
+          {liveFree != null ? `${formatBytes(liveFree)} free` : "—"}
+        </span>
+        {eta ? (
+          <span className="flex items-center gap-1 tabular-nums">
+            <Clock size={11} className="text-graphite/50" />
+            {eta}
+          </span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+// One row in the live per-file integrity feed: a ✓/✗ status badge, filename, a destination
+// chip, and size. Newest-first; ✗ rows read red so a bad checksum is impossible to miss.
+function VerifiedFeedRow({ item }: { item: FileVerified }) {
+  const name = item.relative_path.split(/[\\/]/).pop() || item.relative_path;
+  return (
+    <div className="flex items-center gap-2 px-3 py-1.5 text-[11px]">
+      <span
+        className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-md ${
+          item.verified ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400" : "bg-red-500/20 text-red-600 dark:text-red-400"
+        }`}
+      >
+        {item.verified ? <Check size={11} strokeWidth={3} /> : <X size={11} strokeWidth={3} />}
+      </span>
+      <span className="min-w-0 flex-1 truncate font-semibold text-ink" title={item.relative_path}>
+        {name}
+      </span>
+      <span className="shrink-0 rounded bg-porcelain px-1.5 py-0.5 text-[10px] font-semibold text-graphite/80">
+        {pathDisplayName(item.destination_path)}
+      </span>
+      <span className="shrink-0 tabular-nums text-graphite/60">{formatBytes(item.size_bytes)}</span>
     </div>
   );
 }
@@ -3522,7 +4039,7 @@ function Gauge({ label, value }: { label: string; value: number }) {
       <div
         className="mx-auto h-28 w-28 rounded-full p-2.5"
         style={{
-          background: `conic-gradient(#78d88f ${clamped * 3.6}deg, #f1ede6 0deg)`,
+          background: `conic-gradient(var(--gauge-fill) ${clamped * 3.6}deg, var(--gauge-track) 0deg)`,
         }}
       >
         <div className="flex h-full w-full items-center justify-center rounded-full bg-white text-center">
@@ -3631,6 +4148,11 @@ const SAMPLE_INTERVAL_MS = 220; // how often we sample refs into render state
 const SPEED_WINDOW_MS = 1000; // window for the instantaneous-speed calculation
 const SPEED_BUFFER_WINDOW_MS = 5000; // raw-sample retention (covers the speed window)
 const CHART_WINDOW_MS = 60000; // visible X span; the line scrolls within this
+const VERIFIED_FEED_CAP = 200; // most recent file-verified rows kept in the live feed
+
+// A live-feed row: the FileVerified payload plus a stable monotonic id for React keys, so
+// prepending a batch of newest events doesn't force every existing row to reconcile.
+type VerifiedFeedEntry = { id: number; data: FileVerified };
 
 // Instantaneous throughput = Δbytes / Δtime over the last `windowMs`. Returns a real
 // 0 during verify-phase stalls (bytes_done frozen) or before two samples exist.
@@ -3681,22 +4203,22 @@ function SpeedChart({ series }: { series: SpeedPoint[] }) {
     <svg className="h-full w-full" viewBox="0 0 800 320" role="img" aria-label="Transfer speed over time">
       <defs>
         <linearGradient id="transferFill" x1="0" x2="0" y1="0" y2="1">
-          <stop offset="0%" stopColor="#c9a7ff" stopOpacity="0.42" />
-          <stop offset="100%" stopColor="#c9a7ff" stopOpacity="0.04" />
+          <stop offset="0%" stopColor="var(--chart-area-top)" />
+          <stop offset="100%" stopColor="var(--chart-area-bottom)" />
         </linearGradient>
       </defs>
       {/* baseline + mid gridline */}
-      <line x1={PAD_L} x2={PAD_R} y1={PAD_B} y2={PAD_B} stroke="#e7e2d8" strokeWidth="1" />
-      <line x1={PAD_L} x2={PAD_R} y1={midY} y2={midY} stroke="#efeae0" strokeWidth="1" strokeDasharray="4 6" />
+      <line x1={PAD_L} x2={PAD_R} y1={PAD_B} y2={PAD_B} stroke="var(--chart-grid)" strokeWidth="1" />
+      <line x1={PAD_L} x2={PAD_R} y1={midY} y2={midY} stroke="var(--chart-grid-faint)" strokeWidth="1" strokeDasharray="4 6" />
       {areaPath ? <path d={areaPath} fill="url(#transferFill)" /> : null}
       {linePath ? (
-        <path d={linePath} fill="none" stroke="#8f67dd" strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" />
+        <path d={linePath} fill="none" stroke="var(--chart-line)" strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" />
       ) : null}
       {/* axis labels */}
-      <text x={PAD_L} y={PAD_T - 10} fontSize="13" fontWeight="600" fill="#8a8577">
+      <text x={PAD_L} y={PAD_T - 10} fontSize="13" fontWeight="600" fill="var(--chart-axis)">
         {formatBytes(yMax)}/s
       </text>
-      <text x={PAD_R} y={PAD_T - 10} fontSize="12" fontWeight="600" fill="#b4afa2" textAnchor="end">
+      <text x={PAD_R} y={PAD_T - 10} fontSize="12" fontWeight="600" fill="var(--chart-axis-faint)" textAnchor="end">
         last 60s
       </text>
     </svg>
@@ -3897,7 +4419,7 @@ function MultiSelectParameter({
                 type="button"
               >
                 <span className={`flex h-4 w-4 items-center justify-center rounded border ${
-                  checked ? "border-signal bg-signal text-paper" : "border-mist bg-white"
+                  checked ? "border-signal bg-signal text-primaryfg" : "border-mist bg-white"
                 }`}>
                   {checked ? <Check size={11} strokeWidth={3} /> : null}
                 </span>
@@ -4117,7 +4639,7 @@ function FileSelectionDialog({
             <div className="flex overflow-hidden rounded-lg border border-mist bg-white">
               <button
                 className={`inline-flex h-8 items-center gap-1 px-2 text-xs font-semibold transition ${
-                  viewMode === "list" ? "bg-signal text-paper" : "text-graphite hover:bg-porcelain"
+                  viewMode === "list" ? "bg-signal text-primaryfg" : "text-graphite hover:bg-porcelain"
                 }`}
                 onClick={() => setViewMode("list")}
                 type="button"
@@ -4127,7 +4649,7 @@ function FileSelectionDialog({
               </button>
               <button
                 className={`inline-flex h-8 items-center gap-1 border-l border-mist px-2 text-xs font-semibold transition ${
-                  viewMode === "thumbs" ? "bg-signal text-paper" : "text-graphite hover:bg-porcelain"
+                  viewMode === "thumbs" ? "bg-signal text-primaryfg" : "text-graphite hover:bg-porcelain"
                 }`}
                 onClick={() => setViewMode("thumbs")}
                 type="button"
@@ -4191,7 +4713,7 @@ function FileSelectionDialog({
                 key={kind}
                 className={`h-8 rounded-lg border px-2 text-xs font-semibold transition ${
                   kindFilter.has(kind)
-                    ? "border-signal bg-signal text-paper"
+                    ? "border-signal bg-signal text-primaryfg"
                     : "border-mist bg-white text-graphite hover:bg-porcelain"
                 }`}
                 onClick={() => toggleKindFilter(kind)}
@@ -4315,7 +4837,7 @@ function FileSelectionDialog({
 
         <div className="flex items-center justify-end border-t border-mist bg-porcelain/40 px-4 py-3">
           <button
-            className="inline-flex h-9 items-center justify-center rounded-xl bg-signal px-4 text-sm font-semibold text-paper transition hover:bg-black"
+            className="inline-flex h-9 items-center justify-center rounded-xl bg-signal px-4 text-sm font-semibold text-primaryfg transition hover:bg-black"
             onClick={onClose}
             type="button"
           >
@@ -4455,7 +4977,7 @@ function SelectionMark({
 }) {
   if (disabled) {
     return (
-      <span className="flex h-4 w-4 items-center justify-center rounded border border-signal bg-signal text-paper">
+      <span className="flex h-4 w-4 items-center justify-center rounded border border-signal bg-signal text-primaryfg">
         <Check size={11} strokeWidth={3} />
       </span>
     );
@@ -4486,11 +5008,11 @@ function SummaryTile({
 }) {
   const valueClass =
     tone === "ok"
-      ? "text-emerald-600"
+      ? "text-emerald-600 dark:text-emerald-400"
       : tone === "warn"
-        ? "text-amber-600"
+        ? "text-amber-600 dark:text-amber-400"
         : tone === "bad"
-          ? "text-red-600"
+          ? "text-red-600 dark:text-red-400"
           : "text-ink";
   return (
     <div className="min-w-0 rounded-xl border border-mist bg-white px-3 py-2">
@@ -4577,6 +5099,124 @@ function CoverageList({ rows, title }: { rows: CoverageRow[]; title: string }) {
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+// Resolve a root-relative CopiedFile.thumbnail_path to a displayable asset URL. thumbnail_path
+// is stored relative to its ingest root (report.rs renders it as a relative <img src>), so we
+// re-join the root and hand it to Tauri's asset resolver — the same convertFileSrc pattern the
+// file selector uses for source thumbnails.
+function resolveThumbnailSrc(rootPath: string, thumbnailPath?: string | null): string | null {
+  if (!thumbnailPath) {
+    return null;
+  }
+  // Defensive: if the path is already absolute (Windows drive letter, UNC, or POSIX root),
+  // hand it straight to the resolver instead of prefixing the ingest root.
+  const isAbsolute = /^[a-zA-Z]:[\\/]/.test(thumbnailPath) || /^[\\/]/.test(thumbnailPath);
+  if (isAbsolute) {
+    return convertFileSrc(thumbnailPath.replace(/\\/g, "/"));
+  }
+  const rel = thumbnailPath.replace(/\\/g, "/").replace(/^\/+/, "");
+  const root = rootPath.replace(/\\/g, "/").replace(/\/+$/, "");
+  if (!root || !rel) {
+    return null;
+  }
+  return convertFileSrc(`${root}/${rel}`);
+}
+
+function extForFile(file: CopiedFile): string {
+  const name = file.source_path.split(/[\\/]/).pop() ?? "";
+  const dot = name.lastIndexOf(".");
+  return dot >= 0 ? name.slice(dot + 1).toUpperCase() : "FILE";
+}
+
+// Thumbnail-forward delivery: a compact grid of clip stills (Phase B now generates previews
+// for stills-RAW and cinema formats too) so a finished offload reads visually, not just as
+// counts. Deduped to one tile per source clip.
+function ClipThumbnailGrid({ files, rootPath }: { files: CopiedFile[]; rootPath: string }) {
+  const clips = useMemo(() => {
+    const seen = new Set<string>();
+    const out: CopiedFile[] = [];
+    for (const file of files) {
+      if (file.kind === "sidecar" || !file.thumbnail_path) {
+        continue;
+      }
+      if (seen.has(file.source_path)) {
+        continue;
+      }
+      seen.add(file.source_path);
+      out.push(file);
+    }
+    return out;
+  }, [files]);
+  if (clips.length === 0) {
+    return null;
+  }
+  const CAP = 24;
+  const shown = clips.slice(0, CAP);
+  const extra = clips.length - shown.length;
+  return (
+    <div className="border-b border-mist px-3 py-2.5">
+      <div className="mb-1.5 flex items-center justify-between">
+        <h3 className="flex items-center gap-1.5 text-xs font-semibold text-graphite">
+          <Film size={13} className="text-graphite/60" />
+          Clips
+        </h3>
+        <span className="text-[11px] font-semibold text-graphite/70">{clips.length} with previews</span>
+      </div>
+      <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8">
+        {shown.map((file) => (
+          <ClipThumbnail key={file.destination_path} file={file} rootPath={rootPath} />
+        ))}
+        {extra > 0 ? (
+          <div className="flex aspect-video items-center justify-center rounded-md border border-mist bg-porcelain/50 text-[11px] font-semibold text-graphite">
+            +{extra}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+// One clip tile. Broken/absent previews fall back to a labeled placeholder so the grid never
+// shows a broken-image glyph; a placeholder-kind or unverified clip is badged.
+function ClipThumbnail({ file, rootPath }: { file: CopiedFile; rootPath: string }) {
+  const [failed, setFailed] = useState(false);
+  const src = resolveThumbnailSrc(rootPath, file.thumbnail_path);
+  const name = pathDisplayName(file.destination_path);
+  const isPlaceholder = file.thumbnail_kind === "placeholder";
+  const duration = file.duration_ms ? formatDuration(file.duration_ms) : null;
+  // `object-contain`, not cover: a portrait still must read upright and un-cropped
+  // in the grid — cover would crop it back into a landscape slice.
+  return (
+    <div className="group relative aspect-video overflow-hidden rounded-md border border-mist bg-porcelain" title={name}>
+      {src && !failed ? (
+        <img alt="" className="h-full w-full object-contain" draggable={false} onError={() => setFailed(true)} src={src} />
+      ) : (
+        <div className="flex h-full w-full flex-col items-center justify-center gap-0.5 text-graphite/60">
+          <Image size={16} />
+          <span className="text-[9px] font-semibold uppercase">{extForFile(file)}</span>
+        </div>
+      )}
+      {isPlaceholder && src && !failed ? (
+        <span className="absolute left-1 top-1 rounded bg-black/55 px-1 py-0.5 text-[8px] font-semibold uppercase text-primaryfg">
+          {extForFile(file)}
+        </span>
+      ) : null}
+      {!file.verified ? (
+        <span className="absolute right-1 top-1 rounded bg-red-500 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-primaryfg shadow-sm">
+          Fail
+        </span>
+      ) : null}
+      {duration ? (
+        <span className="absolute bottom-1 right-1 rounded bg-black/55 px-1 py-0.5 text-[8px] font-semibold tabular-nums text-primaryfg">
+          {duration}
+        </span>
+      ) : null}
+      <span className="pointer-events-none absolute inset-x-0 bottom-0 truncate bg-gradient-to-t from-black/70 to-transparent px-1 pb-0.5 pt-2 text-[9px] font-semibold text-primaryfg opacity-0 transition group-hover:opacity-100">
+        {name}
+      </span>
     </div>
   );
 }

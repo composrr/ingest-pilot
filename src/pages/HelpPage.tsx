@@ -206,7 +206,7 @@ function GuideCard({
   return (
     <div className="flex flex-col gap-2 border-b border-mist p-3 last:border-b-0 sm:border-b-0 sm:border-r sm:last:border-r-0">
       <div className="flex items-center gap-2">
-        <span className={`flex h-8 w-8 items-center justify-center rounded-lg ${highlight ? "bg-signal text-paper" : "bg-porcelain text-graphite"}`}>
+        <span className={`flex h-8 w-8 items-center justify-center rounded-lg ${highlight ? "bg-signal text-primaryfg" : "bg-porcelain text-graphite"}`}>
           {icon}
         </span>
         <div className="text-sm font-semibold text-ink">{title}</div>
@@ -214,7 +214,7 @@ function GuideCard({
       <p className="min-h-[2.5rem] text-xs leading-5 text-graphite">{body}</p>
       <button
         className={`h-8 rounded-lg px-3 text-xs font-semibold transition ${
-          highlight ? "bg-signal text-paper hover:bg-black" : "border border-mist bg-white text-graphite hover:bg-porcelain"
+          highlight ? "bg-signal text-primaryfg hover:bg-black" : "border border-mist bg-white text-graphite hover:bg-porcelain"
         }`}
         onClick={onClick}
         type="button"

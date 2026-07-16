@@ -1417,7 +1417,7 @@ function ImportChoiceDialog({
             Add
           </button>
           <button
-            className="inline-flex h-8 items-center rounded-lg bg-signal px-3 text-xs font-semibold text-paper transition hover:bg-black"
+            className="inline-flex h-8 items-center rounded-lg bg-signal px-3 text-xs font-semibold text-primaryfg transition hover:bg-black"
             onClick={onReplace}
             type="button"
           >

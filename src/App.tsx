@@ -118,7 +118,7 @@ export function App() {
   }
 
   return (
-    <main className="min-h-screen bg-porcelain text-ink">
+    <main className="min-h-screen bg-app text-ink">
       <div className="flex min-h-screen">
         <aside
           className={`flex w-16 shrink-0 flex-col border-r border-mist/80 px-2 py-3 transition-all xl:px-3 ${
@@ -126,7 +126,7 @@ export function App() {
           }`}
         >
           <div className={`mb-5 flex items-center gap-2 px-0 ${isSidebarExpanded ? "xl:justify-start xl:px-1" : "justify-center"}`}>
-            <div className="flex h-8 w-8 items-center justify-center rounded-2xl bg-signal text-paper">
+            <div className="flex h-8 w-8 items-center justify-center rounded-2xl bg-signal text-primaryfg">
               <Sparkles size={18} strokeWidth={2.4} />
             </div>
             <div className={`${isSidebarExpanded ? "hidden xl:block" : "hidden"}`}>
@@ -172,7 +172,7 @@ export function App() {
             </p>
             <div className="mt-3 grid gap-1.5">
               <button
-                className="inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-lg bg-signal px-2 text-xs font-semibold text-paper transition hover:bg-black"
+                className="inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-lg bg-signal px-2 text-xs font-semibold text-primaryfg transition hover:bg-black"
                 onClick={() => void openGuide(GUIDES.walkthrough)}
                 type="button"
               >

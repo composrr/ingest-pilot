@@ -84,7 +84,7 @@ pub fn write_html_report_to(
     html.push_str(".summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;padding:12px;border-bottom:1px solid var(--line);background:#fff}.tile{border:1px solid var(--line);border-radius:10px;background:var(--soft);padding:9px 10px;min-width:0}.label{font-size:10px;font-weight:850;color:var(--graphite);text-transform:uppercase;letter-spacing:.035em}.value{margin-top:4px;font-size:18px;font-weight:850;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.value.small{font-size:13px}");
     html.push_str(".content{display:grid;grid-template-columns:320px minmax(0,1fr);min-height:620px}.side{border-right:1px solid var(--line);background:var(--soft)}section{padding:14px 16px;border-bottom:1px solid var(--line)}h2{margin:0 0 10px;font-size:13px}.kv{display:grid;grid-template-columns:84px minmax(0,1fr);gap:6px 8px}.k{color:var(--graphite);font-weight:800}.v{min-width:0;word-break:break-word;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px}.chip{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:999px;background:#fff;padding:3px 7px;margin:0 5px 5px 0;font-size:11px;font-weight:750}");
     html.push_str(".kind{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;border:1px solid var(--line);border-radius:10px;background:#fff;padding:8px;margin-bottom:7px}.bar{height:7px;border-radius:99px;background:#eee8df;overflow:hidden;margin-top:5px}.bar span{display:block;height:100%;background:var(--accent)}.main{min-width:0;background:#fff}.strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;padding:12px;border-bottom:1px solid var(--line)}.strip-card{border:1px solid var(--line);border-radius:10px;padding:10px;background:#fff}");
-    html.push_str(".files{padding:12px}.file{display:grid;grid-template-columns:116px minmax(0,1fr) 150px;gap:12px;align-items:center;border:1px solid var(--line);border-radius:12px;background:#fff;margin-bottom:8px;padding:8px}.thumb{width:116px;height:66px;object-fit:cover;border-radius:8px;border:1px solid var(--line);background:#f1ede6}.empty-thumb{width:116px;height:66px;border:1px dashed #d8d0c4;border-radius:8px;background:var(--soft);display:flex;align-items:center;justify-content:center;color:var(--muted);font-weight:800;font-size:10px}.file-name{font-size:13px;font-weight:850;margin-bottom:2px}.file-path{font-size:11px;color:var(--graphite);word-break:break-all}.file-meta{text-align:right;display:grid;gap:4px}.ok-text{color:#176b35;font-weight:850}.bad-text{color:#982626;font-weight:850}.muted{color:var(--graphite)}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px;word-break:break-all}");
+    html.push_str(".files{padding:12px}.file{display:grid;grid-template-columns:116px minmax(0,1fr) 150px;gap:12px;align-items:center;border:1px solid var(--line);border-radius:12px;background:#fff;margin-bottom:8px;padding:8px}.thumb{width:116px;height:80px;object-fit:contain;border-radius:8px;border:1px solid var(--line);background:#f1ede6}.empty-thumb{width:116px;height:80px;border:1px solid var(--line);border-radius:8px;background:linear-gradient(135deg,#faf8f4,#efe9df);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;color:var(--graphite)}.ph-ext{font-weight:900;font-size:16px;letter-spacing:.06em;color:var(--ink)}.ph-kind{font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}.file-name{font-size:13px;font-weight:850;margin-bottom:2px}.file-path{font-size:11px;color:var(--graphite);word-break:break-all}.file-meta{text-align:right;display:grid;gap:4px}.ok-text{color:#176b35;font-weight:850}.bad-text{color:#982626;font-weight:850}.muted{color:var(--graphite)}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px;word-break:break-all}");
     html.push_str("table{width:100%;border-collapse:collapse;font-size:11px}th,td{border-bottom:1px solid var(--line);padding:7px;text-align:left;vertical-align:top}th{color:var(--graphite);font-size:10px;text-transform:uppercase;letter-spacing:.03em}.footer{padding:10px 16px;color:var(--graphite);font-size:11px;background:var(--soft)}");
     html.push_str("@media(max-width:960px){main{margin:0;border-radius:0}.summary{grid-template-columns:repeat(2,minmax(0,1fr))}.content{grid-template-columns:1fr}.side{border-right:0}.strip{grid-template-columns:1fr}.file{grid-template-columns:1fr}.file-meta{text-align:left}}");
     html.push_str("</style></head><body><main>");
@@ -297,7 +297,19 @@ fn render_grouped_file(html: &mut String, source_path: &str, copies: &[&CopiedFi
         html.push_str(&escape_html(&thumbnail_path.replace('\\', "/")));
         html.push_str("\" />");
     } else {
-        html.push_str("<div class=\"empty-thumb\">No thumbnail</div>");
+        // No extractable preview (e.g. an unsupported still or a cinema-RAW when
+        // exiftool isn't bundled): render an intentional per-format card, not a blank.
+        let extension = Path::new(&first.destination_path)
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.to_uppercase())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| kind_label(first.kind).to_string());
+        html.push_str("<div class=\"empty-thumb\"><span class=\"ph-ext\">");
+        html.push_str(&escape_html(&extension));
+        html.push_str("</span><span class=\"ph-kind\">");
+        html.push_str(&escape_html(kind_label(first.kind)));
+        html.push_str("</span></div>");
     }
     html.push_str("</div><div><div class=\"file-name\">");
     html.push_str(&escape_html(&file_name(&first.destination_path)));
@@ -328,7 +340,27 @@ fn render_grouped_file(html: &mut String, source_path: &str, copies: &[&CopiedFi
     if copies.len() > 1 {
         html.push_str(&format!(" / {} copies", copies.len()));
     }
-    html.push_str("</div><code>");
+    html.push_str("</div>");
+    // Pro touch: surface the derived camera and (for footage/audio) the clip duration.
+    let camera = crate::ingest::copier::camera_label_for_path(&first.source_path);
+    let duration = first
+        .duration_ms
+        .filter(|value| *value > 0)
+        .map(format_duration);
+    if !camera.trim().is_empty() || duration.is_some() {
+        html.push_str("<div class=\"muted\">");
+        if !camera.trim().is_empty() {
+            html.push_str(&escape_html(&camera));
+        }
+        if let Some(duration) = duration {
+            if !camera.trim().is_empty() {
+                html.push_str(" / ");
+            }
+            html.push_str(&escape_html(&duration));
+        }
+        html.push_str("</div>");
+    }
+    html.push_str("<code>");
     html.push_str(&escape_html(&first.destination_hash));
     html.push_str("</code></div></article>");
 }
@@ -494,6 +526,7 @@ mod tests {
             destination_hash: "abc123".to_string(),
             verified: true,
             duration_ms: None,
+            thumbnail_kind: crate::ingest::copier::ThumbnailKind::None,
         }];
 
         let path = write_html_report(

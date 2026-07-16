@@ -201,7 +201,7 @@ export function HistoryPage() {
               <div className="grid gap-2">
                 {selectedJob.report_path ? (
                   <button
-                    className="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg bg-signal px-3 text-xs font-semibold text-paper transition hover:bg-black"
+                    className="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg bg-signal px-3 text-xs font-semibold text-primaryfg transition hover:bg-black"
                     onClick={() => void openPath(selectedJob.report_path)}
                     type="button"
                   >

@@ -143,6 +143,10 @@ export type AppSettings = {
     open_report_when_done: boolean;
     notes_template: string;
     output_location: ReportOutputLocation;
+    // Longest edge (px) of generated report thumbnails.
+    thumbnail_max_edge: number;
+    // JPEG quality (1-100) for generated report thumbnails.
+    thumbnail_jpeg_quality: number;
   };
   camera_watcher: {
     auto_detect_cards: boolean;

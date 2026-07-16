@@ -1,7 +1,9 @@
-import { CheckCircle2, ClipboardList, FolderTree, HardDriveDownload, PlayCircle, Settings, Sparkles, Type, UserRound, X } from "lucide-react";
+import { CheckCircle2, ClipboardList, FolderTree, HardDriveDownload, Moon, PlayCircle, Settings, Sparkles, Sun, Type, UserRound, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { defaultAppSettings, getSettings, GUIDES, openGuide, saveSettings } from "../lib/tauri";
 import type { AppSettings } from "../lib/types";
+import { useAppStore } from "../stores/appStore";
+import type { Theme } from "../lib/theme";
 
 type WalkthroughProps = {
   onClose: () => void;
@@ -14,6 +16,12 @@ const steps = [
     title: "Who's operating?",
     body: "Your name goes on offload proofs and reports so it's clear who ran the ingest. You can change it any time in Settings.",
     kind: "name" as const,
+  },
+  {
+    icon: Moon,
+    title: "Pick your look",
+    body: "Ingest Pilot ships in a dark theme built for edit bays and DIT carts. Prefer a lighter workspace? Switch any time in Settings.",
+    kind: "theme" as const,
   },
   {
     icon: ClipboardList,
@@ -46,6 +54,8 @@ export function Walkthrough({ onClose, onGoTo }: WalkthroughProps) {
   const [index, setIndex] = useState(0);
   const [operatorName, setOperatorName] = useState("");
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  const theme = useAppStore((state) => state.theme);
+  const setTheme = useAppStore((state) => state.setTheme);
   const step = steps[index];
   const Icon = step.icon;
   const isLast = index === steps.length - 1;
@@ -86,7 +96,7 @@ export function Walkthrough({ onClose, onGoTo }: WalkthroughProps) {
       <section className="w-full max-w-2xl overflow-hidden rounded-2xl border border-mist bg-paper shadow-panel">
         <div className="flex items-center justify-between border-b border-mist bg-white px-4 py-3">
           <div className="flex items-center gap-2">
-            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-signal text-paper">
+            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-signal text-primaryfg">
               <Sparkles size={17} />
             </span>
             <div>
@@ -163,6 +173,43 @@ export function Walkthrough({ onClose, onGoTo }: WalkthroughProps) {
               </label>
             ) : null}
 
+            {"kind" in step && step.kind === "theme" ? (
+              <div className="mb-5 grid grid-cols-2 gap-3">
+                {(["dark", "light"] as Theme[]).map((option) => {
+                  const selected = theme === option;
+                  const OptionIcon = option === "dark" ? Moon : Sun;
+                  return (
+                    <button
+                      key={option}
+                      className={`flex flex-col items-start gap-2 rounded-xl border p-3 text-left transition ${
+                        selected
+                          ? "border-lavender ring-2 ring-lavender/40"
+                          : "border-mist hover:border-graphite/40"
+                      }`}
+                      onClick={() => setTheme(option)}
+                      type="button"
+                    >
+                      {/* Fixed swatch previewing each theme regardless of the active one. */}
+                      <span
+                        className="flex h-16 w-full items-center justify-center rounded-lg border"
+                        style={{
+                          background: option === "dark" ? "#171819" : "#efeeeb",
+                          borderColor: option === "dark" ? "#2b2d30" : "#d7d2ca",
+                          color: option === "dark" ? "#ececed" : "#171717",
+                        }}
+                      >
+                        <OptionIcon size={22} />
+                      </span>
+                      <span className="flex items-center gap-1.5 text-sm font-semibold text-ink">
+                        {option === "dark" ? "Dark" : "Light"}
+                        {selected ? <CheckCircle2 size={14} className="text-lavender" /> : null}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+
             {isLast ? (
               <div className="grid gap-2 sm:grid-cols-2">
                 <button
@@ -173,7 +220,7 @@ export function Walkthrough({ onClose, onGoTo }: WalkthroughProps) {
                   Start with Presets
                 </button>
                 <button
-                  className="h-9 rounded-lg bg-signal px-3 text-sm font-semibold text-paper transition hover:bg-black"
+                  className="h-9 rounded-lg bg-signal px-3 text-sm font-semibold text-primaryfg transition hover:bg-black"
                   onClick={() => finish("ingest")}
                   type="button"
                 >
@@ -190,7 +237,7 @@ export function Walkthrough({ onClose, onGoTo }: WalkthroughProps) {
                   Skip
                 </button>
                 <button
-                  className="h-9 rounded-lg bg-signal px-4 text-sm font-semibold text-paper transition hover:bg-black"
+                  className="h-9 rounded-lg bg-signal px-4 text-sm font-semibold text-primaryfg transition hover:bg-black"
                   onClick={() => {
                     if ("kind" in step && step.kind === "name") {
                       void saveOperatorName();

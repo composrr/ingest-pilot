@@ -21,7 +21,7 @@ export function PlaceholderPage({ eyebrow, title, body, cards, onBack }: Placeho
           <p className="mt-1 max-w-2xl text-sm leading-5 text-graphite">{body}</p>
         </div>
         <button
-          className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-signal px-2.5 text-xs font-semibold text-paper transition hover:bg-black"
+          className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-signal px-2.5 text-xs font-semibold text-primaryfg transition hover:bg-black"
           onClick={onBack}
           type="button"
         >

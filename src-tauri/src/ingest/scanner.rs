@@ -510,8 +510,8 @@ fn classify_file(path: &Path, extension: &str) -> ScanFileKind {
     match extension {
         ".mp4" | ".mov" | ".mxf" | ".avi" | ".m4v" | ".mts" | ".m2ts" | ".braw" | ".r3d"
         | ".crm" | ".cine" => ScanFileKind::Footage,
-        ".jpg" | ".jpeg" | ".png" | ".heic" | ".tif" | ".tiff" | ".cr2" | ".nef" | ".arw"
-        | ".dng" | ".raw" | ".orf" | ".rw2" => ScanFileKind::Photo,
+        ".jpg" | ".jpeg" | ".png" | ".heic" | ".tif" | ".tiff" | ".cr2" | ".cr3" | ".nef"
+        | ".arw" | ".dng" | ".raw" | ".orf" | ".rw2" => ScanFileKind::Photo,
         ".wav" | ".mp3" | ".aif" | ".aiff" | ".m4a" | ".flac" => ScanFileKind::Audio,
         ".pdf" | ".txt" | ".doc" | ".docx" | ".csv" | ".xlsx" | ".xls" | ".rtf" => {
             ScanFileKind::Document
@@ -544,6 +544,7 @@ fn is_known_ingest_media(extension: &str) -> bool {
             | ".tif"
             | ".tiff"
             | ".cr2"
+            | ".cr3"
             | ".nef"
             | ".arw"
             | ".dng"

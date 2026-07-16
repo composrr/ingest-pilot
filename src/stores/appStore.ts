@@ -1,7 +1,11 @@
 import { create } from "zustand";
 import type { Update } from "../lib/updater";
+import { applyTheme, getInitialTheme, type Theme } from "../lib/theme";
 
 type AppState = {
+  /** Active app theme. Reflected onto <html data-theme> and persisted. */
+  theme: Theme;
+  setTheme: (theme: Theme) => void;
   lastAction: string;
   setLastAction: (value: string) => void;
   /** A pending app update discovered on launch or via a manual check. */
@@ -29,6 +33,11 @@ type AppState = {
 };
 
 export const useAppStore = create<AppState>((set) => ({
+  theme: getInitialTheme(),
+  setTheme: (theme) => {
+    applyTheme(theme);
+    set({ theme });
+  },
   lastAction: "Project scaffold created",
   setLastAction: (value) => set({ lastAction: value }),
   pendingUpdate: null,

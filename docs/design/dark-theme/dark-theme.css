@@ -1,0 +1,41 @@
+/* Ingest Pilot — Dark theme "True Graphite" (option 7a)
+   Colors only; no layout/functionality changes. */
+:root[data-theme="dark"] {
+  /* Surfaces (darkest → lightest) */
+  --ip-chrome:        #0b0c0d; /* window title bar */
+  --ip-app:           #121314; /* app background (sidebar sits on this) */
+  --ip-panel:         #171819; /* main content panel */
+  --ip-card:          #1c1d1f; /* cards, tiles, table container */
+  --ip-well:          #222325; /* icon wells, inset chips, secondary buttons */
+
+  /* Borders */
+  --ip-border-panel:  #26272a; /* panel outline */
+  --ip-border-card:   #2b2d30; /* card + well outline, table row dividers */
+  --ip-border-hover:  #3e4044; /* card border on hover */
+
+  /* Text (primary → faint) */
+  --ip-text:          #ececed; /* headings, primary labels */
+  --ip-text-2:        #a8aaad; /* secondary text, inactive nav */
+  --ip-text-3:        #707377; /* captions, timestamps, column headers */
+  --ip-chrome-text:   #c2c4c7; /* title-bar app name */
+  --ip-chrome-icon:   #787c81; /* title-bar window controls */
+
+  /* Primary action (muted, low contrast — NOT bright/inverted) */
+  --ip-primary-bg:    #36383b;
+  --ip-primary-text:  #ececed;
+  --ip-primary-icon:  #e4e5e7;
+
+  /* Brand mark */
+  --ip-logo-bg:       #e8e9ea;
+  --ip-logo-star:     #121314;
+
+  /* Status */
+  --ip-ok:            #79c39b; /* "Verified" text */
+  --ip-ok-dot:        #5dad83; /* status dots */
+  --ip-warn:          #d8ab5a; /* warning text (e.g. "2 skipped") */
+  --ip-warn-dot:      #cf9b3e; /* warning dots */
+
+  /* Component states */
+  --ip-nav-active-bg:     #1c1d1f;
+  --ip-nav-active-border: #2b2d30;
+}
