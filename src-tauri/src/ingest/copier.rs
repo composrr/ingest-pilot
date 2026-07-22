@@ -1498,6 +1498,13 @@ fn mhl_entries(root_path: &Path, copied_files: &[CopiedFile]) -> Result<Vec<MhlE
         .collect()
 }
 
+/// The one directory, under a destination root, that report assets are written into.
+///
+/// Owned by this module because this module is what creates it. `lib.rs` grants the asset
+/// scope against this same constant, so the directory the webview may read can never drift
+/// from the directory the writer actually uses.
+pub const REPORT_ASSET_DIR: &str = "IngestPilot_Report_Assets";
+
 pub fn attach_report_thumbnails(
     root_path: &Path,
     copied_files: &mut [CopiedFile],
@@ -1518,7 +1525,7 @@ pub fn attach_report_thumbnails(
         .iter()
         .filter(|file| is_report_thumbnail_progress_candidate(file.kind))
         .count();
-    let asset_dir = root_path.join("IngestPilot_Report_Assets").join("thumbs");
+    let asset_dir = root_path.join(REPORT_ASSET_DIR).join("thumbs");
     let thumbnail_source_files = report_thumbnail_sources(source_path);
     let thumbnail_sources = thumbnail_source_files.iter().collect::<Vec<_>>();
 
@@ -1761,22 +1768,16 @@ fn attach_cheap_thumbnail_tier(
     if !destination_path.starts_with(root_path) {
         return Ok(());
     }
-    let extension = destination_path
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(|value| format!(".{}", value.to_lowercase()))
-        .unwrap_or_default();
+    // NOTE: browser-native images used to be resolved here, in this serial pass, by pointing
+    // `thumbnail_path` straight at the copied media file. That was wrong twice over — it put
+    // the only un-scoped path in the whole system into the report (see the Tier 1 note in
+    // `generate_thumbnail_for_media`), and it decoded nothing, so a 500-photo card's report
+    // loaded 500 full-res stills to draw 116px tiles. It now runs as Tier 1 of the shared
+    // ladder in the PARALLEL pass, which is also where a 24MP decode belongs.
 
-    // Tier 1 — browser-native image: the copied file *is* its own preview.
-    if is_browser_image_extension(&extension) {
-        file.thumbnail_path = Some(relative_to_root(root_path, &destination_path)?);
-        file.thumbnail_kind = ThumbnailKind::Embedded;
-        return Ok(());
-    }
-
-    // Companion sidecar + the generator tiers only make sense for visual media; leave
-    // documents/audio/unknown untouched (and don't let them consume companion thumbnails
-    // via the loose fallback matcher).
+    // The companion sidecar tier (and the generator tiers) only make sense for visual media;
+    // leave documents/audio/unknown untouched (and don't let them consume companion
+    // thumbnails via the loose fallback matcher).
     if !matches!(file.kind, ScanFileKind::Footage | ScanFileKind::Photo) {
         return Ok(());
     }
@@ -1813,8 +1814,117 @@ fn attach_cheap_thumbnail_tier(
     Ok(())
 }
 
-/// Pass-2 tiers (PARALLEL, lock-free): rawler embedded preview → exiftool preview →
-/// ffmpeg poster → placeholder. Only does work for files still lacking a thumbnail;
+/// The generator ladder, over a plain `&Path` — the single source of truth for tiers 3–6.
+///
+/// Deliberately free of `CopiedFile`: the post-copy report path runs it against the
+/// *destination* file keyed by a real content hash, and the source-browser path
+/// (`ingest::source_thumbs`) runs it against a file still on the *card* keyed by a synthetic
+/// path+size+mtime key. Both must route extensions identically — an .ARW that resolves in the
+/// report but not the selector is exactly the class of drift this factoring exists to prevent.
+///
+/// Returns the generated path (when a tier produced one) plus the `ThumbnailKind` to record.
+/// The kind is meaningful even when the path is `None`: `Placeholder` tells the renderer to
+/// draw an intentional per-format card rather than a blank box.
+pub(crate) fn generate_thumbnail_for_media(
+    media_path: &Path,
+    kind: ScanFileKind,
+    asset_dir: &Path,
+    source_stem: &str,
+    source_hash: &str,
+    config: &ThumbnailConfig,
+) -> (Option<PathBuf>, ThumbnailKind) {
+    let extension = media_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| format!(".{}", value.to_lowercase()))
+        .unwrap_or_default();
+
+    // Tier 1 — browser-native image. The webview could decode this file as-is, but we still
+    // re-encode a downscaled copy into `asset_dir` rather than pointing at the original:
+    //
+    //   * SCOPE. `asset_dir` is the only place the asset protocol is ever granted. Pointing
+    //     `thumbnail_path` at the media itself produced a URL the webview refuses to load, so
+    //     every still on a DCIM card rendered as a grey placeholder — the most common card
+    //     there is. The fix is NOT to grant the media directory: that would hand the webview
+    //     the user's footage and defeat the whole model. The fix is to make this tier behave
+    //     like every other tier and write where they write.
+    //   * WEIGHT. The HTML report draws 116px tiles. A 500-photo card was making it load 500
+    //     full-res 24MP JPEGs to do that.
+    //
+    // Kind stays `Embedded`: the pixels are the file's own, which is what that label means.
+    if is_browser_image_extension(&extension) {
+        let target = asset_dir.join(content_addressed_asset_name(source_stem, source_hash, "jpg"));
+        // Checked before the read so the second pass (HTML report → PDF proof) doesn't pull
+        // the whole still off disk again just to rediscover it already has the thumbnail.
+        if target.is_file() {
+            return (Some(target), ThumbnailKind::Embedded);
+        }
+        // Orientation is baked into the pixels here for the same reason as every other tier:
+        // the re-encode drops the EXIF block, so nothing downstream would ever rotate it.
+        let orientation = exif_orientation(media_path);
+        if let Some(generated) = fs::read(media_path).ok().and_then(|bytes| {
+            write_downscaled_jpeg_from_bytes(
+                &bytes,
+                asset_dir,
+                source_stem,
+                source_hash,
+                config,
+                orientation,
+            )
+        }) {
+            return (Some(generated), ThumbnailKind::Embedded);
+        }
+        // A truncated/corrupt image: no tier below can help with a .jpg either.
+        return (None, ThumbnailKind::Placeholder);
+    }
+
+    // Tier 3 — stills-RAW embedded preview (pure Rust, cross-platform). The key fix for
+    // Sony A7IV .ARW and other camera raws. On failure we drop straight to the
+    // placeholder — ffmpeg can't help with raw stills.
+    if is_stills_raw_extension(&extension) {
+        return match generate_raw_embedded_thumbnail(
+            media_path,
+            asset_dir,
+            source_stem,
+            source_hash,
+            config,
+        ) {
+            Some(generated) => (Some(generated), ThumbnailKind::Embedded),
+            None => (None, ThumbnailKind::Placeholder),
+        };
+    }
+
+    // Tier 4 — cinema-RAW (RED .R3D, Blackmagic .BRAW, …) via exiftool's embedded
+    // preview. Stock ffmpeg can't demux these, so we skip it entirely.
+    if is_cinema_raw_extension(&extension) {
+        return match generate_exiftool_thumbnail(
+            media_path,
+            asset_dir,
+            source_stem,
+            source_hash,
+            config,
+        ) {
+            Some(generated) => (Some(generated), ThumbnailKind::Embedded),
+            None => (None, ThumbnailKind::Placeholder),
+        };
+    }
+
+    // Tier 5 — standard video poster frame via ffmpeg.
+    if matches!(kind, ScanFileKind::Footage) {
+        if let Some(generated) =
+            generate_ffmpeg_thumbnail(media_path, asset_dir, source_stem, source_hash, config)
+        {
+            return (Some(generated), ThumbnailKind::Ffmpeg);
+        }
+    }
+
+    // Tier 6 — nothing worked (e.g. a .heic/.tif still, an exotic codec, or missing
+    // ffmpeg/exiftool).
+    (None, ThumbnailKind::Placeholder)
+}
+
+/// Pass-2 tiers (PARALLEL, lock-free): a thin `CopiedFile` dispatcher over
+/// [`generate_thumbnail_for_media`]. Only does work for files still lacking a thumbnail;
 /// touches no shared state, so it is safe to run concurrently across `copied_files`.
 fn attach_generator_thumbnail_tier(
     root_path: &Path,
@@ -1835,69 +1945,21 @@ fn attach_generator_thumbnail_tier(
     if !matches!(file.kind, ScanFileKind::Footage | ScanFileKind::Photo) {
         return Ok(());
     }
-    let extension = destination_path
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(|value| format!(".{}", value.to_lowercase()))
-        .unwrap_or_default();
-    let stem = source_stem_lower(file);
 
-    // Tier 3 — stills-RAW embedded preview (pure Rust, cross-platform). The key fix for
-    // Sony A7IV .ARW and other camera raws. On failure we drop straight to the
-    // placeholder — ffmpeg can't help with raw stills.
-    if is_stills_raw_extension(&extension) {
-        if let Some(generated) = generate_raw_embedded_thumbnail(
-            &destination_path,
-            asset_dir,
-            &stem,
-            &file.source_hash,
-            config,
-        ) {
-            file.thumbnail_path = Some(relative_to_root(root_path, &generated)?);
-            file.thumbnail_kind = ThumbnailKind::Embedded;
-            return Ok(());
-        }
-        file.thumbnail_kind = ThumbnailKind::Placeholder;
-        return Ok(());
+    let (generated, kind) = generate_thumbnail_for_media(
+        &destination_path,
+        file.kind,
+        asset_dir,
+        &source_stem_lower(file),
+        &file.source_hash,
+        config,
+    );
+    if let Some(generated) = generated {
+        // Report thumbnails are referenced relative to their ingest root so the written
+        // HTML stays portable; the source-browser caller keeps the absolute path instead.
+        file.thumbnail_path = Some(relative_to_root(root_path, &generated)?);
     }
-
-    // Tier 4 — cinema-RAW (RED .R3D, Blackmagic .BRAW, …) via exiftool's embedded
-    // preview. Stock ffmpeg can't demux these, so we skip it entirely.
-    if is_cinema_raw_extension(&extension) {
-        if let Some(generated) = generate_exiftool_thumbnail(
-            &destination_path,
-            asset_dir,
-            &stem,
-            &file.source_hash,
-            config,
-        ) {
-            file.thumbnail_path = Some(relative_to_root(root_path, &generated)?);
-            file.thumbnail_kind = ThumbnailKind::Embedded;
-            return Ok(());
-        }
-        file.thumbnail_kind = ThumbnailKind::Placeholder;
-        return Ok(());
-    }
-
-    // Tier 5 — standard video poster frame via ffmpeg.
-    if matches!(file.kind, ScanFileKind::Footage) {
-        if let Some(generated) = generate_ffmpeg_thumbnail(
-            &destination_path,
-            asset_dir,
-            &stem,
-            &file.source_hash,
-            config,
-        ) {
-            file.thumbnail_path = Some(relative_to_root(root_path, &generated)?);
-            file.thumbnail_kind = ThumbnailKind::Ffmpeg;
-            return Ok(());
-        }
-    }
-
-    // Tier 6 — nothing worked (e.g. a .heic/.tif still, an exotic codec, or missing
-    // ffmpeg/exiftool): mark it a placeholder so the report renders an intentional
-    // per-format card instead of a blank box.
-    file.thumbnail_kind = ThumbnailKind::Placeholder;
+    file.thumbnail_kind = kind;
     Ok(())
 }
 
@@ -1967,7 +2029,7 @@ fn short_source_hash(source_hash: &str) -> String {
 
 /// `<sanitized-stem>_<hash8>.<ext>` — deterministic per (file, content) so the
 /// attach loop is race-free under parallelism and idempotent across report/PDF passes.
-fn content_addressed_asset_name(stem: &str, source_hash: &str, extension: &str) -> String {
+pub(crate) fn content_addressed_asset_name(stem: &str, source_hash: &str, extension: &str) -> String {
     format!(
         "{}_{}.{}",
         sanitize_asset_name(stem),
@@ -1992,7 +2054,7 @@ fn is_cinema_raw_extension(extension: &str) -> bool {
 /// Returns `None` when the file has no readable EXIF, no orientation tag, or an
 /// out-of-range value — every caller treats `None` as orientation 1 (no transform),
 /// so an unreadable sidecar can never rotate a thumbnail the wrong way.
-fn exif_orientation(path: &Path) -> Option<u16> {
+pub(crate) fn exif_orientation(path: &Path) -> Option<u16> {
     let file = fs::File::open(path).ok()?;
     let mut reader = std::io::BufReader::new(&file);
     let exif = exif::Reader::new().read_from_container(&mut reader).ok()?;
@@ -2043,7 +2105,7 @@ fn apply_exif_orientation(
 /// Orientation is applied here — before the downscale in
 /// `write_downscaled_jpeg_from_dynamic` — so the fit-to-box happens against the
 /// upright aspect ratio.
-fn write_downscaled_jpeg_from_bytes(
+pub(crate) fn write_downscaled_jpeg_from_bytes(
     bytes: &[u8],
     asset_dir: &Path,
     source_stem: &str,
@@ -3315,6 +3377,171 @@ mod tests {
         let _ = fs::remove_dir_all(workspace);
     }
 
+    /// Minimal preset that copies stills into a Photos/ folder — enough to exercise the
+    /// thumbnail tiers without dragging in naming/variable machinery.
+    fn photo_test_preset(destination: &Path) -> Preset {
+        Preset {
+            schema_version: 1,
+            id: "preset_photo_test".to_string(),
+            name: "Stills".to_string(),
+            description: None,
+            icon: None,
+            color: None,
+            variables: vec![],
+            root_folder_pattern: "Project".to_string(),
+            folder_tree: vec![FolderNode {
+                id: "folder_photos".to_string(),
+                name_pattern: "Photos".to_string(),
+                is_footage_destination: false,
+                children: vec![],
+                template_files: vec![],
+                condition: None,
+                role: Some(FolderRole::Photos),
+                metadata_preset_id: None,
+            }],
+            file_rename_pattern: "{original_name}{ext}".to_string(),
+            clip_number_padding: 3,
+            per_folder_rename_overrides: BTreeMap::new(),
+            destinations: PresetDestinations {
+                primary: destination.to_string_lossy().to_string(),
+                secondaries: vec![],
+                sub_path_pattern: String::new(),
+            },
+            file_type_routing_overrides: BTreeMap::new(),
+            preserve_xml_sidecars: true,
+            rename_files_default: false,
+            metadata_preset_id: None,
+            metadata_values: BTreeMap::new(),
+            created_at: "2026-04-24T00:00:00Z".to_string(),
+            updated_at: "2026-04-24T00:00:00Z".to_string(),
+        }
+    }
+
+    /// Encode a real, decodable JPEG — `image::load_from_memory` has to accept it, so the
+    /// byte-stub fixtures the other tests use won't do for the browser-image tier.
+    fn write_test_jpeg(path: &Path, width: u32, height: u32) {
+        fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+        let pixels = image::RgbImage::from_fn(width, height, |x, y| {
+            image::Rgb([(x % 256) as u8, (y % 256) as u8, 128])
+        });
+        image::DynamicImage::ImageRgb8(pixels)
+            .save_with_format(path, image::ImageFormat::Jpeg)
+            .expect("write jpeg");
+    }
+
+    /// REGRESSION — this is the bug that shipped. A card of DCIM JPEGs is the single most
+    /// common offload there is, and Tier 1 used to resolve `thumbnail_path` to the copied
+    /// MEDIA file. The asset protocol only ever grants `<root>/IngestPilot_Report_Assets`, so
+    /// every one of those stills rendered as a grey placeholder in the completion grid while
+    /// R3D/ARW/MP4 (which write into the asset dir) worked fine. The written HTML report uses
+    /// relative file:// URLs and was unaffected, so checking the report never revealed it.
+    ///
+    /// The invariant, stated once: EVERY `thumbnail_path` lives under the asset dir. Never the
+    /// media, never the card.
+    #[test]
+    fn browser_image_thumbnail_is_generated_into_the_asset_dir() {
+        let workspace = unique_temp_dir("ingest_pilot_browser_image_asset_dir_test");
+        let source = workspace.join("source");
+        let destination = workspace.join("output");
+        // 900px on the long edge, so a 480px-max thumbnail must be a genuinely smaller
+        // re-encode rather than a copy of the original.
+        write_test_jpeg(&source.join("DCIM").join("100CANON").join("IMG_0001.JPG"), 900, 600);
+
+        let preset = photo_test_preset(&destination);
+        let mut result = run_ingest(
+            &preset,
+            source.to_string_lossy().to_string(),
+            BTreeMap::new(),
+            None,
+            true,
+            false,
+            None,
+            None,
+            false,
+            None,
+            None,
+        )
+        .expect("ingest succeeds");
+
+        attach_report_thumbnails(
+            &PathBuf::from(&result.root_path),
+            &mut result.copied_files,
+            &source.to_string_lossy(),
+            ThumbnailConfig::default(),
+            None,
+            None,
+        )
+        .expect("thumbnails attach");
+
+        let copied = result
+            .copied_files
+            .iter()
+            .find(|file| file.destination_path.to_lowercase().ends_with(".jpg"))
+            .expect("jpg copied");
+        let thumbnail_path = copied.thumbnail_path.as_ref().expect("thumbnail path");
+
+        // The load-bearing assertion: inside the granted asset dir.
+        assert!(
+            thumbnail_path.replace('\\', "/").starts_with(REPORT_ASSET_DIR),
+            "thumbnail must live under {REPORT_ASSET_DIR}, got {thumbnail_path}"
+        );
+        let resolved = PathBuf::from(&result.root_path).join(thumbnail_path);
+        assert!(resolved.is_file(), "thumbnail must exist: {}", resolved.display());
+        // ...and must NOT be the media file itself, however it is spelled.
+        assert_ne!(
+            resolved.canonicalize().ok(),
+            PathBuf::from(&copied.destination_path).canonicalize().ok(),
+            "thumbnail must not point at the copied media"
+        );
+        assert_eq!(copied.thumbnail_kind, ThumbnailKind::Embedded);
+        // A downscale actually happened: the re-encode is smaller than the 900x600 original.
+        let original_bytes = fs::metadata(&copied.destination_path).expect("media meta").len();
+        let thumbnail_bytes = fs::metadata(&resolved).expect("thumb meta").len();
+        assert!(
+            thumbnail_bytes < original_bytes,
+            "thumbnail ({thumbnail_bytes}B) should be smaller than the still ({original_bytes}B)"
+        );
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    /// The cache has no other ceiling — nothing else deletes these files and no OS cleans the
+    /// Windows cache dir — so the pruner is the only thing standing between a working editor
+    /// and an unbounded folder.
+    #[test]
+    fn prune_thumbnail_cache_evicts_oldest_until_under_cap() {
+        use crate::ingest::source_thumbs::prune_thumbnail_cache;
+        use std::time::Duration;
+
+        let cache = unique_temp_dir("ingest_pilot_prune_test");
+        fs::create_dir_all(&cache).expect("cache dir");
+        // Written oldest-first with a real gap between them: eviction order is by mtime, and a
+        // same-tick timestamp would make the assertion meaningless.
+        for name in ["old.jpg", "mid.jpg", "new.jpg"] {
+            fs::write(cache.join(name), vec![0; 1000]).expect("write");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        // Cap at 2 files' worth: the oldest must go, the newest must stay.
+        prune_thumbnail_cache(&cache, 2000);
+        assert!(!cache.join("old.jpg").exists(), "oldest must be evicted");
+        assert!(cache.join("new.jpg").exists(), "newest must survive");
+        let remaining: u64 = fs::read_dir(&cache)
+            .expect("readdir")
+            .filter_map(|entry| entry.ok()?.metadata().ok())
+            .map(|metadata| metadata.len())
+            .sum();
+        assert!(remaining <= 2000, "cache must fit the cap, got {remaining}B");
+
+        // Under the cap: nothing is touched.
+        prune_thumbnail_cache(&cache, u64::MAX);
+        assert!(cache.join("new.jpg").exists());
+        // A missing cache dir is a no-op, never a panic.
+        prune_thumbnail_cache(&cache.join("nope"), 0);
+
+        let _ = fs::remove_dir_all(cache);
+    }
+
     #[test]
     fn attaches_matching_camera_thumbnail_to_report() {
         let workspace = unique_temp_dir("ingest_pilot_thumbnail_report_test");
@@ -3498,6 +3725,86 @@ mod tests {
         assert!(PathBuf::from(&result.root_path)
             .join(thumbnail_path)
             .exists());
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    /// The tier ladder must route by extension identically no matter which caller ran it —
+    /// this is the whole reason `generate_thumbnail_for_media` was factored out of the
+    /// `CopiedFile` wrapper. Extraction itself can't succeed here (the fixtures are empty
+    /// stubs, and ffmpeg/exiftool may not be installed), but ROUTING is observable: only the
+    /// tier a given extension lands in decides whether the result is `Placeholder` or `None`,
+    /// and a raw extension must never be handed to ffmpeg.
+    #[test]
+    fn tier_dispatch_routes_extensions_by_kind() {
+        let workspace = unique_temp_dir("ingest_pilot_tier_dispatch_test");
+        let asset_dir = workspace.join("thumbs");
+        fs::create_dir_all(&workspace).expect("workspace");
+
+        // A stills-RAW and a cinema-RAW that no decoder can read still resolve through their
+        // own tier and land on Placeholder — never falling through to the video tier.
+        for (name, kind) in [
+            ("A001.ARW", ScanFileKind::Photo),
+            ("A001.DNG", ScanFileKind::Photo),
+            ("A001.R3D", ScanFileKind::Footage),
+            ("A001.BRAW", ScanFileKind::Footage),
+        ] {
+            let path = workspace.join(name);
+            fs::write(&path, b"not really a raw file").expect("stub");
+            let (generated, thumbnail_kind) = generate_thumbnail_for_media(
+                &path,
+                kind,
+                &asset_dir,
+                "a001",
+                "abc12345",
+                &ThumbnailConfig::default(),
+            );
+            assert!(generated.is_none(), "{name} must not produce pixels from a stub");
+            assert_eq!(
+                thumbnail_kind,
+                ThumbnailKind::Placeholder,
+                "{name} must resolve through its raw tier to a placeholder"
+            );
+        }
+
+        // A non-media still (.heic) is neither raw nor Footage: it skips every generator tier.
+        let heic = workspace.join("A001.HEIC");
+        fs::write(&heic, b"stub").expect("stub");
+        let (generated, thumbnail_kind) = generate_thumbnail_for_media(
+            &heic,
+            ScanFileKind::Photo,
+            &asset_dir,
+            "a001",
+            "abc12345",
+            &ThumbnailConfig::default(),
+        );
+        assert!(generated.is_none());
+        assert_eq!(thumbnail_kind, ThumbnailKind::Placeholder);
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    /// Extension routing is case-insensitive: a card writes `.ARW`, the matcher lists `.arw`.
+    #[test]
+    fn tier_dispatch_is_case_insensitive() {
+        assert!(is_stills_raw_extension(".arw"));
+        assert!(is_cinema_raw_extension(".r3d"));
+
+        let workspace = unique_temp_dir("ingest_pilot_tier_case_test");
+        fs::create_dir_all(&workspace).expect("workspace");
+        // Upper-case on disk must still reach the stills-RAW tier (Placeholder), not the
+        // do-nothing default — proving `generate_thumbnail_for_media` lowercases before matching.
+        let path = workspace.join("A001.ARW");
+        fs::write(&path, b"stub").expect("stub");
+        let (_, thumbnail_kind) = generate_thumbnail_for_media(
+            &path,
+            ScanFileKind::Photo,
+            &workspace.join("thumbs"),
+            "a001",
+            "abc12345",
+            &ThumbnailConfig::default(),
+        );
+        assert_eq!(thumbnail_kind, ThumbnailKind::Placeholder);
 
         let _ = fs::remove_dir_all(workspace);
     }

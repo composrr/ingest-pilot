@@ -26,6 +26,41 @@ pub fn app_data_root(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(root)
 }
 
+/// Root for REGENERABLE data — currently the source-thumbnail cache.
+///
+/// Sibling of [`app_data_root`], and deliberately a different base directory: that one uses
+/// `app_config_dir`, which is the right home for things whose loss is data loss (settings,
+/// presets, history) and which sync tools and backups are expected to preserve. Thumbnails are
+/// none of those — they are a pure function of the media on the card and can be rebuilt on
+/// demand — so they belong here. Never store anything in this tree that can't be recomputed.
+///
+/// DO NOT assume the OS cleans this up. That is roughly true on macOS (`~/Library/Caches` is
+/// eligible for eviction) and simply FALSE on Windows, where `%LOCALAPPDATA%\<id>\cache` is an
+/// ordinary folder that nothing ever touches — and Windows is the primary platform here. The
+/// only ceiling that exists is the one we enforce ourselves:
+/// `ingest::source_thumbs::prune_thumbnail_cache`, run after each thumbnail batch. Anything
+/// new that lands in this tree needs its own bound.
+pub fn app_cache_root(app: &AppHandle) -> Result<PathBuf, String> {
+    let root = app
+        .path()
+        .app_cache_dir()
+        .map_err(|error| error.to_string())?;
+    fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+    Ok(root)
+}
+
+/// Where `generate_source_thumbnails` writes previews of files still sitting on the card.
+///
+/// This is the ONE directory the webview is granted read access to at startup
+/// (`lib.rs` → `asset_protocol_scope().allow_directory`), which is why source previews live
+/// here rather than beside the media: the card is read-only, may not be writable, and
+/// allowlisting it would hand the webview the user's whole volume.
+pub fn source_thumbnail_cache_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let root = app_cache_root(app)?.join("source-thumbs");
+    fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+    Ok(root)
+}
+
 /// Visible, user-facing library root: `~/Documents/Ingest Pilot`. Holds the shareable
 /// preset files (one file per preset, in subfolders) so they can be seen in Finder and
 /// synced across machines with a git repo. Distinct from `app_data_root`, which keeps

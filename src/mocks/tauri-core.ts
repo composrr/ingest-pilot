@@ -142,11 +142,23 @@ function sampleScan(rootPath: string): SourceScan {
     scannedFile("A009_0629G2.RDM/A009_C011_0701HB.RDC/A009_C011_0701HB_004.R3D", "footage", 524_100_000),
     scannedFile("AUDIO/ZOOM0007.WAV", "audio", 188_220_004),
     scannedFile("AUDIO/ZOOM0008.WAV", "audio", 142_553_120),
-    scannedFile("DCIM/100MSDCF/DSC00412.JPG", "photo", 9_220_114),
-    scannedFile("DCIM/100MSDCF/DSC00413.JPG", "photo", 8_904_551),
+    // Browser images are their own preview (scanner `is_self_preview`), so thumbnail_path
+    // points back at the file itself — a hint about where the pixels are, not a URL.
+    scannedFile("DCIM/100MSDCF/DSC00412.JPG", "photo", 9_220_114, {
+      thumbnail_path: "D:/A001_SONY/DCIM/100MSDCF/DSC00412.JPG",
+    }),
+    scannedFile("DCIM/100MSDCF/DSC00413.JPG", "photo", 8_904_551, {
+      thumbnail_path: "D:/A001_SONY/DCIM/100MSDCF/DSC00413.JPG",
+    }),
     scannedFile("DOCS/shotlist.pdf", "document", 244_180),
-    scannedFile("PRIVATE/M4ROOT/THMBNL/FX3_6713.JPG", "ignored", 44_120),
+    scannedFile("PRIVATE/M4ROOT/THMBNL/FX3_6713.JPG", "ignored", 44_120, {
+      thumbnail_path: "D:/A001_SONY/PRIVATE/M4ROOT/THMBNL/FX3_6713.JPG",
+    }),
   ];
+  // The THMBNL companion is donated to its clip (scanner `is_thumbnail_donor`). The other
+  // clips get nothing from the scan and must go through the extractor ladder — which is
+  // exactly the mix the picker has to handle on a real card.
+  files[0].thumbnail_path = "D:/A001_SONY/PRIVATE/M4ROOT/THMBNL/FX3_6713.JPG";
   const ingest = files.filter((f) => f.kind !== "ignored" && f.kind !== "sidecar");
   const totalBytes = files.reduce((sum, f) => sum + f.size_bytes, 0);
   return {
@@ -293,18 +305,34 @@ let settings: AppSettings | null = null;
 // every 3rd run drops one destination as a failure (success stays the common case).
 let multiRunCount = 0;
 
-// 1x1 transparent-ish gray placeholder for thumbnails in design mode.
+// Marker for paths this mock invented itself. ONLY these get fake pixels — see below.
+const MOCK_THUMB_CACHE = "/__design-mode__/source-thumbs/";
+
+// 1x1 transparent-ish gray placeholder standing in for a generated thumbnail in design mode.
 const PLACEHOLDER_THUMB =
   "data:image/svg+xml;utf8," +
   encodeURIComponent(
     '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="90"><rect width="160" height="90" fill="#e8e6ef"/><text x="80" y="50" font-family="sans-serif" font-size="11" fill="#9b97ab" text-anchor="middle">preview</text></svg>',
   );
 
+// Stand-in for Tauri's asset resolver.
+//
+// This mock used to return PLACEHOLDER_THUMB for ANY path ending in an image extension, which
+// made design mode a liar: the asset protocol was disabled in every real build, so every
+// convertFileSrc URL 404'd and every thumbnail in the shipped app was dead — while design mode
+// showed a tidy grid of previews. The feature looked finished for months because the only place
+// anyone looked at it was the one place it couldn't fail.
+//
+// So: fake pixels are returned ONLY for paths the mock itself minted (i.e. what its own
+// `generate_source_thumbnails` handed back). Any other path — a real card path, or anything a
+// component passes through unprocessed — gets the same `http://asset.localhost/...` URL shape
+// the real API produces, which resolves to nothing in a browser. That is the honest answer:
+// design mode now shows a broken/placeholder tile exactly where a real build would.
 export function convertFileSrc(path: string): string {
-  if (/\.(jpe?g|png|gif|webp)$/i.test(path)) {
+  if (path.startsWith(MOCK_THUMB_CACHE)) {
     return PLACEHOLDER_THUMB;
   }
-  return path;
+  return `http://asset.localhost/${encodeURIComponent(path)}`;
 }
 
 export async function invoke<T = unknown>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -514,7 +542,35 @@ export async function invoke<T = unknown>(command: string, args?: Record<string,
 
     case "write_ingest_report":
     case "generate_ingest_report":
-      return "E:/MediaServer/20260628_BaptismStory_Johnson/IngestPilot_Report.html" as T;
+      // Mirrors the real command: the enriched copied_files come back alongside the path, so
+      // the completion grid has thumbnail_paths to render. The paths point into the mock
+      // cache marker so convertFileSrc will resolve them (and nothing else will).
+      return {
+        report_path: "E:/MediaServer/20260628_BaptismStory_Johnson/IngestPilot_Report.html",
+        copied_files: ((a.copiedFiles ?? []) as CopiedFile[]).map((file, index) => ({
+          ...file,
+          thumbnail_path: `${MOCK_THUMB_CACHE}report_${index}.jpg`,
+          thumbnail_kind: "embedded",
+        })),
+      } as T;
+
+    case "generate_source_thumbnails": {
+      // Honest by construction: a preview is returned ONLY for a request the mock can plausibly
+      // satisfy, and its path is a mock-cache path — the one shape convertFileSrc will render.
+      // Requests for formats the real ladder can't crack (see below) come back null, so design
+      // mode exercises the placeholder branch too instead of pretending everything extracts.
+      const requests = (a.requests ?? []) as { path: string; preview_path?: string | null }[];
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      return requests.map((request, index) => {
+        // .heic/.tif and friends have no tier in the real ladder — model that failure here.
+        const unsupported = /\.(heic|heif|tiff?)$/i.test(request.path);
+        return {
+          key: request.path,
+          thumbnail_path: unsupported ? null : `${MOCK_THUMB_CACHE}source_${index}.jpg`,
+          kind: unsupported ? "placeholder" : "embedded",
+        };
+      }) as T;
+    }
 
     case "get_settings":
       return (settings ?? {}) as T;

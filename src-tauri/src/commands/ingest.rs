@@ -1,7 +1,7 @@
 use crate::commands::presets::get_preset;
 use crate::core::folder_tree::{scaffold_project as scaffold, ScaffoldResult};
 use crate::ingest::copier::{
-    attach_report_thumbnails, recopy_and_verify, run_ingest as run_ingest_copy,
+    attach_report_thumbnails, recopy_and_verify, run_ingest as run_ingest_copy, REPORT_ASSET_DIR,
     run_ingest_multi as run_ingest_multi_copy, CopiedFile, FileVerified, IngestProgress,
     IngestResult, MultiIngestResult, SkippedFile, ThumbnailConfig,
 };
@@ -11,7 +11,7 @@ use crate::ingest::offload_proof::{write_offload_proof, OffloadProofInput};
 use crate::ingest::reel_index::write_reel_index;
 use crate::ingest::report::{write_html_report_to, ReportInput};
 use crate::ingest::scanner::ScanFileKind;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -397,6 +397,19 @@ pub fn write_ingest_report(
     Ok(report_path.to_string_lossy().to_string())
 }
 
+/// What `generate_ingest_report` hands back.
+///
+/// `copied_files` is the point: `attach_report_thumbnails` resolves `thumbnail_path` on its
+/// own local copy of the list, so before this struct existed the generated thumbnails were
+/// reachable only from the written HTML — the in-app completion grid, which filters on
+/// `thumbnail_path`, therefore matched zero files and silently rendered nothing, no matter
+/// what the asset protocol was doing. Returning the enriched list is what actually lights it up.
+#[derive(Debug, Clone, Serialize)]
+pub struct GeneratedReport {
+    pub report_path: String,
+    pub copied_files: Vec<CopiedFile>,
+}
+
 #[tauri::command]
 pub async fn generate_ingest_report(
     app: AppHandle,
@@ -415,12 +428,13 @@ pub async fn generate_ingest_report(
     job_id: Option<String>,
     duration_ms: Option<u64>,
     output_dir: Option<String>,
-) -> Result<String, String> {
+) -> Result<GeneratedReport, String> {
     let app_for_progress = app.clone();
     let emit_job_id = job_id.unwrap_or_default();
     let thumbnail_config = report_thumbnail_config(&app);
 
-    tauri::async_runtime::spawn_blocking(move || {
+    let generated = tauri::async_runtime::spawn_blocking(
+        move || -> Result<(GeneratedReport, Vec<String>), String> {
         let mut copied_files = copied_files;
         let mut emit_progress = |mut progress: IngestProgress| {
             progress.job_id = emit_job_id.clone();
@@ -462,7 +476,14 @@ pub async fn generate_ingest_report(
         // Mirror the combined report + its thumbnail assets into every other destination root,
         // so each drive carries the full record of where the media was written.
         let report_file = PathBuf::from(&report_path);
-        let assets_dir = PathBuf::from(&root_path).join("IngestPilot_Report_Assets");
+        let assets_dir = PathBuf::from(&root_path).join(REPORT_ASSET_DIR);
+        // Roots whose asset dir this run actually WROTE. Accumulated from the write results
+        // rather than from the caller's `destination_roots`, so a root we failed to mirror to
+        // (unplugged drive, permission denied) is never handed to the asset scope.
+        let mut written_asset_roots: Vec<String> = Vec::new();
+        if assets_dir.is_dir() {
+            written_asset_roots.push(root_path.clone());
+        }
         for other in &destination_roots {
             if other == &root_path {
                 continue;
@@ -471,15 +492,34 @@ pub async fn generate_ingest_report(
             if let Some(name) = report_file.file_name() {
                 let _ = std::fs::copy(&report_file, other_root.join(name));
             }
-            if assets_dir.exists() {
-                let _ = copy_dir_recursive(&assets_dir, &other_root.join("IngestPilot_Report_Assets"));
+            if assets_dir.is_dir()
+                && copy_dir_recursive(&assets_dir, &other_root.join(REPORT_ASSET_DIR)).is_ok()
+            {
+                written_asset_roots.push(other.clone());
             }
         }
 
-        Ok(report_path.to_string_lossy().to_string())
-    })
+        Ok((
+            GeneratedReport {
+                report_path: report_path.to_string_lossy().to_string(),
+                copied_files,
+            },
+            written_asset_roots,
+        ))
+        },
+    )
     .await
-    .map_err(|error| format!("Report worker failed: {error}"))?
+    .map_err(|error| format!("Report worker failed: {error}"))?;
+
+    // Let the webview read the thumbnails we just wrote — and only those. Scoped to the roots
+    // the write loop reported success for, so a failed mirror never widens the scope.
+    // See `crate::allow_report_asset_dir` for what this grant does and does not guarantee.
+    let (report, written_asset_roots) = generated?;
+    for root in &written_asset_roots {
+        crate::allow_report_asset_dir(&app, std::path::Path::new(root));
+    }
+
+    Ok(report)
 }
 
 fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {

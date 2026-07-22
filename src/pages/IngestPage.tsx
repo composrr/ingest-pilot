@@ -3,7 +3,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { Activity, Check, ChevronDown, ChevronUp, Clock, Film, FolderOpen, HardDrive, Image, Layers, List, Plus, RefreshCw, Search, ShieldCheck, Users, Wand2, X } from "lucide-react";
-import { type Dispatch, type SetStateAction, useEffect, useMemo, useRef, useState } from "react";
+import { type Dispatch, type SetStateAction, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   defaultsForParameters,
   medianHistoricalBytesPerSecond,
@@ -30,6 +30,7 @@ import {
   exportReelIndex,
   filterDirectories,
   generateIngestReport,
+  generateSourceThumbnails,
   getMetadataPreset,
   listMetadataPresets,
   saveMetadataPreset,
@@ -1812,7 +1813,7 @@ export function IngestPage() {
         }
       });
 
-      const reportPath = await generateIngestReport(
+      const report = await generateIngestReport(
         presetName,
         sourcePaths.join("; "),
         result.root_path,
@@ -1829,7 +1830,13 @@ export function IngestPage() {
         Math.max(0, new Date(completedAt).getTime() - new Date(startedAt).getTime()),
         resolveReportDir(result.root_path, appSettings.report_defaults.output_location),
       );
-      setIngestResult((current) => (current ? { ...current, report_path: reportPath } : current));
+      // Take the report's copied_files back: thumbnail extraction happens in Rust, on Rust's
+      // own copy of the list, so this is the only place the UI ever learns a thumbnail_path.
+      // Without it ClipThumbnailGrid filters every file out and renders nothing at all.
+      const reportPath = report.report_path;
+      setIngestResult((current) =>
+        current ? { ...current, report_path: reportPath, copied_files: report.copied_files } : current,
+      );
       setReportBuild({ status: "ready", progress: null, path: reportPath });
       await saveHistoryJob({
         id: jobId,
@@ -4469,6 +4476,109 @@ function SortHeaderButton({
   );
 }
 
+// A tile's preview: still being generated, or resolved to a URL (null = nothing extractable).
+type SourceThumbnailState = "pending" | { url: string | null };
+
+// ".arw" → "ARW". Shown on a tile whose format has no extractable preview, so the tile still
+// says something useful about the file instead of just "No thumbnail".
+function extLabel(extension: string): string {
+  return extension.replace(/^\./, "").toUpperCase();
+}
+
+// How long we let requests accumulate before firing one batch. Long enough that a fast scroll
+// through fifty tiles is one IPC round trip rather than fifty; short enough to feel immediate.
+const THUMBNAIL_BATCH_MS = 120;
+
+// Lazily generate source previews for tiles as they scroll into view.
+//
+// Generation is genuinely expensive — an ARW embedded-preview extract, or an ffmpeg poster
+// seek, per file — so nothing is requested until a tile is actually visible, and each path is
+// requested at most once. This is deliberately NOT done during `scan_source`: a full card would
+// mean thousands of extractions before the user sees a single row.
+function useSourceThumbnails() {
+  const [thumbnails, setThumbnails] = useState<Map<string, SourceThumbnailState>>(new Map());
+  // Paths already requested — the dedup gate. A ref, not state: it must be updated
+  // synchronously, since several tiles can intersect within one render.
+  const requestedRef = useRef<Set<string>>(new Set());
+  const queueRef = useRef<Map<string, string | null>>(new Map());
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Guards against setState after the dialog closes mid-batch.
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (timerRef.current !== null) {
+        clearTimeout(timerRef.current);
+      }
+    };
+  }, []);
+
+  const flush = useCallback(() => {
+    timerRef.current = null;
+    const batch = Array.from(queueRef.current, ([path, preview_path]) => ({ path, preview_path }));
+    queueRef.current.clear();
+    if (batch.length === 0) {
+      return;
+    }
+    generateSourceThumbnails(batch)
+      .then((results) => {
+        if (!mountedRef.current) {
+          return;
+        }
+        setThumbnails((current) => {
+          const next = new Map(current);
+          for (const result of results) {
+            // The returned path is inside the app's thumbnail cache — the only directory the
+            // asset protocol is scoped to. Card paths would be refused by the scope.
+            next.set(result.key, {
+              url: result.thumbnail_path ? convertFileSrc(result.thumbnail_path) : null,
+            });
+          }
+          return next;
+        });
+      })
+      .catch(() => {
+        // A failed batch must not strand its tiles as permanently "pending" spinners. Drop
+        // them from the dedup set and from the map, which puts each tile back to its labelled
+        // placeholder and lets the still-subscribed observer re-request it on the next scroll.
+        // (This only works because the observer is NOT one-shot — see ThumbnailFileCard.)
+        // A thumbnail failure is never worth surfacing as an error.
+        for (const item of batch) {
+          requestedRef.current.delete(item.path);
+        }
+        if (!mountedRef.current) {
+          return;
+        }
+        setThumbnails((current) => {
+          const next = new Map(current);
+          for (const item of batch) {
+            next.delete(item.path);
+          }
+          return next;
+        });
+      });
+  }, []);
+
+  const request = useCallback(
+    (path: string, previewPath: string | null) => {
+      if (requestedRef.current.has(path)) {
+        return;
+      }
+      requestedRef.current.add(path);
+      queueRef.current.set(path, previewPath);
+      setThumbnails((current) => new Map(current).set(path, "pending"));
+      if (timerRef.current === null) {
+        timerRef.current = setTimeout(flush, THUMBNAIL_BATCH_MS);
+      }
+    },
+    [flush],
+  );
+
+  return { thumbnails, request };
+}
+
 function FileSelectionDialog({
   availableCount,
   defaultThumbnailSize,
@@ -4504,6 +4614,14 @@ function FileSelectionDialog({
   const [sortDirection, setSortDirection] = useState<FilePickerSortDirection>("desc");
   const [search, setSearch] = useState("");
   const [kindFilter, setKindFilter] = useState<Set<ScanFileKind>>(new Set());
+  // Source previews, generated lazily for visible tiles only (thumbs view never mounts a
+  // ThumbnailFileCard in list view, so list view costs nothing).
+  const { thumbnails, request: requestThumbnail } = useSourceThumbnails();
+  // The tiles' IntersectionObserver must use THIS element as its root, not the viewport: the
+  // tiles are clipped by this container long before they leave the viewport, so a viewport-
+  // rooted observer sees zero intersection and `rootMargin` (which only expands the root rect)
+  // does nothing. Callback ref rather than useRef so the cards re-render once it's attached.
+  const [scrollRoot, setScrollRoot] = useState<HTMLDivElement | null>(null);
   // Collapse spanned camera clips (RED .RDC → one row) before filtering/sorting.
   const displayFiles = useMemo(() => collapseClips(files), [files]);
   const memberKeyMap = useMemo(() => {
@@ -4750,7 +4868,7 @@ function FileSelectionDialog({
           </div>
         ) : null}
 
-        <div className="min-h-0 flex-1 overflow-auto bg-white">
+        <div className="min-h-0 flex-1 overflow-auto bg-white" ref={setScrollRoot}>
           {sourceGroups.map((sourceGroup) => (
             <section key={sourceGroup.sourcePath} className="border-b border-mist last:border-b-0">
               <div className="sticky top-0 z-10 grid min-h-9 grid-cols-[1fr_auto_auto] items-center gap-2 border-b border-mist bg-porcelain px-4 py-1">
@@ -4820,7 +4938,10 @@ function FileSelectionDialog({
                             highlighted={highlightedFileKeys.has(file.sourceKey)}
                             onCheck={handleFileChecked}
                             onHighlight={handleFileHighlight}
+                            onRequestThumbnail={requestThumbnail}
+                            scrollRoot={scrollRoot}
                             size={thumbnailSize}
+                            thumbnail={thumbnails.get(file.path)}
                           />
                         );
                       })}
@@ -4901,21 +5022,60 @@ function ThumbnailFileCard({
   highlighted,
   onCheck,
   onHighlight,
+  onRequestThumbnail,
+  scrollRoot,
   size,
+  thumbnail,
 }: {
   checked: boolean;
   file: ManifestFile;
   highlighted: boolean;
   onCheck: (file: ManifestFile, checked: boolean) => void;
   onHighlight: (file: ManifestFile, shiftKey: boolean) => void;
+  onRequestThumbnail: (path: string, previewPath: string | null) => void;
+  scrollRoot: HTMLElement | null;
   size: number;
+  thumbnail: SourceThumbnailState | undefined;
 }) {
-  const thumbnailUrl = file.thumbnail_path ? convertFileSrc(file.thumbnail_path) : null;
+  const cardRef = useRef<HTMLDivElement | null>(null);
+
+  // Ask for this tile's preview as it approaches the scroll viewport, and only then.
+  //
+  // NOTE: we do NOT render `file.thumbnail_path` directly, even when the scan supplied one.
+  // That path points at the card, which the asset protocol deliberately refuses to serve —
+  // it is a hint about where the pixels live, which the backend re-encodes into its cache.
+  // Passing it here is what lets the backend skip the extractor ladder for that file.
+  useEffect(() => {
+    const node = cardRef.current;
+    // Wait for the scroll container: rooting on the viewport instead would silently never
+    // fire, because this tile's ancestors clip it out of the viewport's intersection rect.
+    if (!node || !scrollRoot) {
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          onRequestThumbnail(file.path, file.thumbnail_path ?? null);
+        }
+      },
+      // Deliberately NOT disconnected on first fire. `onRequestThumbnail` dedups, so repeat
+      // calls for a resolved tile are free — but a tile whose batch FAILED is dropped from
+      // the dedup set, and staying subscribed is what lets the next scroll retry it. A
+      // one-shot observer made those tiles permanently dead.
+      { root: scrollRoot, rootMargin: "300px" },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [file.path, file.thumbnail_path, onRequestThumbnail, scrollRoot]);
+
+  const pending = thumbnail === "pending";
+  const thumbnailUrl = thumbnail && thumbnail !== "pending" ? thumbnail.url : null;
   return (
     <div
       className={`group overflow-hidden rounded-lg border bg-white text-left shadow-sm transition ${
         highlighted ? "border-lavender ring-2 ring-lavender/50" : "border-mist hover:bg-white"
       } ${file.disabled ? "opacity-65" : "cursor-default"}`}
+      ref={cardRef}
       onClick={(event) => onHighlight(file, event.shiftKey)}
       onKeyDown={(event) => {
         if (event.key === " " || event.key === "Enter") {
@@ -4943,9 +5103,19 @@ function ThumbnailFileCard({
             src={thumbnailUrl}
           />
         ) : (
+          // "Loading…" while a preview is genuinely in flight, otherwise always a real label.
+          // Every non-pending state — not yet requested, nothing extractable, or a batch that
+          // failed outright — lands on the extension, which tells the user more than the old
+          // blanket "No thumbnail" did. Never an empty string: a bare unlabelled icon was the
+          // failure mode when a rejected batch dropped the tile out of the map entirely.
           <div className="flex h-full w-full flex-col items-center justify-center gap-1 text-graphite">
-            <Image size={Math.max(18, Math.round(size * 0.18))} />
-            <span className="text-[10px] font-semibold">No thumbnail</span>
+            <Image
+              className={pending ? "animate-pulse" : undefined}
+              size={Math.max(18, Math.round(size * 0.18))}
+            />
+            <span className="text-[10px] font-semibold">
+              {pending ? "Loading…" : extLabel(file.extension) || "No thumbnail"}
+            </span>
           </div>
         )}
         <span className="absolute left-1.5 top-1.5 rounded-md bg-white/90 p-1 shadow-sm">

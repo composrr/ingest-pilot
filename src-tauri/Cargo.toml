@@ -15,7 +15,16 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri = { version = "2", features = ["tray-icon"] }
+# `protocol-asset` compiles in the `asset:`/`http://asset.localhost` handler that
+# `convertFileSrc` targets. Without it that handler does not exist and every convertFileSrc
+# URL in the app is dead — which is exactly what shipped until now.
+#
+# It is gate 1 of 2. Gate 2 is `app.security.assetProtocol` in tauri.conf.json: `enable`
+# must be true (tauri-build hard-errors if these two disagree, so they can't drift), and the
+# `scope` decides which paths may actually be read. There is NO third, ACL gate: the asset
+# protocol is not a command, so `capabilities/default.json` has no say over it — the scope IS
+# the security boundary. We ship an empty static scope and widen it at runtime in lib.rs.
+tauri = { version = "2", features = ["tray-icon", "protocol-asset"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-process = "2"
 tauri-plugin-updater = "2"

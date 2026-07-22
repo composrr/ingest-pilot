@@ -585,6 +585,39 @@ export async function writeIngestReport(
   });
 }
 
+// One source file's preview request. `preview_path` forwards `ScannedFile.thumbnail_path` —
+// a hint about where the pixels live (the file itself, or a companion THMBNL JPEG), NOT a
+// URL: it points at the card, which the webview is not allowed to read. The backend always
+// re-encodes into its own cache and hands back a path there.
+export type SourceThumbnailRequest = {
+  path: string;
+  preview_path?: string | null;
+};
+
+export type SourceThumbnail = {
+  // Echoes the requested `path`, so results can be mapped back onto tiles.
+  key: string;
+  // Absolute path inside the app's thumbnail cache — the one directory the asset protocol
+  // is scoped to. Null when nothing could be extracted; render a placeholder.
+  thumbnail_path?: string | null;
+  kind: ThumbnailKind;
+};
+
+// Generate previews for files still on the card. Lazy and incremental by contract: call it
+// only for tiles that actually scrolled into view — never for a whole scan, which on a full
+// card would mean thousands of RAW extractions nobody asked for.
+export async function generateSourceThumbnails(requests: SourceThumbnailRequest[]) {
+  return invoke<SourceThumbnail[]>("generate_source_thumbnails", { requests });
+}
+
+// The report command now returns the enriched copied_files alongside the path: thumbnails are
+// resolved on the Rust side, so without them the completion grid has no `thumbnail_path` to
+// render and silently shows nothing.
+export type GeneratedReport = {
+  report_path: string;
+  copied_files: CopiedFile[];
+};
+
 export async function generateIngestReport(
   presetName: string,
   sourcePath: string,
@@ -602,7 +635,7 @@ export async function generateIngestReport(
   durationMs?: number,
   outputDir?: string,
 ) {
-  return invoke<string>("generate_ingest_report", {
+  return invoke<GeneratedReport>("generate_ingest_report", {
     presetName,
     sourcePath,
     rootPath,

@@ -5,4 +5,5 @@ pub mod offload_proof;
 pub mod reel_index;
 pub mod report;
 pub mod scanner;
+pub mod source_thumbs;
 pub mod verifier;

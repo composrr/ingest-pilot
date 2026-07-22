@@ -137,6 +137,71 @@ fn wire_bundled_tool_env(app: &AppHandle) {
     let _ = (ffmpeg, exiftool);
 }
 
+/// Grant the webview read access to one directory of GENERATED thumbnails.
+///
+/// # What this model actually guarantees
+///
+/// The static scope in `tauri.conf.json` is empty and stays empty: we never allowlist `**`,
+/// and we never allowlist a source volume. The scope is widened only at runtime, one
+/// directory at a time, to directories that hold thumbnails this app generated.
+///
+/// The guarantee is therefore narrower than "the webview can't see your media", and it is
+/// worth stating exactly, because the weaker claim is the one that's true:
+///
+///   * The webview can NOT read raw bytes of any file — not the media on a card, not an
+///     arbitrary file on disk. It cannot `convertFileSrc` its way to `C:\Users\…\id_rsa`.
+///   * The webview CAN obtain a downscaled JPEG re-encode of any media file it can name, by
+///     asking `generate_source_thumbnails` for it. That is the point of the feature — the
+///     picker has to show previews of files the user pointed us at — but it does mean the
+///     boundary is "no raw file reads", not "no access to media content".
+///   * Grants last for the process lifetime and are not persisted; a restart starts empty.
+///
+/// This is not a meaningful escalation in practice: a webview compromised enough to call
+/// `generate_source_thumbnails` can already call `run_ingest` and copy the media anywhere.
+/// The scope exists to keep an *ordinary* bug or a stray URL from turning into a file read,
+/// not to defend against our own frontend.
+///
+/// Absent directories are skipped rather than created: this runs on paths that may live on a
+/// drive that isn't mounted, and (like `wire_bundled_tool_env`) it must never panic or block.
+fn allow_thumbnail_dir(app: &AppHandle, dir: &Path) {
+    if !dir.is_dir() {
+        return;
+    }
+    // `true` = recursive: the report writer nests assets one level down (`.../thumbs/`).
+    if let Err(error) = app.asset_protocol_scope().allow_directory(dir, true) {
+        // Non-fatal by design — the cost is placeholder tiles, not a broken app.
+        #[cfg(debug_assertions)]
+        eprintln!("[assets] could not allow {}: {error}", dir.display());
+        let _ = error;
+    }
+}
+
+/// Widen the asset scope to a finished ingest's report assets, so the completion grid can
+/// render the thumbnails that were just written there.
+///
+/// The completion grid reads from the *destination root*, not the cache, so the startup grant
+/// cannot cover it — the destination isn't known until a run happens, and there may be several.
+/// There is no "let the webview read this path" command, deliberately; the grant is made here,
+/// in Rust, after `generate_ingest_report` has written assets under this root.
+///
+/// Honest about the limits, since only the SUFFIX is ours:
+///
+///   * The `<root>` base originates from the caller (`generate_ingest_report`'s
+///     `destination_roots` crosses the IPC boundary). We constrain it to roots the write loop
+///     reported success for, so it names a directory this run really did populate — but a
+///     caller that asks for a report at a base of its choosing will get that base granted.
+///   * The suffix is always [`copier::REPORT_ASSET_DIR`], the same constant the writer uses,
+///     so the grant covers `<root>/IngestPilot_Report_Assets` and never the root itself or the
+///     media beside it. Contents are ours except in the pathological case where a directory of
+///     that exact name already existed at that base with foreign content in it.
+///   * The grant is recursive (assets nest one level, under `thumbs/`) and lasts for the
+///     process lifetime only.
+///
+/// See [`allow_thumbnail_dir`] for the boundary this is part of.
+pub fn allow_report_asset_dir(app: &AppHandle, root_path: &Path) {
+    allow_thumbnail_dir(app, &root_path.join(crate::ingest::copier::REPORT_ASSET_DIR));
+}
+
 #[cfg(desktop)]
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     use tauri::menu::{MenuBuilder, MenuItemBuilder};
@@ -195,6 +260,22 @@ pub fn run() {
             // present — discovery then falls back to PATH and finally the placeholder tier,
             // so this never breaks a build that ships without them.
             wire_bundled_tool_env(app.handle());
+
+            // Open the asset protocol onto the source-thumbnail cache — and nothing else.
+            // `tauri.conf.json` ships an EMPTY static scope on purpose, so at this point the
+            // webview can read no file at all; this single grant is what makes
+            // `convertFileSrc` work for generated previews while leaving the user's cards and
+            // media unreachable. Destination report assets are granted per-run, once we've
+            // actually written them (see `allow_report_asset_dir`).
+            match crate::core::storage::source_thumbnail_cache_dir(app.handle()) {
+                Ok(cache_dir) => allow_thumbnail_dir(app.handle(), &cache_dir),
+                // No cache dir means no source previews — placeholders, not a failed launch.
+                Err(error) => {
+                    #[cfg(debug_assertions)]
+                    eprintln!("[assets] no thumbnail cache dir: {error}");
+                    let _ = error;
+                }
+            }
 
             // The auto-updater is desktop-only. Registered here (rather than in the
             // builder chain) so it can be `#[cfg(desktop)]`-gated cleanly.
@@ -271,6 +352,7 @@ pub fn run() {
             commands::ingest::generate_ingest_report,
             commands::scan::scan_source,
             commands::scan::detect_camera_sources,
+            commands::thumbnails::generate_source_thumbnails,
             commands::tokens::preview_pattern
         ])
         .run(tauri::generate_context!())

@@ -305,21 +305,27 @@ fn scan_directory(
 }
 
 fn attach_scan_thumbnails(files: &mut [ScannedFile]) {
-    let thumbnail_sources = files
+    let donors = files
         .iter()
-        .filter(|file| is_thumbnail_candidate(file))
+        .filter(|file| is_thumbnail_donor(file))
         .cloned()
         .collect::<Vec<_>>();
 
     for file in files {
+        // Tier 1 — a browser-native image is its own preview, so it needs no companion and
+        // no generation. Mirrors Tier 1 of the post-copy ladder
+        // (`copier::attach_cheap_thumbnail_tier`). Deliberately NOT folder-gated: this is
+        // what makes a card full of `DCIM/100CANON/*.JPG` render instantly, where the old
+        // donor-only rule left every tile reading "No thumbnail".
+        if is_self_preview(file) {
+            file.thumbnail_path = Some(file.path.clone());
+            continue;
+        }
         if !matches!(file.kind, ScanFileKind::Footage | ScanFileKind::Photo) {
             continue;
         }
-        if is_thumbnail_candidate(file) {
-            continue;
-        }
-        file.thumbnail_path = matching_thumbnail_source(file, &thumbnail_sources)
-            .map(|thumbnail| thumbnail.path.clone());
+        file.thumbnail_path =
+            matching_thumbnail_source(file, &donors).map(|thumbnail| thumbnail.path.clone());
     }
 }
 
@@ -355,7 +361,21 @@ fn matching_thumbnail_source<'a>(
     })
 }
 
-fn is_thumbnail_candidate(file: &ScannedFile) -> bool {
+/// A file the webview can render directly, so it serves as its own preview with no
+/// extraction step at all. Any browser-native image qualifies regardless of where it
+/// lives — see the Tier 1 note in `attach_scan_thumbnails`.
+fn is_self_preview(file: &ScannedFile) -> bool {
+    is_browser_image_extension(&file.extension)
+}
+
+/// A file that can DONATE its pixels as some *other* file's preview: the companion JPEG a
+/// camera writes into a THMBNL/PREVIEW folder beside the real clip (Sony XDCAM, P2, Canon XF).
+///
+/// The folder-name gate stays deliberately: `matching_thumbnail_source` falls back to loose
+/// digit/substring matching, so promoting an arbitrary `DCIM/IMG_0042.JPG` to donor would
+/// happily attach it to an unrelated `A042C001.R3D`. Self-preview (above) is the unconditional
+/// case; donation stays conservative.
+fn is_thumbnail_donor(file: &ScannedFile) -> bool {
     matches!(file.kind, ScanFileKind::Ignored | ScanFileKind::Photo)
         && is_browser_image_extension(&file.extension)
         && file
@@ -377,7 +397,7 @@ fn is_thumbnail_candidate(file: &ScannedFile) -> bool {
             })
 }
 
-fn is_browser_image_extension(extension: &str) -> bool {
+pub(crate) fn is_browser_image_extension(extension: &str) -> bool {
     matches!(extension, ".jpg" | ".jpeg" | ".png" | ".gif" | ".webp")
 }
 
@@ -492,7 +512,7 @@ fn normalized_extension(path: &Path) -> String {
         .unwrap_or_else(|| "(none)".to_string())
 }
 
-fn classify_file(path: &Path, extension: &str) -> ScanFileKind {
+pub(crate) fn classify_file(path: &Path, extension: &str) -> ScanFileKind {
     let file_name = path
         .file_name()
         .and_then(|value| value.to_str())
@@ -648,7 +668,7 @@ fn relative_path(root: &Path, path: &Path) -> String {
         .replace('\\', "/")
 }
 
-fn format_modified_time(time: std::time::SystemTime) -> Option<String> {
+pub(crate) fn format_modified_time(time: std::time::SystemTime) -> Option<String> {
     time.duration_since(std::time::UNIX_EPOCH)
         .ok()
         .map(|duration| duration.as_secs().to_string())
@@ -704,6 +724,85 @@ mod tests {
         assert!(scan.files.iter().any(|item| {
             item.relative_path == "A.XML" && item.sidecar_for.as_deref() == Some("A.MP4")
         }));
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    /// The regression this rule exists for: a card that is nothing but `DCIM/100CANON/*.JPG`.
+    /// Under the old donor-only rule none of these lived in a THMBNL/PREVIEW folder, so every
+    /// tile in the picker read "No thumbnail" — on the one file type that needs no work at all.
+    #[test]
+    fn plain_dcim_jpegs_are_their_own_preview() {
+        let workspace = unique_temp_dir("ingest_pilot_self_preview_test");
+        let dcim = workspace.join("DCIM").join("100CANON");
+        fs::create_dir_all(&dcim).expect("dcim dir");
+        fs::write(dcim.join("IMG_0001.JPG"), vec![0; 8]).expect("jpg");
+        fs::write(dcim.join("IMG_0002.PNG"), vec![0; 8]).expect("png");
+
+        let scan = scan_source(&workspace.to_string_lossy()).expect("scan succeeds");
+        for name in ["IMG_0001.JPG", "IMG_0002.PNG"] {
+            let file = scan
+                .files
+                .iter()
+                .find(|file| file.file_name == name)
+                .unwrap_or_else(|| panic!("{name} scanned"));
+            assert_eq!(
+                file.thumbnail_path.as_deref(),
+                Some(file.path.as_str()),
+                "{name} must point at its own pixels"
+            );
+        }
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    /// Self-preview must not cannibalise the donor path: a RAW/clip with a companion JPEG in a
+    /// THMBNL folder still gets the companion, and the companion is still a valid donor.
+    #[test]
+    fn companion_donor_still_wins_for_non_browser_media() {
+        let workspace = unique_temp_dir("ingest_pilot_donor_test");
+        fs::create_dir_all(workspace.join("CLIP").join("THMBNL")).expect("thmbnl dir");
+        fs::write(workspace.join("CLIP").join("C0001.MP4"), vec![0; 8]).expect("mp4");
+        let donor = workspace.join("CLIP").join("THMBNL").join("C0001.JPG");
+        fs::write(&donor, vec![0; 4]).expect("donor jpg");
+
+        let scan = scan_source(&workspace.to_string_lossy()).expect("scan succeeds");
+        let clip = scan
+            .files
+            .iter()
+            .find(|file| file.file_name == "C0001.MP4")
+            .expect("clip scanned");
+        assert_eq!(
+            clip.thumbnail_path.as_deref(),
+            Some(donor.to_string_lossy().as_ref()),
+            "clip must still resolve to its THMBNL companion"
+        );
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    /// The donor rule stays folder-gated on purpose. `matching_thumbnail_source` falls back to
+    /// loose digit matching, so an arbitrary DCIM still must NOT be promoted to donor — it
+    /// would attach itself to an unrelated clip that happens to share digits.
+    #[test]
+    fn arbitrary_dcim_jpeg_is_not_a_donor() {
+        let workspace = unique_temp_dir("ingest_pilot_donor_gate_test");
+        let dcim = workspace.join("DCIM").join("100CANON");
+        fs::create_dir_all(&dcim).expect("dcim dir");
+        fs::write(dcim.join("IMG_0001.JPG"), vec![0; 8]).expect("jpg");
+        fs::write(dcim.join("IMG_0001.CR3"), vec![0; 8]).expect("cr3");
+
+        let scan = scan_source(&workspace.to_string_lossy()).expect("scan succeeds");
+        let raw = scan
+            .files
+            .iter()
+            .find(|file| file.file_name == "IMG_0001.CR3")
+            .expect("cr3 scanned");
+        assert!(
+            raw.thumbnail_path.is_none(),
+            "a loose DCIM JPEG must not be donated; the CR3's preview is generated from its own \
+             embedded JPEG by the extractor ladder instead"
+        );
 
         let _ = fs::remove_dir_all(workspace);
     }

@@ -8,4 +8,5 @@ pub mod presets;
 pub mod scan;
 pub mod settings;
 pub mod system;
+pub mod thumbnails;
 pub mod tokens;
