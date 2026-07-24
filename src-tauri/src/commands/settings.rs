@@ -47,6 +47,10 @@ pub struct AppSettings {
     /// simpler surface.
     #[serde(default)]
     pub show_advanced: bool,
+    /// Pinned destination folders for DIT mode — the "folders already set" the operator
+    /// offloads to repeatedly. Persisted so they survive restarts. Absolute paths.
+    #[serde(default)]
+    pub dit_destinations: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

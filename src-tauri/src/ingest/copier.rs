@@ -251,6 +251,8 @@ pub fn run_ingest(
         destination_override,
         preserve_sidecars,
         rename_files,
+        // Default (flatten) behavior for every classic caller — unchanged.
+        false,
         camera_override,
         included_relative_paths,
         use_existing_root,
@@ -272,6 +274,7 @@ fn run_ingest_inner(
     destination_override: Option<String>,
     preserve_sidecars: bool,
     rename_files: bool,
+    preserve_structure: bool,
     camera_override: Option<String>,
     included_relative_paths: Option<Vec<String>>,
     use_existing_root: bool,
@@ -381,6 +384,7 @@ fn run_ingest_inner(
             clip_number,
             None,
             rename_files,
+            preserve_structure,
             camera_override.as_deref(),
             cancel_flag,
             &mut result,
@@ -479,6 +483,7 @@ fn run_ingest_inner(
             clip_number,
             Some(&parent_route.output_stem),
             rename_files,
+            preserve_structure,
             camera_override.as_deref(),
             cancel_flag,
             &mut result,
@@ -565,6 +570,7 @@ pub fn run_ingest_multi(
     destination_overrides: Vec<String>,
     preserve_sidecars: bool,
     rename_files: bool,
+    preserve_structure: bool,
     camera_override: Option<String>,
     included_relative_paths: Option<Vec<String>>,
     use_existing_root: bool,
@@ -687,6 +693,7 @@ pub fn run_ingest_multi(
                             Some(destination),
                             preserve_sidecars,
                             rename_files,
+                            preserve_structure,
                             camera_override,
                             included_relative_paths,
                             use_existing_root,
@@ -1120,14 +1127,26 @@ fn copy_file_to_folder(
     clip_number: u32,
     forced_stem: Option<&String>,
     rename_files: bool,
+    preserve_structure: bool,
     camera_override: Option<&str>,
     cancel_flag: Option<&AtomicBool>,
     result: &mut IngestResult,
     mut transfer_progress: Option<&mut dyn FnMut(&str, u64)>,
 ) -> Result<CopiedRoute, String> {
     check_cancelled(cancel_flag)?;
-    fs::create_dir_all(&folder.path)
-        .map_err(|error| format!("{}: {error}", folder.path.display()))?;
+    // Structure-preserving copy (DIT passthrough): the file lands under the destination
+    // folder at the SAME relative parent it had on the source card, so
+    // `DCIM/100EOS/IMG_0001.CR3` becomes `<dest>/DCIM/100EOS/IMG_0001.CR3` and card
+    // structure (RED .RDM/.RDC, Sony XDROOT, two same-named DCIM folders) is kept intact.
+    // The DEFAULT path (`preserve_structure == false`) is unchanged: every routed file is
+    // flattened straight into `folder.path`.
+    let dest_dir = if preserve_structure {
+        structure_preserving_dir(&folder.path, &file.relative_path)
+    } else {
+        folder.path.clone()
+    };
+    fs::create_dir_all(&dest_dir)
+        .map_err(|error| format!("{}: {error}", dest_dir.display()))?;
 
     let target_name = match forced_stem {
         Some(stem) => format!("{stem}{}", file.extension),
@@ -1172,7 +1191,7 @@ fn copy_file_to_folder(
     // Resilient re-ingest: if this exact destination file already exists and verifies
     // bit-identical to the source, skip the copy (no duplicate) and record it as done.
     // This makes a re-run after an interruption pick up only the remaining files.
-    let intended_path = folder.path.join(&target_name);
+    let intended_path = dest_dir.join(&target_name);
     if intended_path.exists() {
         if let Ok(existing) = verify_copy(Path::new(&file.path), &intended_path) {
             if existing.verified {
@@ -1208,7 +1227,22 @@ fn copy_file_to_folder(
         }
     }
 
-    let destination_path = unique_destination_path(&folder.path, &target_name);
+    // In structure-preserving mode the relative path is the file's identity, so a file
+    // already sitting at the intended path that did NOT verify identical above is a real
+    // collision — something is wrong (two different files claiming one card path). Hard-error
+    // instead of the flatten path's silent `_2` rename, which would mask it. The default
+    // (flatten) path keeps `unique_destination_path`'s uniquification unchanged.
+    let destination_path = if preserve_structure {
+        if intended_path.exists() {
+            return Err(format!(
+                "Structure-preserving copy collision: {} already exists and does not match the source.",
+                intended_path.display()
+            ));
+        }
+        intended_path.clone()
+    } else {
+        unique_destination_path(&dest_dir, &target_name)
+    };
     check_cancelled(cancel_flag)?;
     {
         let mut copy_progress = |bytes_copied: u64| {
@@ -1356,6 +1390,26 @@ fn copy_path_with_progress(
         .flush()
         .map_err(|error| format!("{}: {error}", destination_path.display()))?;
     Ok(())
+}
+
+/// Structure-preserving destination directory for a file, GUARANTEED to stay inside
+/// `base`. Only `Component::Normal` segments of the file's relative parent are kept — a
+/// drive prefix, root (`/` or `\`), `..`, or `.` is dropped. This contains a malformed
+/// `relative_path`: the scanner normally yields a clean relative path, but its
+/// `strip_prefix(root).unwrap_or(path)` fallback (e.g. a `\\?\` extended-length root vs a
+/// plain child, or a casing/canonicalization divergence) can yield an ABSOLUTE path — and
+/// on Windows `base.join(<absolute>)` discards `base` and would write outside the chosen
+/// destination. Filtering to Normal components makes that escape impossible.
+fn structure_preserving_dir(base: &Path, relative_path: &str) -> PathBuf {
+    let mut dir = base.to_path_buf();
+    if let Some(parent) = Path::new(relative_path).parent() {
+        for component in parent.components() {
+            if let std::path::Component::Normal(segment) = component {
+                dir.push(segment);
+            }
+        }
+    }
+    dir
 }
 
 fn unique_destination_path(folder_path: &Path, target_name: &str) -> PathBuf {
@@ -3033,6 +3087,204 @@ mod tests {
         let _ = fs::remove_dir_all(workspace);
     }
 
+    /// Minimal empty-tree preset used by the DIT passthrough tests: no scaffolding, no
+    /// rename pattern that changes names, copied straight into an existing root.
+    fn passthrough_test_preset(destination: &Path) -> Preset {
+        Preset {
+            schema_version: 1,
+            id: "__dit_passthrough_test__".to_string(),
+            name: "Passthrough".to_string(),
+            description: None,
+            icon: None,
+            color: None,
+            variables: vec![],
+            root_folder_pattern: String::new(),
+            folder_tree: vec![],
+            file_rename_pattern: "{original_name}{ext}".to_string(),
+            clip_number_padding: 3,
+            per_folder_rename_overrides: BTreeMap::new(),
+            destinations: PresetDestinations {
+                primary: destination.to_string_lossy().to_string(),
+                secondaries: vec![],
+                sub_path_pattern: String::new(),
+            },
+            file_type_routing_overrides: BTreeMap::new(),
+            preserve_xml_sidecars: true,
+            rename_files_default: false,
+            metadata_preset_id: None,
+            metadata_values: BTreeMap::new(),
+            created_at: "2026-04-24T00:00:00Z".to_string(),
+            updated_at: "2026-04-24T00:00:00Z".to_string(),
+        }
+    }
+
+    /// Containment guard: a malformed `relative_path` (absolute, drive-prefixed, or with
+    /// `..`) must NEVER let the structure-preserving copy escape the destination base.
+    #[test]
+    fn structure_preserving_dir_stays_inside_base() {
+        let base = Path::new("/dest/root");
+
+        // Normal nested path keeps its parent, inside base.
+        assert_eq!(
+            structure_preserving_dir(base, "DCIM/100EOS/IMG.CR3"),
+            base.join("DCIM").join("100EOS")
+        );
+
+        // Absolute POSIX path: the leading root is dropped, tail stays inside base.
+        let posix_abs = structure_preserving_dir(base, "/evil/x.mp4");
+        assert!(posix_abs.starts_with(base), "posix absolute escaped: {posix_abs:?}");
+
+        // Windows drive-absolute path: prefix + root dropped, never a new drive root.
+        let win_abs = structure_preserving_dir(base, "C:\\evil\\x.mp4");
+        assert!(win_abs.starts_with(base), "windows absolute escaped: {win_abs:?}");
+
+        // Parent traversal: `..` segments are dropped, so it can't climb out of base.
+        let up = structure_preserving_dir(base, "../../x.mp4");
+        assert!(up.starts_with(base), "parent traversal escaped: {up:?}");
+        assert_eq!(up, base.to_path_buf());
+    }
+
+    /// (a) With preserve_structure, a nested source path keeps its relative parent under
+    /// the destination root: DCIM/100EOS/IMG_0001.CR3 -> <dest>/DCIM/100EOS/IMG_0001.CR3.
+    #[test]
+    fn preserve_structure_keeps_relative_parent() {
+        let workspace = unique_temp_dir("ingest_pilot_preserve_parent");
+        let source = workspace.join("source");
+        let destination = workspace.join("dest");
+        fs::create_dir_all(source.join("DCIM").join("100EOS")).expect("source tree");
+        fs::write(source.join("DCIM").join("100EOS").join("IMG_0001.CR3"), vec![1; 32])
+            .expect("media");
+
+        let preset = passthrough_test_preset(&destination);
+        let result = run_ingest_multi(
+            &preset,
+            source.to_string_lossy().to_string(),
+            BTreeMap::new(),
+            vec![destination.to_string_lossy().to_string()],
+            true,
+            false,
+            true, // preserve_structure
+            None,
+            None,
+            true, // use_existing_root
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("passthrough succeeds");
+
+        assert_eq!(result.roots.len(), 1);
+        assert!(result.failures.is_empty());
+        assert!(destination
+            .join("DCIM")
+            .join("100EOS")
+            .join("IMG_0001.CR3")
+            .exists());
+        assert_eq!(result.roots[0].files_copied, 1);
+        assert_eq!(result.roots[0].verified_files, 1);
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    /// (b) Two files with the SAME basename in different subfolders both land correctly
+    /// under preserve_structure — the old flatten path would have renamed one to `_2`.
+    #[test]
+    fn preserve_structure_same_basename_different_folders() {
+        let workspace = unique_temp_dir("ingest_pilot_preserve_collide");
+        let source = workspace.join("source");
+        let destination = workspace.join("dest");
+        fs::create_dir_all(source.join("DCIM").join("100EOS")).expect("dir a");
+        fs::create_dir_all(source.join("DCIM").join("101EOS")).expect("dir b");
+        fs::write(source.join("DCIM").join("100EOS").join("IMG_0001.CR3"), vec![1; 16])
+            .expect("a");
+        fs::write(source.join("DCIM").join("101EOS").join("IMG_0001.CR3"), vec![2; 24])
+            .expect("b");
+
+        let preset = passthrough_test_preset(&destination);
+        let result = run_ingest_multi(
+            &preset,
+            source.to_string_lossy().to_string(),
+            BTreeMap::new(),
+            vec![destination.to_string_lossy().to_string()],
+            true,
+            false,
+            true, // preserve_structure
+            None,
+            None,
+            true,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("passthrough succeeds");
+
+        assert!(result.failures.is_empty());
+        let a = destination.join("DCIM").join("100EOS").join("IMG_0001.CR3");
+        let b = destination.join("DCIM").join("101EOS").join("IMG_0001.CR3");
+        assert!(a.exists(), "first card path must land verbatim");
+        assert!(b.exists(), "second card path must land verbatim");
+        // No `_2` rename anywhere: both kept their identity.
+        assert!(!destination
+            .join("DCIM")
+            .join("100EOS")
+            .join("IMG_0001_2.CR3")
+            .exists());
+        assert_eq!(fs::read(&a).expect("a bytes").len(), 16);
+        assert_eq!(fs::read(&b).expect("b bytes").len(), 24);
+        assert_eq!(result.roots[0].files_copied, 2);
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    /// (c) The DEFAULT (preserve_structure = false) path still flattens exactly as before:
+    /// two same-basename files collapse into the root and the second gets the `_2` suffix.
+    #[test]
+    fn default_path_still_flattens() {
+        let workspace = unique_temp_dir("ingest_pilot_default_flatten");
+        let source = workspace.join("source");
+        let destination = workspace.join("dest");
+        fs::create_dir_all(source.join("DCIM").join("100EOS")).expect("dir a");
+        fs::create_dir_all(source.join("DCIM").join("101EOS")).expect("dir b");
+        fs::write(source.join("DCIM").join("100EOS").join("IMG_0001.CR3"), vec![1; 16])
+            .expect("a");
+        fs::write(source.join("DCIM").join("101EOS").join("IMG_0001.CR3"), vec![2; 24])
+            .expect("b");
+
+        let preset = passthrough_test_preset(&destination);
+        let result = run_ingest_multi(
+            &preset,
+            source.to_string_lossy().to_string(),
+            BTreeMap::new(),
+            vec![destination.to_string_lossy().to_string()],
+            true,
+            false,
+            false, // DEFAULT: flatten
+            None,
+            None,
+            true,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("ingest succeeds");
+
+        assert!(result.failures.is_empty());
+        // Both land directly in the root; the second is uniquified to `_2`, and no nested
+        // DCIM tree is reproduced.
+        assert!(destination.join("IMG_0001.CR3").exists());
+        assert!(destination.join("IMG_0001_2.CR3").exists());
+        assert!(!destination.join("DCIM").exists());
+        assert_eq!(result.roots[0].files_copied, 2);
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
     #[test]
     fn re_ingest_skips_already_copied_verified_files() {
         let workspace = unique_temp_dir("ingest_pilot_resume_test");
@@ -3949,6 +4201,7 @@ mod tests {
             destination_overrides.clone(),
             true,
             true,
+            false,
             None,
             None,
             true, // use existing roots (each dest IS the root)
@@ -4008,6 +4261,7 @@ mod tests {
             destination_overrides,
             true,
             true,
+            false,
             None,
             None,
             true,
@@ -4074,6 +4328,7 @@ mod tests {
             destination_overrides,
             true,
             true,
+            false,
             None,
             None,
             true,
@@ -4129,6 +4384,7 @@ mod tests {
                 destination_overrides,
                 true,
                 true,
+                false,
                 None,
                 None,
                 true,
@@ -4199,6 +4455,7 @@ mod tests {
             destination_overrides,
             true,
             true,
+            false,
             None,
             None,
             true,

@@ -69,6 +69,7 @@ export const defaultAppSettings: AppSettings = {
   },
   drive_nicknames: {},
   show_advanced: false,
+  dit_destinations: [],
 };
 
 export type DroppedTemplateItems = {
@@ -135,6 +136,21 @@ export type DiskSpace = {
   root: string;
   available_bytes: number;
   total_bytes: number;
+};
+
+// A connected volume for DIT mode's "Copy From" / pinned-destination panels (mirrors Rust
+// `platform::Volume`). Unlike `CameraSource` (a camera-signature probe), `listVolumes`
+// returns EVERY mounted drive so a plain SSD is still selectable; `camera_reason` is set
+// when the camera detector matched at the volume root so the UI can badge camera cards.
+export type Volume = {
+  path: string;
+  label: string;
+  nickname?: string | null;
+  is_removable: boolean;
+  drive_type: string; // "removable" | "fixed" | "remote" | "cdrom" | "ramdisk" | "unknown"
+  total_bytes: number;
+  available_bytes: number;
+  camera_reason?: string | null;
 };
 
 // How a report thumbnail was produced (mirrors Rust `ThumbnailKind`), so the UI can
@@ -410,6 +426,35 @@ export async function scanSource(sourcePath: string) {
 
 export async function detectCameraSources() {
   return invoke<CameraSource[]>("detect_camera_sources");
+}
+
+// Enumerate every mounted volume (fixed + removable) for DIT mode. Nicknames come from
+// `settings.drive_nicknames` (keyed by volume root) and are filled in by the backend.
+export async function listVolumes() {
+  return invoke<Volume[]>("list_volumes");
+}
+
+// DIT-mode passthrough copy: fan one source card out to N destinations at once, verified,
+// with NO preset / folder tree / renaming. With `preserveStructure` (default true) each
+// destination gets a verbatim copy of the card's folder layout. Emits the same
+// `ingest-progress` (with `destinations[]`) + per-file `file-verified` events as
+// `runIngestMulti`, stamped with `jobId`, and returns the same `MultiIngestResult` shape.
+export async function runPassthroughMulti(
+  sourcePath: string,
+  destinationPaths: string[],
+  jobId: string,
+  preserveStructure = true,
+  includedRelativePaths: string[] = [],
+  preserveSidecars = true,
+) {
+  return invoke<MultiIngestResult>("run_passthrough_multi", {
+    sourcePath,
+    destinationPaths,
+    jobId,
+    preserveStructure,
+    includedRelativePaths,
+    preserveSidecars,
+  });
 }
 
 export async function runIngest(
@@ -732,6 +777,7 @@ function normalizeSettings(settings: Partial<AppSettings>): AppSettings {
     safety: { ...defaultAppSettings.safety, ...settings.safety },
     drive_nicknames: settings.drive_nicknames ?? {},
     show_advanced: settings.show_advanced ?? false,
+    dit_destinations: settings.dit_destinations ?? [],
     report_defaults: {
       ...defaultAppSettings.report_defaults,
       ...settings.report_defaults,

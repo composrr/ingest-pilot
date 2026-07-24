@@ -17,6 +17,7 @@ import type {
   ScaffoldResult,
   ScannedFile,
   SourceScan,
+  Volume,
 } from "../lib/tauri";
 import type {
   AppSettings,
@@ -476,6 +477,53 @@ export async function invoke<T = unknown>(command: string, args?: Record<string,
         { path: "D:/A001_SONY", label: "A001_SONY (Sony FX3)", reason: "PRIVATE/M4ROOT detected" },
       ] as CameraSource[] as T;
 
+    case "list_volumes":
+      // A realistic mixed set for DIT mode: a camera card (with camera_reason so the UI can
+      // badge it), a couple of plain destination SSDs with labels + free space, and the
+      // system drive. One card carries a nickname to exercise the drive_nicknames path.
+      return [
+        {
+          path: "D:\\",
+          label: "A001_SONY",
+          nickname: "CFexpress Reader #1",
+          is_removable: true,
+          drive_type: "removable",
+          total_bytes: 512_110_190_592,
+          available_bytes: 91_284_402_176,
+          camera_reason: "Sony M4ROOT folder",
+        },
+        {
+          path: "E:\\",
+          label: "MediaServer",
+          nickname: null,
+          is_removable: false,
+          drive_type: "fixed",
+          total_bytes: 8_000_000_000_000,
+          available_bytes: 4_210_000_000_000,
+          camera_reason: null,
+        },
+        {
+          path: "F:\\",
+          label: "Shuttle SSD",
+          nickname: null,
+          is_removable: true,
+          drive_type: "removable",
+          total_bytes: 2_000_398_934_016,
+          available_bytes: 1_884_221_440_000,
+          camera_reason: null,
+        },
+        {
+          path: "C:\\",
+          label: "OS",
+          nickname: null,
+          is_removable: false,
+          drive_type: "fixed",
+          total_bytes: 1_022_000_000_000,
+          available_bytes: 233_000_000_000,
+          camera_reason: null,
+        },
+      ] as Volume[] as T;
+
     case "run_ingest": {
       // Share the run's job_id so the simulated progress events (tauri-event.ts) match.
       designJobState.id = (a.jobId as string) ?? "";
@@ -505,6 +553,17 @@ export async function invoke<T = unknown>(command: string, args?: Record<string,
       const failLast = multiRunCount % 3 === 0; // every 3rd run reaches the failure UI
       // Keep the run screen up long enough to watch the per-destination rows advance and
       // the live verified feed populate.
+      await new Promise((resolve) => setTimeout(resolve, 20000));
+      return sampleMultiResult((a.destinationPaths as string[]) ?? [], failLast) as T;
+    }
+    case "run_passthrough_multi": {
+      // DIT passthrough reuses the same concurrent multi-destination engine, so design mode
+      // reuses the same sample result + progress/verified event stream (tauri-event.ts keys
+      // off designJobState.id). Structure preservation is a backend detail invisible to the
+      // MultiIngestResult shape, so the mock result is identical to run_ingest_multi's.
+      designJobState.id = (a.jobId as string) ?? "";
+      multiRunCount += 1;
+      const failLast = multiRunCount % 3 === 0;
       await new Promise((resolve) => setTimeout(resolve, 20000));
       return sampleMultiResult((a.destinationPaths as string[]) ?? [], failLast) as T;
     }

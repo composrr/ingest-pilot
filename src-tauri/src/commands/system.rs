@@ -126,6 +126,33 @@ pub fn filter_directories(paths: Vec<String>) -> Vec<String> {
         .collect()
 }
 
+/// Enumerate every mounted volume (fixed + removable) for DIT mode's "Copy From" panel.
+/// Unlike `detect_camera_sources` (a camera-signature letter probe), this lists ALL
+/// drives so a plain SSD with a `Footage/` folder is still visible. Nicknames are filled
+/// from `settings.drive_nicknames` (keyed by volume root) — this setting's first consumer.
+#[tauri::command]
+pub async fn list_volumes(app: AppHandle) -> Result<Vec<crate::platform::Volume>, String> {
+    // Read nicknames on the caller thread (get_settings is sync + cheap); the OS
+    // enumeration itself runs off the async runtime so a slow/unready drive can't block it.
+    let nicknames = crate::commands::settings::get_settings(app)
+        .map(|settings| settings.drive_nicknames)
+        .unwrap_or_default();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut volumes = crate::platform::list_volumes();
+        for volume in &mut volumes {
+            if let Some(nickname) = nicknames.get(&volume.path) {
+                if !nickname.trim().is_empty() {
+                    volume.nickname = Some(nickname.clone());
+                }
+            }
+        }
+        volumes
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 pub async fn disk_space(path: String) -> Result<DiskSpace, String> {
     tauri::async_runtime::spawn_blocking(move || disk_space_inner(path))

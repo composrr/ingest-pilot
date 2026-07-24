@@ -416,7 +416,7 @@ fn digits_only(value: &str) -> String {
         .collect()
 }
 
-fn detect_camera_source_at(root: &Path) -> Option<CameraSource> {
+pub(crate) fn detect_camera_source_at(root: &Path) -> Option<CameraSource> {
     if !root.is_dir() {
         return None;
     }

@@ -3,6 +3,7 @@ import {
   CircleHelp,
   ClipboardList,
   FolderTree,
+  HardDrive,
   HardDriveDownload,
   Home,
   PanelLeftClose,
@@ -19,6 +20,7 @@ import { Walkthrough } from "./components/Walkthrough";
 import { Dashboard } from "./pages/Dashboard";
 import { HelpPage } from "./pages/HelpPage";
 import { HistoryPage } from "./pages/HistoryPage";
+import { DitPage } from "./pages/DitPage";
 import { IngestPage } from "./pages/IngestPage";
 import { MetadataPage } from "./pages/MetadataPage";
 import { NamingPage } from "./pages/NamingPage";
@@ -34,6 +36,7 @@ const navItems = [
   { icon: ClipboardList, label: "Presets", view: "presets" },
   { icon: FolderTree, label: "Create Folders", view: "scaffold" },
   { icon: HardDriveDownload, label: "Ingest Media", view: "ingest" },
+  { icon: HardDrive, label: "DIT", view: "dit" },
   { icon: Tags, label: "Metadata", view: "metadata" },
   { icon: Wand2, label: "Naming", view: "naming" },
   { icon: Archive, label: "History", view: "history" },
@@ -209,7 +212,11 @@ export function App() {
           <div className={activeView === "ingest" ? "flex min-w-0 flex-1" : "hidden"}>
             <IngestPage />
           </div>
-          {activeView !== "ingest" ? renderView(activeView, selectView) : null}
+          {/* DIT mode also stays mounted so an in-progress offload survives tab switches. */}
+          <div className={activeView === "dit" ? "flex min-w-0 flex-1" : "hidden"}>
+            <DitPage active={activeView === "dit"} />
+          </div>
+          {activeView !== "ingest" && activeView !== "dit" ? renderView(activeView, selectView) : null}
         </section>
       </div>
       {isWalkthroughOpen ? (
@@ -242,7 +249,7 @@ function renderView(activeView: AppView, selectView: (view: AppView) => void) {
     return <PresetsPage />;
   }
 
-  // "ingest" is rendered persistently in App (kept mounted); never here.
+  // "ingest" and "dit" are rendered persistently in App (kept mounted); never here.
 
   if (activeView === "metadata") {
     return <MetadataPage />;

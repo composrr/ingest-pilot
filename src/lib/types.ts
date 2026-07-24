@@ -179,6 +179,8 @@ export type AppSettings = {
   drive_nicknames: Record<string, string>;
   // Show advanced settings sections in the UI.
   show_advanced: boolean;
+  // Pinned destination folders for DIT mode ("folders already set"), absolute paths.
+  dit_destinations: string[];
 };
 
 export type PopOpenMode = "always" | "if_frontmost" | "notify";

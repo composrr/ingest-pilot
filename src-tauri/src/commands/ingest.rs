@@ -6,6 +6,7 @@ use crate::ingest::copier::{
     IngestResult, MultiIngestResult, SkippedFile, ThumbnailConfig,
 };
 use crate::core::metadata_preset::MetadataPreset;
+use crate::core::preset::{Preset, PresetDestinations};
 use crate::ingest::metadata_manifest::{write_metadata_manifest, FolderMetadataOverride};
 use crate::ingest::offload_proof::{write_offload_proof, OffloadProofInput};
 use crate::ingest::reel_index::write_reel_index;
@@ -203,6 +204,8 @@ pub async fn run_ingest_multi(
             destination_paths,
             preserve_sidecars,
             rename_files,
+            // Classic multi-destination ingest flattens per its folder routing — unchanged.
+            false,
             camera_override,
             included_relative_paths,
             use_existing_root,
@@ -215,6 +218,135 @@ pub async fn run_ingest_multi(
     })
     .await
     .map_err(|error| format!("Ingest worker failed: {error}"))?;
+
+    if let Some(job_id) = job_id.as_ref() {
+        let _ = jobs.jobs.lock().map(|mut current| current.remove(job_id));
+    }
+
+    result
+}
+
+/// Build the in-memory PASSTHROUGH preset for DIT mode. It is never persisted (unlike a
+/// normal preset loaded by id from disk): empty `folder_tree` + `use_existing_root`
+/// semantics mean media is copied straight into the chosen destination root with no
+/// project scaffolding, and `rename_files_default: false` / a `{original_name}{ext}`
+/// pattern mean filenames are left exactly as they are on the card. `run_passthrough_multi`
+/// pairs this with `preserve_structure = true` so the source card's folder layout is
+/// reproduced verbatim under each destination.
+fn passthrough_preset() -> Preset {
+    Preset {
+        schema_version: 1,
+        id: "__dit_passthrough__".to_string(),
+        name: "DIT Passthrough".to_string(),
+        description: None,
+        icon: None,
+        color: None,
+        variables: Vec::new(),
+        // No root folder scaffolding: with use_existing_root the destination IS the root.
+        root_folder_pattern: String::new(),
+        folder_tree: Vec::new(),
+        file_rename_pattern: "{original_name}{ext}".to_string(),
+        clip_number_padding: 3,
+        per_folder_rename_overrides: BTreeMap::new(),
+        destinations: PresetDestinations {
+            primary: String::new(),
+            secondaries: Vec::new(),
+            sub_path_pattern: String::new(),
+        },
+        file_type_routing_overrides: BTreeMap::new(),
+        preserve_xml_sidecars: true,
+        rename_files_default: false,
+        metadata_preset_id: None,
+        metadata_values: BTreeMap::new(),
+        created_at: "1970-01-01T00:00:00Z".to_string(),
+        updated_at: "1970-01-01T00:00:00Z".to_string(),
+    }
+}
+
+/// DIT-mode copy: fan one source card out to N pinned destinations at once, verified, with
+/// NO presets / folder trees / renaming. Reuses the exact concurrent engine
+/// (`run_ingest_multi`) the normal ingest uses — same per-destination fan-out, dedup,
+/// verification, MHL, and `ingest-progress` / `file-verified` events — but with an
+/// in-Rust passthrough preset and `preserve_structure = true` so each destination gets a
+/// verbatim, verified copy of the card's folder structure. Returns a `MultiIngestResult`
+/// (one root per destination + any per-destination failures), identical in shape to
+/// `run_ingest_multi`.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn run_passthrough_multi(
+    app: AppHandle,
+    jobs: State<'_, IngestJobs>,
+    source_path: String,
+    destination_paths: Vec<String>,
+    job_id: Option<String>,
+    preserve_structure: Option<bool>,
+    included_relative_paths: Option<Vec<String>>,
+    preserve_sidecars: Option<bool>,
+) -> Result<MultiIngestResult, String> {
+    let preset = passthrough_preset();
+    // Structure preservation is the whole point of passthrough; default on.
+    let preserve_structure = preserve_structure.unwrap_or(true);
+    let preserve_sidecars = preserve_sidecars.unwrap_or(true);
+
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    if let Some(job_id) = job_id.as_ref() {
+        jobs.jobs
+            .lock()
+            .map_err(|_| "Ingest job registry is unavailable.".to_string())?
+            .insert(job_id.clone(), cancel_flag.clone());
+    }
+
+    let emit_job_id = job_id.clone().unwrap_or_default();
+    let cancel_for_copy = cancel_flag.clone();
+    let should_emit_progress = job_id.is_some();
+    let app_for_progress = app.clone();
+
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let app_progress = app_for_progress.clone();
+        let app_verified = app_for_progress.clone();
+        let progress_job_id = emit_job_id.clone();
+        let verified_job_id = emit_job_id.clone();
+
+        let mut emit_progress = move |mut progress: IngestProgress| {
+            progress.job_id = progress_job_id.clone();
+            let _ = app_progress.emit("ingest-progress", progress);
+        };
+        let mut emit_verified = move |mut event: FileVerified| {
+            event.job_id = verified_job_id.clone();
+            let _ = app_verified.emit("file-verified", event);
+        };
+
+        let (progress_callback, verified_callback): (
+            Option<&mut dyn FnMut(IngestProgress)>,
+            Option<&mut dyn FnMut(FileVerified)>,
+        ) = if should_emit_progress {
+            (Some(&mut emit_progress), Some(&mut emit_verified))
+        } else {
+            (None, None)
+        };
+
+        run_ingest_multi_copy(
+            &preset,
+            source_path,
+            BTreeMap::new(),
+            destination_paths,
+            preserve_sidecars,
+            // No renaming in DIT passthrough — filenames are left as-is on the card.
+            false,
+            preserve_structure,
+            None,
+            included_relative_paths,
+            // The chosen destination is copied into directly (no project root scaffolding).
+            true,
+            None,
+            None,
+            Some(cancel_for_copy.as_ref()),
+            progress_callback,
+            verified_callback,
+        )
+    })
+    .await
+    .map_err(|error| format!("Passthrough worker failed: {error}"))?;
 
     if let Some(job_id) = job_id.as_ref() {
         let _ = jobs.jobs.lock().map(|mut current| current.remove(job_id));

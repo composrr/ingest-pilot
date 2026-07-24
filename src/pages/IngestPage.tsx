@@ -3773,7 +3773,7 @@ function TwoToneBar({
   );
 }
 
-function IngestRunScreen({
+export function IngestRunScreen({
   isCancelling,
   onCancel,
   progress,
