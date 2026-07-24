@@ -144,6 +144,186 @@ export function mergeNamingCatalog(persisted: Partial<NamingCatalog> | null | un
   };
 }
 
+// --- Import: parse app-exported naming templates into NamingDeliverable[] ----------
+//
+// The app's own export wraps a single template in an envelope:
+//   { kind: "ingest-pilot-naming-template", schema_version, exported_at, template: {...} }
+// This parser is deliberately lenient — it also accepts an array of those wrappers, a
+// bare NamingDeliverable (or array), and a whole NamingCatalog — but always safe: every
+// returned deliverable is validated (must have a label + rootPattern) and has sane
+// defaults filled for any missing optional fields. Non-JSON or an unrecognized shape
+// yields a clear per-file error instead of throwing.
+
+export const NAMING_TEMPLATE_KIND = "ingest-pilot-naming-template";
+
+function slugify(value: string): string {
+  return value
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+// Coerces one field-like object into a valid NamingField, filling defaults.
+function normalizeField(raw: unknown, index: number): NamingField | null {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+  const source = raw as Record<string, unknown>;
+  const label = typeof source.label === "string" && source.label.trim() ? source.label.trim() : "";
+  const id =
+    typeof source.id === "string" && source.id.trim()
+      ? source.id.trim()
+      : slugify(label) || `field_${index + 1}`;
+  const type: NamingField["type"] = source.type === "dropdown" ? "dropdown" : "short_text";
+  const field: NamingField = {
+    id,
+    label: label || id,
+    type,
+    required: source.required === true,
+  };
+  if (Array.isArray(source.options)) {
+    field.options = source.options.filter((option): option is string => typeof option === "string");
+  }
+  if (typeof source.placeholder === "string") {
+    field.placeholder = source.placeholder;
+  }
+  return field;
+}
+
+// Coerces one deliverable-like object into a valid NamingDeliverable, or null if it lacks
+// the required label + rootPattern.
+function normalizeDeliverable(raw: unknown): NamingDeliverable | null {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+  const source = raw as Record<string, unknown>;
+  const label = typeof source.label === "string" ? source.label.trim() : "";
+  const rootPattern = typeof source.rootPattern === "string" ? source.rootPattern.trim() : "";
+  if (!label || !rootPattern) {
+    return null;
+  }
+  const slug = slugify(label) || "imported";
+  const id = typeof source.id === "string" && source.id.trim() ? source.id.trim() : slug;
+  const fields = Array.isArray(source.fields)
+    ? source.fields.map((field, index) => normalizeField(field, index)).filter((field): field is NamingField => field !== null)
+    : [];
+  const deliverable: NamingDeliverable = {
+    id,
+    label,
+    group: typeof source.group === "string" && source.group.trim() ? source.group.trim() : "Imported",
+    hint: typeof source.hint === "string" ? source.hint : "",
+    presetId: typeof source.presetId === "string" && source.presetId.trim() ? source.presetId.trim() : `naming_${slug}`,
+    presetName: typeof source.presetName === "string" && source.presetName.trim() ? source.presetName.trim() : label,
+    rootPattern,
+    fields,
+  };
+  if (typeof source.subPath === "string" && source.subPath.trim()) {
+    deliverable.subPath = source.subPath;
+  }
+  return deliverable;
+}
+
+// Unwraps an { kind, template } envelope to its inner template, or returns the value
+// unchanged when it isn't an envelope. Returns undefined for a wrong-kind envelope so the
+// caller can reject it with a clear message.
+function unwrapEnvelope(value: unknown): unknown {
+  if (value && typeof value === "object" && "kind" in (value as Record<string, unknown>)) {
+    const record = value as Record<string, unknown>;
+    if (record.kind !== NAMING_TEMPLATE_KIND) {
+      return undefined;
+    }
+    return record.template;
+  }
+  return value;
+}
+
+export function parseNamingTemplateFile(jsonText: string): { deliverables: NamingDeliverable[]; error?: string } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonText);
+  } catch {
+    return { deliverables: [], error: "Not valid JSON." };
+  }
+
+  // (d) A full NamingCatalog → take its deliverables.
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && Array.isArray((parsed as Record<string, unknown>).deliverables)) {
+    const list = (parsed as Record<string, unknown>).deliverables as unknown[];
+    const deliverables = list.map(normalizeDeliverable).filter((item): item is NamingDeliverable => item !== null);
+    if (!deliverables.length) {
+      return { deliverables: [], error: "No valid templates in this catalog." };
+    }
+    return { deliverables };
+  }
+
+  // (a)/(b)/(c) One or many envelopes / bare deliverables.
+  const rawItems = Array.isArray(parsed) ? parsed : [parsed];
+  const deliverables: NamingDeliverable[] = [];
+  let sawWrongKind = false;
+  for (const item of rawItems) {
+    const inner = unwrapEnvelope(item);
+    if (inner === undefined) {
+      sawWrongKind = true;
+      continue;
+    }
+    const deliverable = normalizeDeliverable(inner);
+    if (deliverable) {
+      deliverables.push(deliverable);
+    }
+  }
+
+  if (!deliverables.length) {
+    return {
+      deliverables: [],
+      error: sawWrongKind
+        ? "Not an Ingest Pilot naming template (wrong kind)."
+        : "No valid template found (needs a label and a name pattern).",
+    };
+  }
+  return { deliverables };
+}
+
+// Appends imported deliverables into a catalog without ever overwriting an existing one:
+// each incoming id is made unique if it collides, and an incoming template byte-identical
+// to one already present (same id + same content) is skipped. Returns the next catalog
+// plus a summary and the ids that were actually added (so the UI can select the first).
+export function mergeImportedDeliverables(
+  catalog: NamingCatalog,
+  incoming: NamingDeliverable[],
+): { catalog: NamingCatalog; added: NamingDeliverable[]; skipped: number } {
+  const existingById = new Map(catalog.deliverables.map((item) => [item.id, item] as const));
+  const usedIds = new Set(catalog.deliverables.map((item) => item.id));
+  const added: NamingDeliverable[] = [];
+  let skipped = 0;
+
+  const uniqueId = (base: string): string => {
+    let candidate = base || "imported";
+    let n = 2;
+    while (usedIds.has(candidate)) {
+      candidate = `${base}_${n}`;
+      n += 1;
+    }
+    usedIds.add(candidate);
+    return candidate;
+  };
+
+  for (const deliverable of incoming) {
+    const existing = existingById.get(deliverable.id);
+    if (existing && JSON.stringify(existing) === JSON.stringify(deliverable)) {
+      skipped += 1;
+      continue;
+    }
+    const id = usedIds.has(deliverable.id) ? uniqueId(deliverable.id) : (usedIds.add(deliverable.id), deliverable.id);
+    added.push({ ...deliverable, id });
+  }
+
+  return {
+    catalog: { ...catalog, deliverables: [...catalog.deliverables, ...added] },
+    added,
+    skipped,
+  };
+}
+
 export function deliverableById(id: string): NamingDeliverable | undefined {
   return NAMING_DELIVERABLES.find((deliverable) => deliverable.id === id);
 }

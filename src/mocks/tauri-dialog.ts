@@ -4,8 +4,12 @@ type OpenOptions = {
   directory?: boolean;
   multiple?: boolean;
   title?: string;
-  filters?: unknown;
+  filters?: { name: string; extensions: string[] }[];
 };
+
+function filterHasExtension(filters: OpenOptions["filters"], ext: string): boolean {
+  return Boolean(filters?.some((filter) => filter.extensions?.some((e) => e.toLowerCase() === ext)));
+}
 
 let directoryPickCount = 0;
 
@@ -17,6 +21,16 @@ export async function open(options: OpenOptions = {}): Promise<string | string[]
     const path = `E:/${cards[directoryPickCount % cards.length]}`;
     directoryPickCount += 1;
     return options.multiple ? [path] : path;
+  }
+  // A JSON multi-pick (e.g. the Naming tab's template import) returns several distinct
+  // fake .json paths so the import flow produces multiple distinct templates in design mode.
+  if (filterHasExtension(options.filters, "json")) {
+    const files = [
+      "C:/Users/jondr/Documents/Ingest Pilot/Naming Templates/baptism_couple.json",
+      "C:/Users/jondr/Documents/Ingest Pilot/Naming Templates/wedding_film.json",
+      "C:/Users/jondr/Documents/Ingest Pilot/Naming Templates/interview_series.json",
+    ];
+    return options.multiple ? files : files[0];
   }
   const file = "D:/A001_SONY/example.preset";
   return options.multiple ? [file] : file;

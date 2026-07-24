@@ -14,6 +14,38 @@ pub fn greet(name: &str) -> String {
     format!("Welcome aboard, {name}. Ingest Pilot is ready.")
 }
 
+/// Per-file result of reading a text file: the path plus either its content or a
+/// per-file error string. Never panics — each file is read independently.
+#[derive(Debug, Serialize)]
+pub struct TextFileResult {
+    pub path: String,
+    pub content: Option<String>,
+    pub error: Option<String>,
+}
+
+/// Reads a batch of text files, returning one result per path. Used by features that
+/// import app-exported JSON via a multi-file picker or native drag-and-drop (which both
+/// yield filesystem paths, not File objects). A read failure on one file is captured in
+/// that file's `error` and does not abort the batch. Parsing stays in the frontend.
+#[tauri::command]
+pub fn read_text_files(paths: Vec<String>) -> Vec<TextFileResult> {
+    paths
+        .into_iter()
+        .map(|path| match std::fs::read_to_string(&path) {
+            Ok(content) => TextFileResult {
+                path,
+                content: Some(content),
+                error: None,
+            },
+            Err(error) => TextFileResult {
+                path,
+                content: None,
+                error: Some(error.to_string()),
+            },
+        })
+        .collect()
+}
+
 /// Brings the main window to the front (from tray/background) — used when a card is
 /// inserted or an ingest finishes so the operator is taken straight to it.
 #[tauri::command]

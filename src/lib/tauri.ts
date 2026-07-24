@@ -353,6 +353,20 @@ export async function deleteMetadataPreset(id: string) {
   return invoke<void>("delete_metadata_preset", { id });
 }
 
+// One result per requested path: the content, or a per-file error. Mirrors the Rust
+// `TextFileResult`. Reading never aborts the batch on a single failure.
+export type TextFileResult = {
+  path: string;
+  content: string | null;
+  error: string | null;
+};
+
+// Reads a batch of text files by path (from a multi-file picker or native drag-and-drop,
+// which yield paths rather than File objects). Parsing lives in the caller.
+export async function readTextFiles(paths: string[]) {
+  return invoke<TextFileResult[]>("read_text_files", { paths });
+}
+
 export async function getNamingCatalog() {
   return invoke<NamingCatalog | null>("get_naming_catalog");
 }

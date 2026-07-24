@@ -1,12 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
-import { Check, Copy, ListTree, Plus, Save, Search, Sparkles, Trash2, X } from "lucide-react";
+import { getCurrentWebview, type DragDropEvent } from "@tauri-apps/api/webview";
+import { open } from "@tauri-apps/plugin-dialog";
+import { Check, Copy, ListTree, Plus, Save, Search, Sparkles, Trash2, Upload, X } from "lucide-react";
 import { FloatingHelp } from "../components/FloatingHelp";
 import { OptionsTextField } from "../components/OptionsTextField";
 import { SelectMenu } from "../components/SelectMenu";
 import {
   buildNamingPreset,
   defaultNamingCatalog,
+  mergeImportedDeliverables,
   mergeNamingCatalog,
+  parseNamingTemplateFile,
   previewNamingResult,
   type NamingCatalog,
   type NamingDeliverable,
@@ -14,7 +18,7 @@ import {
 } from "../lib/namingCatalog";
 import { TokenSuggestInput } from "../components/TokenSuggest";
 import { slugifyToken } from "../lib/parameters";
-import { getNamingCatalog, savePreset, saveNamingCatalog } from "../lib/tauri";
+import { getNamingCatalog, readTextFiles, savePreset, saveNamingCatalog } from "../lib/tauri";
 import type { TokenDefinition } from "../lib/tokens";
 import type { Preset } from "../lib/types";
 
@@ -46,6 +50,10 @@ export function NamingPage() {
   // catalogs stay tidy — you drill into a group to see its templates.
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
+  // Import: a transient status line under the header, and a drop-target highlight while
+  // JSON template files are dragged over the app.
+  const [importStatus, setImportStatus] = useState<{ kind: "ok" | "err"; message: string } | null>(null);
+  const [dragActive, setDragActive] = useState(false);
 
   useEffect(() => {
     if (!contextMenu) {
@@ -182,6 +190,109 @@ export function NamingPage() {
     setSelectedId(id);
   }
 
+  // Shared import pipeline for both the picker and drag-and-drop: read each path, parse it
+  // into deliverables, append them with unique ids (never overwriting), select the first
+  // new one, mark dirty, and report a summary. Persisting is the user's explicit Save.
+  async function importFromPaths(paths: string[]) {
+    const jsonPaths = paths.filter((path) => path.toLowerCase().endsWith(".json"));
+    if (!jsonPaths.length) {
+      setImportStatus({ kind: "err", message: "No .json template files to import." });
+      return;
+    }
+    let results;
+    try {
+      results = await readTextFiles(jsonPaths);
+    } catch (error) {
+      setImportStatus({ kind: "err", message: `Couldn't read files: ${String(error)}` });
+      return;
+    }
+
+    const collected: NamingDeliverable[] = [];
+    let failed = 0;
+    for (const result of results) {
+      if (result.content == null) {
+        failed += 1;
+        continue;
+      }
+      const { deliverables, error } = parseNamingTemplateFile(result.content);
+      if (error || !deliverables.length) {
+        failed += 1;
+        continue;
+      }
+      collected.push(...deliverables);
+    }
+
+    if (!collected.length) {
+      setImportStatus({
+        kind: "err",
+        message: `No templates imported${failed ? ` — ${failed} file${failed === 1 ? "" : "s"} failed` : ""}.`,
+      });
+      return;
+    }
+
+    const merged = mergeImportedDeliverables(catalog, collected);
+    if (!merged.added.length) {
+      setImportStatus({
+        kind: "ok",
+        message: `Nothing new — ${merged.skipped} template${merged.skipped === 1 ? "" : "s"} already present.`,
+      });
+      return;
+    }
+    update(merged.catalog);
+    setSelectedId(merged.added[0].id);
+    const parts = [`Imported ${merged.added.length} template${merged.added.length === 1 ? "" : "s"}`];
+    if (merged.skipped) parts.push(`${merged.skipped} skipped as already present`);
+    if (failed) parts.push(`${failed} file${failed === 1 ? "" : "s"} failed`);
+    setImportStatus({ kind: "ok", message: `${parts.join(", ")}.` });
+  }
+
+  async function pickAndImport() {
+    setImportStatus(null);
+    let picked: string | string[] | null;
+    try {
+      picked = await open({
+        multiple: true,
+        filters: [{ name: "Naming template", extensions: ["json"] }],
+      });
+    } catch (error) {
+      setImportStatus({ kind: "err", message: `Couldn't open picker: ${String(error)}` });
+      return;
+    }
+    if (!picked) {
+      return;
+    }
+    await importFromPaths(Array.isArray(picked) ? picked : [picked]);
+  }
+
+  // Native OS drag-and-drop of template files onto the app (mirrors FolderTreeEditor).
+  // In design mode the webview mock makes this a no-op. Re-registered when the catalog
+  // changes so the import always merges into the latest catalog.
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    getCurrentWebview()
+      .onDragDropEvent((event) => {
+        const payload = event.payload as DragDropEvent;
+        if (payload.type === "enter" || payload.type === "over") {
+          setDragActive(true);
+        } else if (payload.type === "leave") {
+          setDragActive(false);
+        } else if (payload.type === "drop") {
+          setDragActive(false);
+          void importFromPaths(payload.paths);
+        }
+      })
+      .then((next) => {
+        unlisten = next;
+      })
+      .catch(() => {
+        /* drag-drop unavailable (e.g. design mode) — picker still works */
+      });
+    return () => {
+      unlisten?.();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [catalog]);
+
   function removeTemplate(id: string) {
     if (!window.confirm("Delete this naming template?")) {
       return;
@@ -232,17 +343,52 @@ export function NamingPage() {
         <div className="flex flex-1 items-center justify-center text-xs text-graphite/60">Loading templates…</div>
       ) : (
         <div className="grid min-h-0 flex-1 gap-2 md:grid-cols-[240px_minmax(0,1fr)]">
-          <aside className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-mist bg-white">
+          <aside
+            className={`flex min-h-0 flex-col overflow-hidden rounded-2xl border bg-white transition ${
+              dragActive ? "border-lavender ring-2 ring-lavender/40 bg-lavender/10" : "border-mist"
+            }`}
+          >
             <div className="flex items-center justify-between border-b border-mist px-2 py-1.5">
               <span className="text-[11px] font-semibold uppercase tracking-wide text-graphite/60">Templates</span>
-              <button
-                className="inline-flex h-7 items-center gap-1 rounded-lg border border-mist bg-white px-2 text-xs font-semibold text-graphite transition hover:bg-porcelain"
-                onClick={addTemplate}
-                type="button"
-              >
-                <Plus size={13} /> New
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  className="inline-flex h-7 items-center gap-1 rounded-lg border border-mist bg-white px-2 text-xs font-semibold text-graphite transition hover:bg-porcelain"
+                  onClick={() => void pickAndImport()}
+                  title="Import naming templates from JSON files"
+                  type="button"
+                >
+                  <Upload size={13} /> Import
+                </button>
+                <button
+                  className="inline-flex h-7 items-center gap-1 rounded-lg border border-mist bg-white px-2 text-xs font-semibold text-graphite transition hover:bg-porcelain"
+                  onClick={addTemplate}
+                  type="button"
+                >
+                  <Plus size={13} /> New
+                </button>
+              </div>
             </div>
+            {importStatus ? (
+              <div
+                className={`flex items-center gap-2 border-b border-mist px-2 py-1.5 text-[11px] ${
+                  importStatus.kind === "ok" ? "text-emerald-600" : "text-signal"
+                }`}
+              >
+                <span className="min-w-0 flex-1">{importStatus.message}</span>
+                <button
+                  aria-label="Dismiss"
+                  className="shrink-0 rounded p-0.5 text-graphite/50 transition hover:text-graphite"
+                  onClick={() => setImportStatus(null)}
+                  type="button"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            ) : dragActive ? (
+              <div className="border-b border-mist px-2 py-1.5 text-[11px] font-semibold text-lavender">
+                Drop JSON templates to import…
+              </div>
+            ) : null}
             <div className="border-b border-mist px-2 py-1.5">
               <div className="relative">
                 <Search className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-graphite/50" size={13} />

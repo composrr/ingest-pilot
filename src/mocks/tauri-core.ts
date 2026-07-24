@@ -384,6 +384,38 @@ export async function invoke<T = unknown>(command: string, args?: Record<string,
       metadataPresets = metadataPresets.filter((p) => p.id !== a.id);
       return undefined as T;
 
+    case "read_text_files": {
+      // Design mode: every requested path returns a valid ingest-pilot-naming-template
+      // envelope, with the label/id varied by path so multiple imported templates are
+      // distinct in the list. Lets the picker/drag-drop import flow work with fake paths.
+      const paths = ((a.paths as string[]) ?? []).map((path, index) => {
+        const base = (path.split(/[\\/]/).pop() ?? `template_${index + 1}`).replace(/\.json$/i, "");
+        const slug = base.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || `imported_${index + 1}`;
+        const label = `Imported — ${base}`;
+        const content = JSON.stringify(
+          {
+            kind: "ingest-pilot-naming-template",
+            schema_version: 1,
+            exported_at: "2026-07-11",
+            template: {
+              id: slug,
+              label,
+              group: "Imported",
+              hint: "YYYY-MM-DD_{last_name}_Story",
+              presetId: `naming_${slug}`,
+              presetName: `Delivered — ${label}`,
+              rootPattern: "{year}-{month}-{day}_{last_name}_Story",
+              fields: [{ id: "last_name", label: "Last name", required: true, type: "short_text" }],
+            },
+          },
+          null,
+          2,
+        );
+        return { path, content, error: null };
+      });
+      return paths as T;
+    }
+
     case "get_naming_catalog":
       return (namingCatalog ?? null) as T;
     case "save_naming_catalog":
