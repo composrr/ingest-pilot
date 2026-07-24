@@ -1,0 +1,12 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "externalBin": ["binaries/ffmpeg"],
+    "resources": [
+      "resources/guides/Ingest-Pilot-Quickstart.pdf",
+      "resources/guides/Ingest-Pilot-User-Guide.pdf",
+      "resources/guides/Ingest-Pilot-Walkthrough.mp4",
+      "resources/tools/exiftool/**/*"
+    ]
+  }
+}

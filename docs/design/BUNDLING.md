@@ -11,8 +11,10 @@ placeholder tier. The pure-Rust `rawler` path (Sony `.ARW`, Canon `.CR2/.CR3`, N
 | **ffmpeg** (LGPL static) | standard video poster frames (FX3 `.mp4`/`.mov`) + clip durations | Tauri **sidecar** (`externalBin`), target-triple suffix | `INGEST_PILOT_FFMPEG` env → exe-adjacent / ancestor dirs → `node_modules/ffmpeg-static` → PATH |
 | **exiftool** | cinema-RAW previews — RED `.R3D` and Canon `.CRM` (see caveat below) | Tauri **resource** folder (`exiftool.exe` + `exiftool_files/`) | `INGEST_PILOT_EXIFTOOL` env → resource dir → PATH |
 
-> Windows-first this milestone. macOS/Linux fall back to the placeholder tier for
-> cinema-RAW until signed/notarized tool bundles are added.
+> **Windows-only bundling.** Only the Windows installer ships ffmpeg + exiftool. macOS
+> and Linux fall back to the placeholder tier for cinema-RAW and standard-video
+> thumbnails. See "Which platforms bundle" below for the per-platform config mechanism
+> and why macOS is deferred.
 
 > **Caveat — `.BRAW` / `.CINE` are not actually covered.** `copier.rs` routes
 > `.r3d`/`.braw`/`.crm`/`.cine` to exiftool, but exiftool 13.59's readable-format list
@@ -71,23 +73,81 @@ own) is what serves the download.
 > in place of the archive**. The SHA-256 gate catches that (it's how it was found), but
 > the UA is what makes the download succeed.
 
-## tauri.conf.json
+## Which platforms bundle
+
+| Platform | Bundles ffmpeg + exiftool? | How |
+|---|---|---|
+| **Windows** | **Yes** | `src-tauri/tauri.windows.conf.json` (per-platform override) |
+| **macOS** | No (deferred) | base config only — see below |
+| **Linux** | No (deferred) | base config only — see below |
+
+### Per-platform config: bundling lives in `tauri.windows.conf.json`, NOT the base
+
+The base `src-tauri/tauri.conf.json` declares **no** `externalBin` and **no** exiftool
+resource. That is deliberate: a declared `externalBin: ["binaries/ffmpeg"]` missing at
+bundle time makes `tauri build` **fail outright**, and each target triple needs its own
+sidecar file present (on macOS universal, that means *both* `aarch64` and `x86_64`). If
+bundling were in the base config, every platform's release build would fail unless it
+fetched a matching signed sidecar. Keeping the base clean means macOS/Linux build green
+with zero tool work.
+
+Windows bundling is layered on via Tauri v2's **platform-specific config override**.
+Tauri reads `tauri.conf.json` then, on Windows only, merges `tauri.windows.conf.json`
+over it:
 
 ```jsonc
-"bundle": {
-  "externalBin": ["binaries/ffmpeg"],          // no triple, no .exe — Tauri appends them
-  "resources": [
-    "resources/guides/Ingest-Pilot-Quickstart.pdf",
-    "resources/guides/Ingest-Pilot-User-Guide.pdf",
-    "resources/guides/Ingest-Pilot-Walkthrough.mp4",
-    "resources/tools/exiftool/**/*"            // exe + exiftool_files/ must ship together
-  ]
+// src-tauri/tauri.windows.conf.json  — merged over the base ONLY on Windows
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "externalBin": ["binaries/ffmpeg"],          // no triple, no .exe — Tauri appends them
+    "resources": [
+      "resources/guides/Ingest-Pilot-Quickstart.pdf",
+      "resources/guides/Ingest-Pilot-User-Guide.pdf",
+      "resources/guides/Ingest-Pilot-Walkthrough.mp4",
+      "resources/tools/exiftool/**/*"            // exe + exiftool_files/ must ship together
+    ]
+  }
 }
 ```
+
+**Array-merge semantics (load-bearing).** Tauri v2 merges platform configs with
+**JSON Merge Patch (RFC 7396)** — verified in `tauri-utils-2.9.1/src/config/parse.rs`
+(`json_patch::merge`). Under RFC 7396, objects merge recursively but **arrays are
+replaced wholesale**, not concatenated. So `bundle.resources` in the Windows override
+**replaces** the base array entirely — which is why the three guide entries are repeated
+here. Omit them and the guides would silently vanish from the Windows installer. The
+`icons` array in the base is untouched (the override doesn't mention it), so it still
+ships.
 
 exiftool **cannot** be a sidecar: the Windows package is `exiftool.exe` *plus* a
 508-file `exiftool_files/` Perl runtime, and `externalBin` only handles standalone
 single binaries. Hence the resource folder.
+
+### macOS bundling is deferred (notarization + LGPL-universal)
+
+macOS is intentionally left tool-less. Bundling ffmpeg there is high-risk:
+
+- It needs an LGPL **universal** (arm64 + x86_64) ffmpeg. BtbN publishes per-arch
+  Windows/Linux builds, not a signed macOS universal LGPL binary — building one means
+  compiling ffmpeg from source for both arches and `lipo`-ing them.
+- The macOS release leg is **code-signed and notarized** (Apple secrets in `release.yml`).
+  Apple's notary service **rejects unsigned nested executables** — a bundled ffmpeg
+  sidecar would have to be signed with the same Developer ID and hardened-runtime flags,
+  or notarization fails and the whole macOS build goes red.
+
+Both together put it out of scope for this milestone. macOS RED `.R3D`/video thumbnails
+degrade to the placeholder tier; `.ARW`/`.CR3`/etc. still work via the pure-Rust `rawler`
+path, which needs no bundled binaries.
+
+### Linux is deferred too
+
+Linux bundling *could* be wired the same way (a `scripts/fetch-tools.sh` pulling BtbN's
+`linux64-lgpl` ffmpeg to `binaries/ffmpeg-x86_64-unknown-linux-gnu`, plus a
+`tauri.linux.conf.json`). It is **not** wired here: the win in this task is Windows, and
+exiftool on Linux is a Perl script (not a self-contained PAR exe), so shipping it cleanly
+inside an AppImage/deb is fragile enough to risk the currently-green Linux build. Deferred
+by choice; ffmpeg-only Linux bundling remains a clean future follow-up.
 
 ## How discovery resolves
 
@@ -138,11 +198,26 @@ GPL binary. Worth removing the devDependency if nothing else uses it.
 
 ## CI
 
-**CI must run `scripts/fetch-tools.ps1` before `tauri build`.** The binaries are
-gitignored, so a fresh clone has neither, and a declared `externalBin` that is missing at
-bundle time is expected to fail the build outright (not verified here — no full release
-build was run). Either way, a release built without the fetch step ships without
-thumbnail support at best.
+`.github/workflows/release.yml` runs a **Windows-only** fetch step before
+`tauri-apps/tauri-action`:
+
+```yaml
+- name: Fetch bundled tools (Windows)
+  if: matrix.os == 'windows-latest'
+  shell: pwsh
+  run: pwsh -File scripts/fetch-tools.ps1
+```
+
+It sits after `npm ci` and before the `tauri-action` build step. The binaries are
+gitignored, so a fresh CI checkout has none; on Windows the merged
+`tauri.windows.conf.json` declares `externalBin: ["binaries/ffmpeg"]` plus the exiftool
+resource folder, and a declared `externalBin` **missing at bundle time fails
+`tauri build` outright** — so the fetch step is mandatory for a green Windows leg.
+
+macOS and Linux have **no** fetch step and **no** tool declarations in their (base-only)
+config, so they build green with zero tool work. The `if: matrix.os == 'windows-latest'`
+guard is what keeps the mac/linux legs from paying for — or failing on — the Windows-only
+PowerShell fetch.
 
 ## Licensing — needs sign-off before shipping
 

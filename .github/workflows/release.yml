@@ -163,6 +163,18 @@ jobs:
       - name: Install JS dependencies
         run: npm ci
 
+      # Fetch the bundled ffmpeg (sidecar) + exiftool (resource folder) so the Windows
+      # installer ships thumbnail support. Binaries are gitignored, so a fresh CI checkout
+      # has none; tauri.windows.conf.json declares externalBin: ["binaries/ffmpeg"] and the
+      # exiftool resource folder, and a declared externalBin missing at bundle time FAILS
+      # `tauri build`. Must run BEFORE tauri-action. Windows-only: the base tauri.conf.json
+      # declares no tools, so macOS/Linux need no fetch and stay green. See
+      # docs/design/BUNDLING.md.
+      - name: Fetch bundled tools (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: pwsh -File scripts/fetch-tools.ps1
+
       - name: Prepare release notes
         id: notes
         shell: bash
