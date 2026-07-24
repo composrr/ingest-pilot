@@ -298,6 +298,48 @@ export function IngestPage() {
   const [instantaneousBps, setInstantaneousBps] = useState(0);
   const [reportBuild, setReportBuild] = useState<ReportBuildState>({ status: "idle", progress: null });
   const [isFileSelectorOpen, setIsFileSelectorOpen] = useState(false);
+  // File-picker view state, lifted to the page so it survives the modal unmounting on
+  // close (the dialog itself remounts fresh each open). Seeded from settings the first
+  // time the picker opens, then persisted for the rest of the session.
+  const [filePickerUi, setFilePickerUi] = useState<FilePickerUiState>(() => ({
+    viewMode: defaultAppSettings.file_selector.default_view,
+    thumbnailSize: defaultAppSettings.file_selector.thumbnail_size,
+    sortMode: "date",
+    sortDirection: "desc",
+    search: "",
+    kindFilter: new Set<ScanFileKind>(),
+    groupByDate: defaultAppSettings.file_selector.group_by_date,
+  }));
+  const pickerSeededRef = useRef(false);
+  const openFileSelector = useCallback(() => {
+    // Seed the picker's view/size/grouping from the user's real settings on first open
+    // (settings load async, so the initial state above uses the built-in defaults).
+    if (!pickerSeededRef.current) {
+      setFilePickerUi((current) => ({
+        ...current,
+        viewMode: appSettings.file_selector.default_view,
+        thumbnailSize: appSettings.file_selector.thumbnail_size,
+        groupByDate: appSettings.file_selector.group_by_date,
+      }));
+      pickerSeededRef.current = true;
+    }
+    setIsFileSelectorOpen(true);
+  }, [
+    appSettings.file_selector.default_view,
+    appSettings.file_selector.group_by_date,
+    appSettings.file_selector.thumbnail_size,
+  ]);
+  // Search + kind filter are transient query state, not preferences: a new scan (different
+  // card) must not inherit the previous card's filters, or a footage filter left over from
+  // the last card makes a photos-only card read as "No files match your filters". View mode,
+  // thumbnail size, and grouping are real preferences and stay put.
+  useEffect(() => {
+    setFilePickerUi((current) =>
+      current.search === "" && current.kindFilter.size === 0
+        ? current
+        : { ...current, search: "", kindFilter: new Set() },
+    );
+  }, [sourceScans]);
   const [spaceByPath, setSpaceByPath] = useState<Record<string, DiskSpace | null>>({});
   // Per-destination progress rows for the concurrent multi-destination copy. Sampled
   // from `ingest-progress`'s `destinations[]` alongside the aggregate speed chart.
@@ -2882,7 +2924,7 @@ export function IngestPage() {
                 />
                 <button
                   className="rounded-lg border border-mist bg-white px-2 py-1 text-xs font-semibold text-graphite transition hover:bg-porcelain"
-                  onClick={() => setIsFileSelectorOpen(true)}
+                  onClick={openFileSelector}
                   type="button"
                 >
                   Choose files
@@ -2952,22 +2994,11 @@ export function IngestPage() {
       {scan && isFileSelectorOpen ? (
         <FileSelectionDialog
           availableCount={copyableFiles.length}
-          defaultThumbnailSize={appSettings.file_selector.thumbnail_size}
-          defaultView={appSettings.file_selector.default_view}
           deleteSidecars={deleteSidecars}
           files={visibleManifestFiles}
           onClose={() => setIsFileSelectorOpen(false)}
-          onSelectAll={() =>
-            setSelectedRelativePaths(
-              new Set(
-                sourceScans.flatMap((entry) =>
-                  entry.scan.files
-                    .filter((file) => matchesRoutableKind(file.kind))
-                    .map((file) => sourceFileKey(entry.sourcePath, file.relative_path)),
-                ),
-              ),
-            )
-          }
+          ui={filePickerUi}
+          onUiChange={setFilePickerUi}
           onSelectNone={() => setSelectedRelativePaths(new Set())}
           selectedBytes={selectedBytes}
           selectedCount={selectedFileCount}
@@ -4581,39 +4612,37 @@ function useSourceThumbnails() {
 
 function FileSelectionDialog({
   availableCount,
-  defaultThumbnailSize,
-  defaultView,
   deleteSidecars,
   files,
   onClose,
-  onSelectAll,
   onSelectNone,
   selectedBytes,
   selectedCount,
   selectedRelativePaths,
   setSelectedRelativePaths,
+  ui,
+  onUiChange,
 }: {
   availableCount: number;
-  defaultThumbnailSize: number;
-  defaultView: "list" | "thumbs";
   deleteSidecars: boolean;
   files: ManifestFile[];
   onClose: () => void;
-  onSelectAll: () => void;
   onSelectNone: () => void;
   selectedBytes: number;
   selectedCount: number;
   selectedRelativePaths: Set<string>;
   setSelectedRelativePaths: Dispatch<SetStateAction<Set<string>>>;
+  ui: FilePickerUiState;
+  onUiChange: Dispatch<SetStateAction<FilePickerUiState>>;
 }) {
-  const [highlightedFileKeys, setHighlightedFileKeys] = useState<Set<string>>(new Set());
-  const [lastHighlightedFileKey, setLastHighlightedFileKey] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<"list" | "thumbs">(defaultView);
-  const [thumbnailSize, setThumbnailSize] = useState(defaultThumbnailSize);
-  const [sortMode, setSortMode] = useState<FilePickerSortMode>("date");
-  const [sortDirection, setSortDirection] = useState<FilePickerSortDirection>("desc");
-  const [search, setSearch] = useState("");
-  const [kindFilter, setKindFilter] = useState<Set<ScanFileKind>>(new Set());
+  const { viewMode, thumbnailSize, sortMode, sortDirection, search, kindFilter, groupByDate } = ui;
+  const patchUi = useCallback(
+    (patch: Partial<FilePickerUiState>) => onUiChange((current) => ({ ...current, ...patch })),
+    [onUiChange],
+  );
+  // The click anchor for shift-range selection. Transient (resets each open) — it is not
+  // part of the selection itself, which lives entirely in `selectedRelativePaths`.
+  const [anchorKey, setAnchorKey] = useState<string | null>(null);
   // Source previews, generated lazily for visible tiles only (thumbs view never mounts a
   // ThumbnailFileCard in list view, so list view costs nothing).
   const { thumbnails, request: requestThumbnail } = useSourceThumbnails();
@@ -4631,10 +4660,24 @@ function FileSelectionDialog({
     }
     return map;
   }, [displayFiles]);
+  // Per-kind selectable counts, for the filter-chip badges. Sidecars never appear as a
+  // chip (they ride along with their parent), so they're excluded from the tally.
+  const kindCounts = useMemo(() => {
+    const counts = new Map<ScanFileKind, number>();
+    for (const file of displayFiles) {
+      if (file.kind === "sidecar") {
+        continue;
+      }
+      counts.set(file.kind, (counts.get(file.kind) ?? 0) + 1);
+    }
+    return counts;
+  }, [displayFiles]);
   const filteredFiles = useMemo(() => {
     const needle = search.trim().toLowerCase();
     return displayFiles.filter((file) => {
-      if (needle && !file.file_name.toLowerCase().includes(needle)) {
+      // Search matches BOTH the filename and its relative path, so a folder/card name
+      // narrows the grid just as well as a filename does.
+      if (needle && !file.file_name.toLowerCase().includes(needle) && !file.relative_path.toLowerCase().includes(needle)) {
         return false;
       }
       // Sidecars ride along with their parent media, so the kind filter ignores them.
@@ -4645,96 +4688,90 @@ function FileSelectionDialog({
     });
   }, [displayFiles, kindFilter, search]);
   const sourceGroups = useMemo(
-    () => groupManifestFiles(filteredFiles, sortMode, sortDirection),
-    [filteredFiles, sortDirection, sortMode],
+    () => groupManifestFiles(filteredFiles, sortMode, sortDirection, groupByDate),
+    [filteredFiles, groupByDate, sortDirection, sortMode],
   );
   const selectableFileKeys = useMemo(() => flattenSelectableFileKeys(sourceGroups), [sourceGroups]);
-  const highlightedCount = highlightedFileKeys.size;
   const filteredOut = displayFiles.length - filteredFiles.length;
+
+  const isSelected = useCallback(
+    (file: ManifestFile) => file.autoSelected || memberKeysOf(file).every((key) => selectedRelativePaths.has(key)),
+    [selectedRelativePaths],
+  );
+
+  // The top-level Select-all / tri-state pill is scoped to the currently VISIBLE (filtered +
+  // sorted) files — same as every other select control here — so it never reaches past the
+  // filters to select hidden files. Selections of hidden files are left untouched.
+  const visibleSelectableFiles = useMemo(() => filteredFiles.filter((file) => !file.disabled), [filteredFiles]);
+  const visibleMemberKeys = useMemo(() => visibleSelectableFiles.flatMap(memberKeysOf), [visibleSelectableFiles]);
+  const visibleSelectedCount = visibleSelectableFiles.filter(isSelected).length;
+  const allVisibleSelected = visibleSelectableFiles.length > 0 && visibleSelectedCount === visibleSelectableFiles.length;
+  const someVisibleSelected = visibleSelectedCount > 0;
 
   function handleSort(mode: FilePickerSortMode) {
     if (mode === sortMode) {
-      setSortDirection((current) => (current === "asc" ? "desc" : "asc"));
+      patchUi({ sortDirection: sortDirection === "asc" ? "desc" : "asc" });
     } else {
-      setSortMode(mode);
       // Sensible default direction per column: newest/largest first, names A→Z.
-      setSortDirection(mode === "date" || mode === "size" ? "desc" : "asc");
+      patchUi({ sortMode: mode, sortDirection: mode === "date" || mode === "size" ? "desc" : "asc" });
     }
   }
 
   function toggleKindFilter(kind: ScanFileKind) {
-    setKindFilter((current) => {
-      const next = new Set(current);
-      if (next.has(kind)) {
-        next.delete(kind);
-      } else {
-        next.add(kind);
-      }
-      return next;
-    });
+    const next = new Set(kindFilter);
+    if (next.has(kind)) {
+      next.delete(kind);
+    } else {
+      next.add(kind);
+    }
+    patchUi({ kindFilter: next });
   }
 
-  useEffect(() => {
-    setHighlightedFileKeys((current) => new Set([...current].filter((key) => selectableFileKeys.includes(key))));
-    if (lastHighlightedFileKey && !selectableFileKeys.includes(lastHighlightedFileKey)) {
-      setLastHighlightedFileKey(null);
-    }
-  }, [lastHighlightedFileKey, selectableFileKeys]);
-
-  function handleFileHighlight(file: ManifestFile, shiftKey: boolean) {
+  // ONE selection model: clicking a row/tile toggles that file's selection (a visible
+  // check + ring). Shift-click selects the contiguous range from the last click. Sidecars
+  // are `disabled` — they ride along with their parent and can't be toggled here.
+  function handleFileClick(file: ManifestFile, shiftKey: boolean) {
     if (file.disabled) {
       return;
     }
 
-    if (shiftKey && lastHighlightedFileKey) {
-      const startIndex = selectableFileKeys.indexOf(lastHighlightedFileKey);
+    if (shiftKey && anchorKey) {
+      const startIndex = selectableFileKeys.indexOf(anchorKey);
       const endIndex = selectableFileKeys.indexOf(file.sourceKey);
       if (startIndex >= 0 && endIndex >= 0) {
         const [start, end] = startIndex < endIndex ? [startIndex, endIndex] : [endIndex, startIndex];
-        setHighlightedFileKeys(new Set(selectableFileKeys.slice(start, end + 1)));
-        setLastHighlightedFileKey(file.sourceKey);
+        const rangeKeys = selectableFileKeys.slice(start, end + 1).flatMap((key) => memberKeyMap.get(key) ?? [key]);
+        selectFileKeys(rangeKeys, true, setSelectedRelativePaths);
+        setAnchorKey(file.sourceKey);
         return;
       }
     }
 
-    setHighlightedFileKeys(new Set([file.sourceKey]));
-    setLastHighlightedFileKey(file.sourceKey);
+    const nextSelected = !isSelected(file);
+    selectFileKeys(memberKeysOf(file), nextSelected, setSelectedRelativePaths);
+    setAnchorKey(file.sourceKey);
   }
 
-  function handleFileChecked(file: ManifestFile, checked: boolean) {
-    if (file.disabled) {
-      return;
-    }
-
-    const repKeys =
-      highlightedFileKeys.has(file.sourceKey) && highlightedFileKeys.size > 0
-        ? [...highlightedFileKeys].filter((key) => selectableFileKeys.includes(key))
-        : [file.sourceKey];
-    // Expand each highlighted row to the real files it stands for (clip → segments).
-    const keys = repKeys.flatMap((key) => memberKeyMap.get(key) ?? [key]);
-    selectFileKeys(keys, checked, setSelectedRelativePaths);
-    setHighlightedFileKeys(new Set(repKeys));
-    setLastHighlightedFileKey(file.sourceKey);
-  }
+  const hasFilters = kindFilter.size > 0 || search.trim().length > 0;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/30 p-4 backdrop-blur-sm">
-      <section className="flex max-h-[88vh] w-full max-w-7xl select-none flex-col overflow-hidden rounded-[24px] border border-mist bg-white shadow-panel">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4 backdrop-blur-sm">
+      <section className="relative flex max-h-[88vh] w-full max-w-7xl select-none flex-col overflow-hidden rounded-[24px] border border-mist bg-paper shadow-panel">
+        {/* Header: title + live selection summary, plus the view / density controls. */}
         <div className="flex items-center justify-between gap-3 border-b border-mist px-4 py-3">
-          <div>
-            <h2 className="text-base font-semibold">Choose Files</h2>
-            <p className="text-xs font-medium text-graphite">
-              Sorted by {sortModeLabel(sortMode).toLowerCase()}. {selectedCount} of {availableCount} files selected / {formatBytes(selectedBytes)}
+          <div className="min-w-0">
+            <h2 className="text-base font-semibold text-ink">Choose Files</h2>
+            <p className="truncate text-xs font-medium text-graphite">
+              {availableCount} files available / {formatBytes(selectedBytes)} selected
               {deleteSidecars ? " / sidecars deleted" : ""}
-              {highlightedCount > 1 ? ` / ${highlightedCount} highlighted` : ""}
             </p>
           </div>
           <div className="flex items-center gap-2">
             {viewMode === "thumbs" ? (
               <>
-                <div className="w-36">
+                <div className="w-32">
                   <SelectMenu
-                    onChange={(value) => setSortMode(value as FilePickerSortMode)}
+                    onChange={(value) => patchUi({ sortMode: value as FilePickerSortMode })}
                     options={[
                       { label: "Date", value: "date" },
                       { label: "Name", value: "name" },
@@ -4746,20 +4783,32 @@ function FileSelectionDialog({
                   />
                 </div>
                 <button
-                  className="h-8 rounded-lg border border-mist bg-white px-2 text-xs font-semibold text-graphite transition hover:bg-porcelain"
-                  onClick={() => setSortDirection((current) => (current === "asc" ? "desc" : "asc"))}
+                  className="h-8 rounded-lg border border-mist bg-card px-2 text-xs font-semibold text-graphite transition hover:bg-porcelain"
+                  onClick={() => patchUi({ sortDirection: sortDirection === "asc" ? "desc" : "asc" })}
                   type="button"
                 >
                   {sortDirectionLabel(sortMode, sortDirection)}
                 </button>
+                <label className="flex h-8 items-center gap-2 rounded-lg border border-mist bg-card px-2 text-xs font-semibold text-graphite">
+                  Size
+                  <input
+                    className="w-24 accent-signal"
+                    max={260}
+                    min={80}
+                    onChange={(event) => patchUi({ thumbnailSize: Number(event.target.value) })}
+                    step={4}
+                    type="range"
+                    value={thumbnailSize}
+                  />
+                </label>
               </>
             ) : null}
-            <div className="flex overflow-hidden rounded-lg border border-mist bg-white">
+            <div className="flex overflow-hidden rounded-lg border border-mist bg-card">
               <button
                 className={`inline-flex h-8 items-center gap-1 px-2 text-xs font-semibold transition ${
                   viewMode === "list" ? "bg-signal text-primaryfg" : "text-graphite hover:bg-porcelain"
                 }`}
-                onClick={() => setViewMode("list")}
+                onClick={() => patchUi({ viewMode: "list" })}
                 type="button"
               >
                 <List size={14} />
@@ -4769,43 +4818,15 @@ function FileSelectionDialog({
                 className={`inline-flex h-8 items-center gap-1 border-l border-mist px-2 text-xs font-semibold transition ${
                   viewMode === "thumbs" ? "bg-signal text-primaryfg" : "text-graphite hover:bg-porcelain"
                 }`}
-                onClick={() => setViewMode("thumbs")}
+                onClick={() => patchUi({ viewMode: "thumbs" })}
                 type="button"
               >
                 <Image size={14} />
                 Thumbnails
               </button>
             </div>
-            {viewMode === "thumbs" ? (
-              <label className="flex h-8 items-center gap-2 rounded-lg border border-mist bg-white px-2 text-xs font-semibold text-graphite">
-                Size
-                <input
-                  className="w-28 accent-signal"
-                  max={260}
-                  min={80}
-                  onChange={(event) => setThumbnailSize(Number(event.target.value))}
-                  step={4}
-                  type="range"
-                  value={thumbnailSize}
-                />
-              </label>
-            ) : null}
             <button
-              className="rounded-lg border border-mist bg-white px-3 py-1.5 text-xs font-semibold text-graphite transition hover:bg-porcelain"
-              onClick={onSelectAll}
-              type="button"
-            >
-              All
-            </button>
-            <button
-              className="rounded-lg border border-mist bg-white px-3 py-1.5 text-xs font-semibold text-graphite transition hover:bg-porcelain"
-              onClick={onSelectNone}
-              type="button"
-            >
-              None
-            </button>
-            <button
-              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-mist bg-white text-graphite transition hover:bg-porcelain"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-mist bg-card text-graphite transition hover:bg-porcelain"
               onClick={onClose}
               title="Close"
               type="button"
@@ -4815,51 +4836,87 @@ function FileSelectionDialog({
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2 border-b border-mist bg-porcelain/30 px-4 py-2">
+        {/* Filter chip row: select-all, search (name AND path), kind chips w/ counts, grouping. */}
+        <div className="flex flex-wrap items-center gap-2 border-b border-mist bg-porcelain/40 px-4 py-2">
+          <button
+            className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-semibold transition disabled:opacity-40 ${
+              allVisibleSelected ? "border-signal bg-signal text-primaryfg" : "border-mist bg-card text-graphite hover:bg-porcelain"
+            }`}
+            disabled={visibleSelectableFiles.length === 0}
+            onClick={() => selectFileKeys(visibleMemberKeys, !allVisibleSelected, setSelectedRelativePaths)}
+            type="button"
+          >
+            <span
+              className={`flex h-4 w-4 items-center justify-center rounded border ${
+                allVisibleSelected ? "border-primaryfg" : someVisibleSelected ? "border-signal bg-signal/20" : "border-graphite/50"
+              }`}
+            >
+              {allVisibleSelected ? <Check size={11} strokeWidth={3} /> : someVisibleSelected ? <span className="h-0.5 w-2 rounded bg-signal" /> : null}
+            </span>
+            {allVisibleSelected ? "Select none" : "Select all"}
+          </button>
           <div className="relative">
             <Search className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-graphite/60" size={13} />
             <input
-              className="h-8 w-52 rounded-lg border border-mist bg-white pl-7 pr-2 text-xs outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
-              onChange={(event) => setSearch(event.target.value)}
-              placeholder="Filter by name…"
+              className="h-8 w-56 rounded-lg border border-mist bg-card pl-7 pr-2 text-xs text-ink outline-none focus:border-graphite/40 focus:ring-2 focus:ring-lavender/30"
+              onChange={(event) => patchUi({ search: event.target.value })}
+              placeholder="Search name or path…"
               value={search}
             />
           </div>
-          <div className="flex items-center gap-1">
-            {FILE_KIND_FILTERS.map(({ kind, label }) => (
-              <button
-                key={kind}
-                className={`h-8 rounded-lg border px-2 text-xs font-semibold transition ${
-                  kindFilter.has(kind)
-                    ? "border-signal bg-signal text-primaryfg"
-                    : "border-mist bg-white text-graphite hover:bg-porcelain"
-                }`}
-                onClick={() => toggleKindFilter(kind)}
-                type="button"
-              >
-                {label}
-              </button>
-            ))}
-            {kindFilter.size > 0 || search.trim() ? (
-              <button
-                className="h-8 rounded-lg px-2 text-xs font-semibold text-graphite underline-offset-2 hover:underline"
-                onClick={() => {
-                  setSearch("");
-                  setKindFilter(new Set());
-                }}
-                type="button"
-              >
-                Clear
-              </button>
-            ) : null}
+          <div className="flex flex-wrap items-center gap-1">
+            {FILE_KIND_FILTERS.map(({ kind, label }) => {
+              const count = kindCounts.get(kind) ?? 0;
+              const active = kindFilter.has(kind);
+              return (
+                <button
+                  key={kind}
+                  className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2 text-xs font-semibold transition disabled:opacity-40 ${
+                    active ? "border-signal bg-signal text-primaryfg" : "border-mist bg-card text-graphite hover:bg-porcelain"
+                  }`}
+                  disabled={count === 0}
+                  onClick={() => toggleKindFilter(kind)}
+                  type="button"
+                >
+                  {label}
+                  <span
+                    className={`rounded px-1 text-[10px] font-semibold ${
+                      active ? "bg-primaryfg/20 text-primaryfg" : "bg-porcelain text-graphite"
+                    }`}
+                  >
+                    {count}
+                  </span>
+                </button>
+              );
+            })}
           </div>
+          <button
+            className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2 text-xs font-semibold transition ${
+              groupByDate ? "border-signal bg-signal text-primaryfg" : "border-mist bg-card text-graphite hover:bg-porcelain"
+            }`}
+            onClick={() => patchUi({ groupByDate: !groupByDate })}
+            title="Group files into Today / Yesterday / date sections"
+            type="button"
+          >
+            <Clock size={13} />
+            Group by day
+          </button>
+          {hasFilters ? (
+            <button
+              className="h-8 rounded-lg px-2 text-xs font-semibold text-graphite underline-offset-2 hover:underline"
+              onClick={() => patchUi({ search: "", kindFilter: new Set() })}
+              type="button"
+            >
+              Clear filters
+            </button>
+          ) : null}
           {filteredOut > 0 ? (
             <span className="text-[11px] font-medium text-graphite/70">{filteredOut} hidden by filters</span>
           ) : null}
         </div>
 
         {viewMode === "list" ? (
-          <div className="grid grid-cols-[26px_82px_1fr_128px_96px] items-center gap-2 border-b border-mist bg-white px-4 py-1.5 text-[11px] font-semibold">
+          <div className="grid grid-cols-[26px_82px_1fr_128px_96px] items-center gap-2 border-b border-mist bg-card px-4 py-1.5 text-[11px] font-semibold">
             <span />
             <SortHeaderButton active={sortMode === "type"} direction={sortDirection} label="Type" onClick={() => handleSort("type")} />
             <SortHeaderButton active={sortMode === "name"} direction={sortDirection} label="Name" onClick={() => handleSort("name")} />
@@ -4868,7 +4925,8 @@ function FileSelectionDialog({
           </div>
         ) : null}
 
-        <div className="min-h-0 flex-1 overflow-auto bg-white" ref={setScrollRoot}>
+        {/* Scroll container — MUST stay the IntersectionObserver root for lazy thumbnails. */}
+        <div className="min-h-0 flex-1 overflow-auto bg-paper pb-16" ref={setScrollRoot}>
           {sourceGroups.map((sourceGroup) => (
             <section key={sourceGroup.sourcePath} className="border-b border-mist last:border-b-0">
               <div className="sticky top-0 z-10 grid min-h-9 grid-cols-[1fr_auto_auto] items-center gap-2 border-b border-mist bg-porcelain px-4 py-1">
@@ -4878,7 +4936,7 @@ function FileSelectionDialog({
                 </div>
                 <span className="text-xs font-semibold text-graphite">{sourceGroup.fileCount} files / {formatBytes(sourceGroup.sizeBytes)}</span>
                 <button
-                  className="rounded-lg border border-mist bg-white px-2 py-1 text-xs font-semibold text-graphite transition hover:bg-porcelain"
+                  className="rounded-lg border border-mist bg-card px-2 py-1 text-xs font-semibold text-graphite transition hover:bg-porcelain"
                   onClick={() => selectFileKeys(sourceGroup.selectableKeys, true, setSelectedRelativePaths)}
                   type="button"
                 >
@@ -4888,20 +4946,20 @@ function FileSelectionDialog({
 
               {sourceGroup.days.map((dayGroup) => (
                 <div key={`${sourceGroup.sourcePath}-${dayGroup.dayKey}`} className="border-b border-mist/70 last:border-b-0">
-                  <div className="grid min-h-8 grid-cols-[1fr_auto_auto] items-center gap-2 bg-white px-4 py-1">
+                  <div className="grid min-h-8 grid-cols-[1fr_auto_auto] items-center gap-2 bg-paper px-4 py-1">
                     <div className="min-w-0">
                       <div className="text-xs font-semibold text-ink">{dayGroup.label}</div>
                       <div className="text-[11px] font-medium text-graphite">{dayGroup.fileCount} files / {formatBytes(dayGroup.sizeBytes)}</div>
                     </div>
                     <button
-                      className="rounded-lg border border-mist bg-white px-2 py-1 text-[11px] font-semibold text-graphite transition hover:bg-porcelain"
+                      className="rounded-lg border border-mist bg-card px-2 py-1 text-[11px] font-semibold text-graphite transition hover:bg-porcelain"
                       onClick={() => selectFileKeys(dayGroup.files.flatMap(memberKeysOf), true, setSelectedRelativePaths)}
                       type="button"
                     >
                       Check all
                     </button>
                     <button
-                      className="rounded-lg border border-mist bg-white px-2 py-1 text-[11px] font-semibold text-graphite transition hover:bg-porcelain"
+                      className="rounded-lg border border-mist bg-card px-2 py-1 text-[11px] font-semibold text-graphite transition hover:bg-porcelain"
                       onClick={() => selectFileKeys(dayGroup.files.flatMap(memberKeysOf), false, setSelectedRelativePaths)}
                       type="button"
                     >
@@ -4910,60 +4968,93 @@ function FileSelectionDialog({
                   </div>
 
                   {viewMode === "list" ? (
-                    dayGroup.files.map((file) => {
-                      const selected = file.autoSelected || memberKeysOf(file).every((key) => selectedRelativePaths.has(key));
-                      return (
-                        <FileListRow
-                          checked={selected}
-                          key={file.sourceKey}
-                          file={file}
-                          highlighted={highlightedFileKeys.has(file.sourceKey)}
-                          onCheck={handleFileChecked}
-                          onHighlight={handleFileHighlight}
-                        />
-                      );
-                    })
+                    dayGroup.files.map((file) => (
+                      <FileListRow
+                        key={file.sourceKey}
+                        file={file}
+                        selected={isSelected(file)}
+                        onToggle={handleFileClick}
+                      />
+                    ))
                   ) : (
                     <div
                       className="grid gap-2 border-t border-mist/70 bg-porcelain/25 p-2"
                       style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${thumbnailSize}px, 1fr))` }}
                     >
-                      {dayGroup.files.map((file) => {
-                        const selected = file.autoSelected || memberKeysOf(file).every((key) => selectedRelativePaths.has(key));
-                        return (
-                          <ThumbnailFileCard
-                            checked={selected}
-                            key={file.sourceKey}
-                            file={file}
-                            highlighted={highlightedFileKeys.has(file.sourceKey)}
-                            onCheck={handleFileChecked}
-                            onHighlight={handleFileHighlight}
-                            onRequestThumbnail={requestThumbnail}
-                            scrollRoot={scrollRoot}
-                            size={thumbnailSize}
-                            thumbnail={thumbnails.get(file.path)}
-                          />
-                        );
-                      })}
+                      {dayGroup.files.map((file) => (
+                        <ThumbnailFileCard
+                          key={file.sourceKey}
+                          file={file}
+                          selected={isSelected(file)}
+                          onToggle={handleFileClick}
+                          onRequestThumbnail={requestThumbnail}
+                          scrollRoot={scrollRoot}
+                          size={thumbnailSize}
+                          thumbnail={thumbnails.get(file.path)}
+                        />
+                      ))}
                     </div>
                   )}
                 </div>
               ))}
             </section>
           ))}
-          {sourceGroups.length === 0 ? (
-            <div className="p-5 text-sm text-graphite">No copyable files found in this scan.</div>
+          {displayFiles.length === 0 ? (
+            <div className="flex flex-col items-center justify-center gap-2 p-12 text-center text-sm text-graphite">
+              <FolderOpen size={28} className="text-graphite/50" />
+              No copyable files found in this scan.
+            </div>
+          ) : sourceGroups.length === 0 ? (
+            <div className="flex flex-col items-center justify-center gap-2 p-12 text-center text-sm text-graphite">
+              <Search size={28} className="text-graphite/50" />
+              <span>No files match your filters.</span>
+              <button
+                className="rounded-lg border border-mist bg-card px-3 py-1 text-xs font-semibold text-graphite transition hover:bg-porcelain"
+                onClick={() => patchUi({ search: "", kindFilter: new Set() })}
+                type="button"
+              >
+                Clear filters
+              </button>
+            </div>
           ) : null}
         </div>
 
-        <div className="flex items-center justify-end border-t border-mist bg-porcelain/40 px-4 py-3">
-          <button
-            className="inline-flex h-9 items-center justify-center rounded-xl bg-signal px-4 text-sm font-semibold text-primaryfg transition hover:bg-black"
-            onClick={onClose}
-            type="button"
-          >
-            Done
-          </button>
+        {/* Floating action bar — a clear commit affordance instead of just closing. */}
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center px-4 pb-4">
+          <div className="pointer-events-auto flex items-center gap-3 rounded-2xl border border-mist bg-card/95 px-4 py-2.5 shadow-panel backdrop-blur">
+            {selectedCount > 0 ? (
+              <>
+                <span className="text-sm font-semibold text-ink">{selectedCount} selected</span>
+                <span className="text-xs font-medium text-graphite">{formatBytes(selectedBytes)}</span>
+                <button
+                  className="rounded-lg border border-mist bg-card px-3 py-1.5 text-xs font-semibold text-graphite transition hover:bg-porcelain"
+                  onClick={onSelectNone}
+                  type="button"
+                >
+                  Clear
+                </button>
+                <button
+                  className="inline-flex h-9 items-center justify-center gap-1.5 rounded-xl bg-signal px-4 text-sm font-semibold text-primaryfg transition hover:opacity-90"
+                  onClick={onClose}
+                  type="button"
+                >
+                  <Check size={15} strokeWidth={3} />
+                  Add to ingest
+                </button>
+              </>
+            ) : (
+              <>
+                <span className="text-sm font-medium text-graphite">No files selected</span>
+                <button
+                  className="inline-flex h-9 items-center justify-center rounded-xl border border-mist bg-card px-4 text-sm font-semibold text-graphite transition hover:bg-porcelain"
+                  onClick={onClose}
+                  type="button"
+                >
+                  Done
+                </button>
+              </>
+            )}
+          </div>
         </div>
       </section>
     </div>
@@ -4971,32 +5062,30 @@ function FileSelectionDialog({
 }
 
 function FileListRow({
-  checked,
   file,
-  highlighted,
-  onCheck,
-  onHighlight,
+  selected,
+  onToggle,
 }: {
-  checked: boolean;
   file: ManifestFile;
-  highlighted: boolean;
-  onCheck: (file: ManifestFile, checked: boolean) => void;
-  onHighlight: (file: ManifestFile, shiftKey: boolean) => void;
+  selected: boolean;
+  onToggle: (file: ManifestFile, shiftKey: boolean) => void;
 }) {
+  // Clicking anywhere on the row toggles selection (the ONE selection model). Selected
+  // rows get a filled mark + a lavender inset ring so the state is unmistakable.
   return (
     <div
       className={`grid min-h-9 grid-cols-[26px_82px_1fr_128px_96px] items-center gap-2 border-t border-mist/70 px-4 py-1 text-sm ${
         file.disabled
           ? "cursor-default bg-porcelain/35 text-graphite"
-          : highlighted
-            ? "cursor-default bg-lavender/25 text-ink ring-1 ring-inset ring-lavender/60"
-            : "cursor-default text-ink hover:bg-porcelain/45"
+          : selected
+            ? "cursor-pointer bg-lavender/20 text-ink ring-1 ring-inset ring-lavender/60"
+            : "cursor-pointer text-ink hover:bg-porcelain/45"
       }`}
-      onClick={(event) => onHighlight(file, event.shiftKey)}
+      onClick={(event) => onToggle(file, event.shiftKey)}
       onKeyDown={(event) => {
         if (event.key === " " || event.key === "Enter") {
           event.preventDefault();
-          onHighlight(file, event.shiftKey);
+          onToggle(file, event.shiftKey);
         }
       }}
       onMouseDown={(event) => {
@@ -5007,9 +5096,9 @@ function FileListRow({
       role="button"
       tabIndex={file.disabled ? -1 : 0}
     >
-      <SelectionMark checked={checked} disabled={file.disabled} onChange={(nextChecked) => onCheck(file, nextChecked)} />
+      <SelectionMark checked={selected} disabled={file.disabled} onChange={() => onToggle(file, false)} />
       <span className="text-xs font-semibold text-graphite">{file.label}</span>
-      <span className="min-w-0 truncate font-semibold">{file.relative_path}</span>
+      <span className="min-w-0 truncate font-semibold" title={file.relative_path}>{file.file_name}</span>
       <span className="text-xs font-semibold text-graphite">{formatFileTimestamp(file.modified_at)}</span>
       <span className="text-right text-xs font-semibold text-graphite">{formatBytes(file.size_bytes)}</span>
     </div>
@@ -5017,21 +5106,17 @@ function FileListRow({
 }
 
 function ThumbnailFileCard({
-  checked,
   file,
-  highlighted,
-  onCheck,
-  onHighlight,
+  selected,
+  onToggle,
   onRequestThumbnail,
   scrollRoot,
   size,
   thumbnail,
 }: {
-  checked: boolean;
   file: ManifestFile;
-  highlighted: boolean;
-  onCheck: (file: ManifestFile, checked: boolean) => void;
-  onHighlight: (file: ManifestFile, shiftKey: boolean) => void;
+  selected: boolean;
+  onToggle: (file: ManifestFile, shiftKey: boolean) => void;
   onRequestThumbnail: (path: string, previewPath: string | null) => void;
   scrollRoot: HTMLElement | null;
   size: number;
@@ -5070,17 +5155,18 @@ function ThumbnailFileCard({
 
   const pending = thumbnail === "pending";
   const thumbnailUrl = thumbnail && thumbnail !== "pending" ? thumbnail.url : null;
+  const isVideo = file.kind === "footage";
   return (
     <div
-      className={`group overflow-hidden rounded-lg border bg-white text-left shadow-sm transition ${
-        highlighted ? "border-lavender ring-2 ring-lavender/50" : "border-mist hover:bg-white"
-      } ${file.disabled ? "opacity-65" : "cursor-default"}`}
+      className={`group relative overflow-hidden rounded-lg border bg-card text-left shadow-sm transition ${
+        selected ? "border-lavender ring-2 ring-lavender/60" : "border-mist hover:border-graphite/40"
+      } ${file.disabled ? "opacity-70 cursor-default" : "cursor-pointer"}`}
       ref={cardRef}
-      onClick={(event) => onHighlight(file, event.shiftKey)}
+      onClick={(event) => onToggle(file, event.shiftKey)}
       onKeyDown={(event) => {
         if (event.key === " " || event.key === "Enter") {
           event.preventDefault();
-          onHighlight(file, event.shiftKey);
+          onToggle(file, event.shiftKey);
         }
       }}
       onMouseDown={(event) => {
@@ -5118,8 +5204,21 @@ function ThumbnailFileCard({
             </span>
           </div>
         )}
-        <span className="absolute left-1.5 top-1.5 rounded-md bg-white/90 p-1 shadow-sm">
-          <SelectionMark checked={checked} disabled={file.disabled} onChange={(nextChecked) => onCheck(file, nextChecked)} />
+        {/* Footage marker in the corner (a duration badge would go here — see note: scan
+            data carries no per-file duration, so we surface the video kind instead). */}
+        {isVideo ? (
+          <span className="absolute bottom-1.5 right-1.5 inline-flex items-center gap-1 rounded bg-ink/70 px-1.5 py-0.5 text-[10px] font-semibold text-primaryfg">
+            <Film size={10} />
+            {file.clipSegmentCount ? `${file.clipSegmentCount} clips` : extLabel(file.extension)}
+          </span>
+        ) : null}
+        {/* Corner checkbox: always visible when selected, appears on hover otherwise. */}
+        <span
+          className={`absolute left-1.5 top-1.5 rounded-md bg-card/90 p-1 shadow-sm transition-opacity ${
+            selected || file.disabled ? "opacity-100" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
+          }`}
+        >
+          <SelectionMark checked={selected} disabled={file.disabled} onChange={() => onToggle(file, false)} />
         </span>
       </div>
       <div className="space-y-0.5 p-1.5">
@@ -5146,8 +5245,13 @@ function SelectionMark({
   onChange: (checked: boolean) => void;
 }) {
   if (disabled) {
+    // A sidecar rides along with its parent media and can't be toggled here — show a
+    // filled, dimmed mark (distinct from an interactive checkbox) to signal that.
     return (
-      <span className="flex h-4 w-4 items-center justify-center rounded border border-signal bg-signal text-primaryfg">
+      <span
+        className="flex h-4 w-4 items-center justify-center rounded border border-signal/60 bg-signal/60 text-primaryfg"
+        title="Included automatically with its parent file"
+      >
         <Check size={11} strokeWidth={3} />
       </span>
     );
@@ -5744,6 +5848,18 @@ type ManifestSourceGroup = {
 type FilePickerSortMode = "date" | "name" | "type" | "size";
 type FilePickerSortDirection = "asc" | "desc";
 
+// Persisted-across-opens view state for the file picker (lives on the page, not the
+// dialog, so closing the modal doesn't reset the user's view/sort/filter choices).
+type FilePickerUiState = {
+  viewMode: "list" | "thumbs";
+  thumbnailSize: number;
+  sortMode: FilePickerSortMode;
+  sortDirection: FilePickerSortDirection;
+  search: string;
+  kindFilter: Set<ScanFileKind>;
+  groupByDate: boolean;
+};
+
 function sourceFileKey(sourcePath: string, relativePath: string) {
   return `${sourcePath}\u0000${relativePath}`;
 }
@@ -5896,6 +6012,7 @@ function groupManifestFiles(
   files: ManifestFile[],
   sortMode: FilePickerSortMode,
   sortDirection: FilePickerSortDirection,
+  groupByDate: boolean,
 ): ManifestSourceGroup[] {
   const sourceMap = new Map<string, ManifestFile[]>();
   for (const file of files) {
@@ -5906,12 +6023,12 @@ function groupManifestFiles(
 
   return Array.from(sourceMap.entries()).map(([sourcePath, sourceFiles]) => {
     const sortedFiles = sortManifestFiles(sourceFiles, sortMode, sortDirection);
-    // When sorting by date, break the list into calendar-day groups (Today /
-    // Yesterday / weekday / date); otherwise keep one group for the whole source.
-    const days =
-      sortMode === "date"
-        ? buildDayGroups(sortedFiles)
-        : [makeDayGroup("sorted", `${sortModeLabel(sortMode)} / ${sortDirectionLabel(sortMode, sortDirection)}`, sortedFiles)];
+    // "Group by day" is now an explicit control (honestly wired to the group_by_date
+    // setting), independent of the sort column: on → calendar-day sticky sections
+    // (Today / Yesterday / weekday / date); off → one flat section per source.
+    const days = groupByDate
+      ? buildDayGroups(sortedFiles)
+      : [makeDayGroup("sorted", `${sortModeLabel(sortMode)} / ${sortDirectionLabel(sortMode, sortDirection)}`, sortedFiles)];
 
     return {
       days,
