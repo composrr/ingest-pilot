@@ -99,6 +99,16 @@ struct KindAccumulator {
     total_bytes: u64,
 }
 
+// NOTE ON THE SIZE OF THIS REPLY. `files` is unbounded, and the whole reply crosses to the
+// webview as one serialized blob; an oversized one can kill the WebKit content process (two
+// such crashes are on record, both while this app was walking the startup disk). It is
+// deliberately NOT capped here: the ingest builds its copy list from `files`, so truncating
+// it would silently copy only part of a card — a far worse failure than a crash for an
+// offload tool. The pathological producer was the boot-volume walk, which `is_on_system_disk`
+// and `is_system_volume_root` now prevent outright; a real card is a few MB at worst. Paging
+// the list properly (one walk, cached, fetched in windows) is the correct next step, and must
+// land together with the change that makes ingest read from the paged source rather than
+// from `files`.
 pub fn scan_source(source_path: &str) -> Result<SourceScan, String> {
     let root = PathBuf::from(source_path);
     if !root.exists() {
@@ -106,6 +116,19 @@ pub fn scan_source(source_path: &str) -> Result<SourceScan, String> {
     }
     if !root.is_dir() {
         return Err(format!("Source '{}' is not a folder.", root.display()));
+    }
+    // Refuse to recursively walk the ROOT of the machine's own startup disk. Scanning a
+    // folder the user picked on their internal drive is legitimate and still allowed; what
+    // is never legitimate is treating `/`, `$HOME`, or the `/Volumes/Macintosh HD` firmlink
+    // as a card and descending the whole thing. That is what produced the TCC prompt storm
+    // — the detector matched `PRIVATE` against `/private` (APFS is case-insensitive), the
+    // Ingest screen auto-adopted the result, and the scan then walked Photos, Music,
+    // Documents, Desktop and other apps' data in ~/Library with no user gesture at all.
+    if is_system_volume_root(&root) {
+        return Err(format!(
+            "'{}' is this Mac's startup disk, not a camera card. Choose a card or a specific folder instead.",
+            root.display()
+        ));
     }
 
     let mut total_files = 0;
@@ -489,10 +512,64 @@ fn candidate_roots() -> Vec<PathBuf> {
         for parent in ["/Volumes", "/media", "/mnt"] {
             let parent = Path::new(parent);
             if let Ok(entries) = fs::read_dir(parent) {
-                roots.extend(entries.filter_map(Result::ok).map(|entry| entry.path()));
+                for entry in entries.filter_map(Result::ok) {
+                    let path = entry.path();
+                    if is_on_system_disk(&path) {
+                        continue;
+                    }
+                    roots.push(path);
+                }
             }
         }
         roots
+    }
+}
+
+/// True when `path` lives on one of the machine's own disks rather than on attached media.
+///
+/// Compares device ids against the startup/System volume (`/`) and the user's home, which on
+/// modern macOS is a separate Data volume. The case that matters is `/Volumes/Macintosh HD`:
+/// it is a firmlink straight back to `/`, so without this check the card auto-detector treats
+/// the boot volume as a candidate card and the recursive scan walks the entire home folder —
+/// Photos, Music, Documents, Desktop, and other apps' data in `~/Library` — unleashing a storm
+/// of macOS privacy (TCC) prompts. Windows enumerates drive letters from `D:` onwards, so it
+/// was never affected; this is a no-op there.
+/// True when `path` is the ROOT of one of the machine's own volumes — `/`, the user's home,
+/// or a `/Volumes/*` entry that resolves onto the startup disk. Deliberately narrower than
+/// [`is_on_system_disk`]: a folder the user deliberately picked on their internal drive is a
+/// perfectly good ingest source, so only the volume root itself is refused.
+pub(crate) fn is_system_volume_root(path: &Path) -> bool {
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    if canonical == Path::new("/") {
+        return true;
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.is_empty() && canonical == Path::new(&home) {
+            return true;
+        }
+    }
+    // A `/Volumes/*` entry that lands on the startup disk is a firmlink back to `/`.
+    path.parent() == Some(Path::new("/Volumes")) && is_on_system_disk(path)
+}
+
+pub(crate) fn is_on_system_disk(path: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let _ = path;
+        false
+    }
+
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let Ok(target) = fs::metadata(path) else {
+            return false;
+        };
+        ["/".to_string(), std::env::var("HOME").unwrap_or_default()]
+            .iter()
+            .filter(|anchor| !anchor.is_empty())
+            .filter_map(|anchor| fs::metadata(anchor).ok())
+            .any(|anchor| anchor.dev() == target.dev())
     }
 }
 
@@ -623,10 +700,66 @@ fn is_skipped_directory(path: &Path) -> bool {
         .and_then(|value| value.to_str())
         .unwrap_or_default()
         .to_lowercase();
-    matches!(
+
+    // Junk / metadata folders that never hold ingestable media.
+    if matches!(
         name.as_str(),
-        "__macosx" | ".spotlight-v100" | ".trashes" | ".fseventsd" | ".temporaryitems"
-    )
+        "__macosx"
+            | ".spotlight-v100"
+            | ".trashes"
+            | ".fseventsd"
+            | ".temporaryitems"
+            | ".documentrevisions-v100"
+    ) {
+        return true;
+    }
+
+    // macOS media-library bundles (Photos, Music/iTunes, TV, iMovie, Aperture, Final Cut).
+    // These are package directories the user never wants ingested as loose files, and
+    // descending into one triggers a macOS privacy (TCC) prompt for that library — a
+    // primary source of the "allow access" prompt storm during a broad scan.
+    const PROTECTED_LIBRARY_SUFFIXES: [&str; 7] = [
+        ".photoslibrary",
+        ".photolibrary",
+        ".musiclibrary",
+        ".tvlibrary",
+        ".imovielibrary",
+        ".aplibrary",
+        ".fcpbundle",
+    ];
+    if name == "photo booth library"
+        || PROTECTED_LIBRARY_SUFFIXES
+            .iter()
+            .any(|suffix| name.ends_with(suffix))
+    {
+        return true;
+    }
+
+    is_protected_system_dir(path)
+}
+
+/// Operating-system directories that hold no camera media but are privacy-gated or
+/// enormous. Matched by absolute path (not just leaf name) so a user's own folder that
+/// happens to share a name — a `Library` folder on a card, say — is still scanned.
+#[cfg(target_os = "macos")]
+fn is_protected_system_dir(path: &Path) -> bool {
+    const SYSTEM_ROOTS: [&str; 6] = ["/System", "/Library", "/private", "/Network", "/usr", "/bin"];
+    if SYSTEM_ROOTS.iter().any(|root| path == Path::new(root)) {
+        return true;
+    }
+    // ~/Library — app data and caches, never camera media. Reading another app's folder
+    // in here is what raises the "would like to access data from other apps" prompt.
+    if let Ok(home) = std::env::var("HOME") {
+        if path == Path::new(&home).join("Library") {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(not(target_os = "macos"))]
+fn is_protected_system_dir(_path: &Path) -> bool {
+    false
 }
 
 fn filtered_directory_kind(path: &Path) -> Option<ScanFileKind> {
@@ -678,6 +811,64 @@ pub(crate) fn format_modified_time(time: std::time::SystemTime) -> Option<String
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn skips_macos_protected_libraries_but_not_normal_folders() {
+        // Apple media-library bundles are skipped so a scan never dives into them, and so
+        // never trips the per-library macOS privacy prompt.
+        assert!(is_skipped_directory(Path::new(
+            "/Volumes/Card/Pictures/My Shoot.photoslibrary"
+        )));
+        assert!(is_skipped_directory(Path::new(
+            "/Users/x/Music/Music Library.musiclibrary"
+        )));
+        assert!(is_skipped_directory(Path::new("/Users/x/Movies/Edit.fcpbundle")));
+        assert!(is_skipped_directory(Path::new(
+            "/Users/x/Pictures/Photo Booth Library"
+        )));
+
+        // Real camera folders — and a user folder that merely shares a system name — are
+        // still scanned.
+        assert!(!is_skipped_directory(Path::new("/Volumes/Card/DCIM")));
+        assert!(!is_skipped_directory(Path::new("/Volumes/Card/Library")));
+        assert!(!is_skipped_directory(Path::new("/Volumes/Card/DCIM/100CANON")));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn refuses_to_scan_the_startup_disk_root_but_allows_folders_on_it() {
+        // The exact regression: the boot volume matched the "PRIVATE camera folder"
+        // signature (APFS is case-insensitive, so PRIVATE resolves to /private), got
+        // auto-adopted as a card, and was then walked in full.
+        assert!(scan_source("/").is_err());
+        let home = std::env::var("HOME").expect("HOME");
+        assert!(scan_source(&home).is_err());
+        if Path::new("/Volumes/Macintosh HD").exists() {
+            assert!(scan_source("/Volumes/Macintosh HD").is_err());
+        }
+
+        // A real folder the user picked on the internal drive is still scannable.
+        let workspace = unique_temp_dir("ingest_pilot_system_root_test");
+        fs::create_dir_all(&workspace).expect("mkdir");
+        assert!(scan_source(&workspace.to_string_lossy()).is_ok());
+        let _ = fs::remove_dir_all(&workspace);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn treats_the_startup_disk_as_a_system_disk() {
+        // The regression this guards: `/Volumes/Macintosh HD` is a firmlink to `/`, so the
+        // card detector used to offer the boot volume as a card and then walk the whole home
+        // folder, raising a storm of TCC prompts.
+        assert!(is_on_system_disk(Path::new("/")));
+        let home = std::env::var("HOME").expect("HOME");
+        assert!(is_on_system_disk(Path::new(&home)));
+
+        // A path that does not exist is not claimed to be on the system disk.
+        assert!(!is_on_system_disk(Path::new(
+            "/Volumes/definitely-not-mounted-ingest-pilot-test"
+        )));
+    }
 
     #[test]
     fn scans_source_folder_extensions_and_size() {

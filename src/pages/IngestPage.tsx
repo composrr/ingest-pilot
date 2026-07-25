@@ -4548,10 +4548,23 @@ function useSourceThumbnails() {
 
   const flush = useCallback(() => {
     timerRef.current = null;
-    const batch = Array.from(queueRef.current, ([path, preview_path]) => ({ path, preview_path }));
+    const pending = Array.from(queueRef.current, ([path, preview_path]) => ({ path, preview_path }));
     queueRef.current.clear();
-    if (batch.length === 0) {
+    if (pending.length === 0) {
       return;
+    }
+    // The backend rejects a batch over 96 outright (an oversized reply is what kills the
+    // web content process), so split here and re-queue the remainder rather than losing it.
+    // A fast scroll through a big card can easily queue more than one screenful.
+    const MAX_BATCH = 96;
+    const batch = pending.slice(0, MAX_BATCH);
+    if (pending.length > MAX_BATCH) {
+      for (const item of pending.slice(MAX_BATCH)) {
+        queueRef.current.set(item.path, item.preview_path);
+      }
+      if (timerRef.current === null) {
+        timerRef.current = setTimeout(() => flushRef.current(), 0);
+      }
     }
     generateSourceThumbnails(batch)
       .then((results) => {
@@ -4591,6 +4604,13 @@ function useSourceThumbnails() {
         });
       });
   }, []);
+
+  // `flush` re-schedules itself when it has to split an oversized batch; going through a ref
+  // keeps that self-reference out of its own dependency list.
+  const flushRef = useRef(flush);
+  useEffect(() => {
+    flushRef.current = flush;
+  }, [flush]);
 
   const request = useCallback(
     (path: string, previewPath: string | null) => {

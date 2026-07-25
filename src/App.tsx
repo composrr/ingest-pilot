@@ -15,6 +15,7 @@ import {
   Wand2,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { UpdateModal } from "./components/UpdateModal";
 import { Walkthrough } from "./components/Walkthrough";
 import { Dashboard } from "./pages/Dashboard";
@@ -210,13 +211,27 @@ export function App() {
               queue, options) survives switching tabs within a session; it's just
               hidden when another view is active. */}
           <div className={activeView === "ingest" ? "flex min-w-0 flex-1" : "hidden"}>
-            <IngestPage />
+            <ErrorBoundary label="Ingest Media">
+              <IngestPage />
+            </ErrorBoundary>
           </div>
           {/* DIT mode also stays mounted so an in-progress offload survives tab switches. */}
           <div className={activeView === "dit" ? "flex min-w-0 flex-1" : "hidden"}>
-            <DitPage active={activeView === "dit"} />
+            <ErrorBoundary label="DIT">
+              <DitPage active={activeView === "dit"} />
+            </ErrorBoundary>
           </div>
-          {activeView !== "ingest" && activeView !== "dit" ? renderView(activeView, selectView) : null}
+          {/* One boundary per screen: a render error shows a panel on the screen that broke
+              instead of unmounting the whole tree and leaving a black window. `resetKey`
+              clears the error when the user navigates away. */}
+          {activeView !== "ingest" && activeView !== "dit" ? (
+            <ErrorBoundary
+              label={navItems.find((item) => item.view === activeView)?.label ?? "Help"}
+              resetKey={activeView}
+            >
+              {renderView(activeView, selectView)}
+            </ErrorBoundary>
+          ) : null}
         </section>
       </div>
       {isWalkthroughOpen ? (

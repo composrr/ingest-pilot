@@ -10,6 +10,26 @@ and user-facing  -  this is what people read in the update popup.
 
 ## [Unreleased]
 
+## [0.1.21]
+
+### Fixed
+
+- **No more permission prompt storm on macOS.** Ingest Pilot was mistaking your Mac's own
+  startup disk for a camera card — it looks for a folder named `PRIVATE` to spot a card, and
+  macOS has a system folder called `private` that matched because macOS ignores capital
+  letters in folder names. It then loaded your whole drive as if it were a card and read
+  through it, every five seconds, from the moment the app opened. That is what made macOS
+  keep asking for access to Photos, Music, Documents, Desktop, Downloads and other apps'
+  data. The startup disk is now excluded from card detection everywhere, scanning a whole
+  system drive is refused outright, and Photos/Music/system libraries are never opened.
+- **The window no longer goes completely black.** A failure on any single screen used to
+  blank the entire window with no message. Each screen now catches its own errors and shows
+  a panel you can copy details from, and the rest of the app keeps working.
+- Thumbnail previews are now requested in bounded batches, so browsing a large card can't
+  overwhelm the display and kill the window.
+- macOS privacy prompts now explain what Ingest Pilot wants and why. The app previously
+  shipped with no explanation text at all, so every prompt appeared as bare system wording.
+
 ## [0.1.16]
 
 ### Added

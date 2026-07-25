@@ -231,6 +231,36 @@ jobs:
           updaterJsonPreferNsis: true
           args: ${{ matrix.args }}
 
+      # Prove the macOS artifact is actually what we think it is. Nothing previously
+      # verified this, so a build could ship unsigned (the tauri-action env block above
+      # silently falls back to unsigned when the Apple secrets are missing) or without the
+      # privacy usage strings, and no one would find out until a user hit a Gatekeeper
+      # warning or an unexplained permission prompt. Fails the leg, which keeps the release
+      # a draft, because `publish` gates on the whole matrix.
+      - name: Verify the macOS bundle is signed, notarized and explains its prompts
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP=$(find src-tauri/target -type d -name "Ingest Pilot.app" -path "*/release/bundle/macos/*" | head -1)
+          if [ -z "$APP" ]; then echo "::error::No built .app found to verify"; exit 1; fi
+          echo "Verifying $APP"
+
+          # Developer ID signature, intact seal, and a stapled notarization ticket.
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          codesign -dv --verbose=4 "$APP" 2>&1 | grep -q "Authority=Developer ID Application" \
+            || { echo "::error::Not signed with a Developer ID Application certificate"; exit 1; }
+          xcrun stapler validate "$APP" \
+            || { echo "::error::Notarization ticket is not stapled"; exit 1; }
+
+          # The privacy usage strings must survive the Info.plist merge. Their absence is
+          # what made every macOS prompt appear with no explanation up to 0.1.20.
+          for KEY in NSRemovableVolumesUsageDescription NSDocumentsFolderUsageDescription; do
+            plutil -extract "$KEY" raw "$APP/Contents/Info.plist" >/dev/null \
+              || { echo "::error::Info.plist is missing $KEY"; exit 1; }
+          done
+          echo "macOS bundle verified: Developer ID signed, notarized, usage strings present."
+
   # 3) Publish the draft only after ALL platforms built successfully. `needs: build`
   # gates on the whole matrix, so a partial or failed build never goes live. Until this
   # runs, the updater sees the previous release and offers nothing new.

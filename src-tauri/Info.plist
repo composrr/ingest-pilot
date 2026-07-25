@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Merged into the generated bundle Info.plist by the Tauri bundler, which looks for a
+       file named Info.plist beside tauri.conf.json (tauri-utils config: "Note that Tauri
+       also looks for a `Info.plist` file in the same directory as the Tauri configuration
+       file"). No tauri.conf.json reference is needed.
+
+       Be clear about what these buy: a purpose string changes the sentence macOS shows
+       INSIDE a privacy dialog. It does not remove a single prompt. Ingest Pilot shipped
+       with none of them, which is why every prompt the user saw was bare system text with
+       no explanation of what the app wanted or why. Reducing the NUMBER of prompts is the
+       job of not walking the startup disk (see scanner::is_on_system_disk).
+
+       Deliberately absent: a string for kTCCServiceSystemPolicyAppData ("would like to
+       access data from other apps"). Apple exposes no Info.plist key for that service, so
+       it cannot be explained here — the only fix is to never read another app's container,
+       which is what skipping ~/Library in is_skipped_directory does. -->
+
+  <key>NSRemovableVolumesUsageDescription</key>
+  <string>Ingest Pilot reads the camera cards and external drives you connect so it can copy, verify, and catalogue your footage.</string>
+
+  <key>NSNetworkVolumesUsageDescription</key>
+  <string>Ingest Pilot needs this to copy footage to or from a server or NAS you have chosen as a source or destination.</string>
+
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>Ingest Pilot reads or writes your Documents folder only when you choose it as an offload destination or as the location for your preset library.</string>
+
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>Ingest Pilot reads or writes your Desktop only when you choose it as an offload destination.</string>
+
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>Ingest Pilot reads or writes your Downloads folder only when you choose it as an offload destination.</string>
+</dict>
+</plist>

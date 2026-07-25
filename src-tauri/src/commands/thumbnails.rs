@@ -37,6 +37,18 @@ pub async fn generate_source_thumbnails(
     if requests.is_empty() {
         return Ok(Vec::new());
     }
+    // Hard ceiling on one reply. Each result is small (key + cache path + kind), but the UI
+    // batches by scroll position and an unbounded batch is an unbounded response body. On
+    // macOS every command reply is handed to the webview in a single shot, and an oversized
+    // one is what kills the web content process — see the cap on SourceScan.files. Two
+    // screenfuls of tiles is generous; the caller pages the rest.
+    const MAX_BATCH: usize = 96;
+    if requests.len() > MAX_BATCH {
+        return Err(format!(
+            "Thumbnail batch too large ({} requests, max {MAX_BATCH}). Request them in pages.",
+            requests.len()
+        ));
+    }
     // Resolved (and created) before the worker so a broken cache dir is a real error the
     // caller sees once, rather than N silently empty tiles.
     let cache_dir = source_thumbnail_cache_dir(&app)?;

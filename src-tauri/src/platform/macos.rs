@@ -20,6 +20,14 @@ pub fn list_volumes() -> Vec<Volume> {
         if !path.is_dir() {
             continue;
         }
+        // Never list the machine's own startup disk. `/Volumes/Macintosh HD` is a firmlink
+        // back to `/`, so offering it here let the user pick their whole boot volume as a
+        // "card" — and DitPage polls this function every 4 seconds, so the camera probe below
+        // was also reading the root of the startup disk on a loop. Both are pure cost: a
+        // startup disk is never the card you are offloading.
+        if crate::ingest::scanner::is_on_system_disk(&path) {
+            continue;
+        }
         let path_string = path.to_string_lossy().to_string();
         let label = path
             .file_name()
