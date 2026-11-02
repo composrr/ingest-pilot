@@ -198,6 +198,27 @@ jobs:
             echo "__NOTES_EOF__"
           } >> "$GITHUB_OUTPUT"
 
+      # Notarization login: App Store Connect API key when set (never expires,
+      # unlike app-specific passwords; set once for all repos by
+      # ~/.claude/sync/apple-notary-key.sh), else Apple ID + app password.
+      # Only one is exported because Tauri prefers the Apple ID when both exist.
+      - name: Choose Apple notarization login
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          AID: ${{ secrets.APPLE_ID }}
+          APW: ${{ secrets.APPLE_PASSWORD }}
+        run: |
+          if [ -n "$P8" ] && [ -n "$KEY_ID" ] && [ -n "$ISSUER" ]; then
+            echo "$P8" > "$RUNNER_TEMP/AuthKey.p8"
+            { echo "APPLE_API_KEY=$KEY_ID"; echo "APPLE_API_ISSUER=$ISSUER"; echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/AuthKey.p8"; } >> "$GITHUB_ENV"
+          elif [ -n "$AID" ] && [ -n "$APW" ]; then
+            { echo "APPLE_ID=$AID"; echo "APPLE_PASSWORD=$APW"; } >> "$GITHUB_ENV"
+          fi
+
       - name: Build and upload to the draft release
         uses: tauri-apps/tauri-action@v0
         env:
@@ -215,8 +236,6 @@ jobs:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           # Upload installers + latest.json into the draft release created above.
