@@ -123,7 +123,9 @@ jobs:
             label: Windows
             args: ""
             targets: ""
-    runs-on: ${{ matrix.os }}
+    # macOS jobs run on Jon's Mac (self-hosted runner, free). If it's off, fall back to GitHub's Macs:
+    #   gh variable set MAC_RUNNER -b '"macos-15"' -R <repo>   (delete the variable to switch back)
+    runs-on: ${{ matrix.os == 'macos-latest' && fromJSON(vars.MAC_RUNNER || '["self-hosted","macOS","jon-mac"]') || matrix.os }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -233,7 +235,7 @@ jobs:
           # certificate + notarization credentials as MCM Vault - add these six secrets
           # to this repo (same values) and the macOS leg signs + notarizes itself. When
           # the secrets are absent the build still succeeds, just unsigned.
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE: ${{ runner.environment == 'github-hosted' && secrets.APPLE_CERTIFICATE || '' }}  # self-hosted signs from the login keychain
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}

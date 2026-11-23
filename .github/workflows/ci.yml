@@ -12,7 +12,9 @@ on:
 jobs:
   verify:
     name: Test & build (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    # macOS jobs run on Jon's Mac (self-hosted runner, free). If it's off, fall back to GitHub's Macs:
+    #   gh variable set MAC_RUNNER -b '"macos-15"' -R <repo>   (delete the variable to switch back)
+    runs-on: ${{ matrix.os == 'macos-latest' && fromJSON(vars.MAC_RUNNER || '["self-hosted","macOS","jon-mac"]') || matrix.os }}
     strategy:
       fail-fast: false
       matrix:
