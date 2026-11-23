@@ -1,15 +1,13 @@
 name: CI
 
-# Verifies the app on both target platforms on every push/PR to main.
+# Verifies the app on both target platforms. Manual only: macOS runner minutes bill
+# at 10x, so run it before a release (Actions tab or `gh workflow run ci.yml`).
 # The Rust tests (cargo test) include the ingest-routing logic, so this is the
 # hard proof that behavior like "empty preset -> media goes to project root"
 # works identically on Windows and macOS.
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+  workflow_dispatch:
 
 jobs:
   verify:
